@@ -23,3 +23,6 @@ pub(crate) mod io;
 pub mod core;
 pub mod analysis;
 pub mod manager;
+
+// Public types are re-exported at the crate root.
+pub use foundation::{BBox, GeoError, GridGeometry, Point3, Result, Stats, Unit};

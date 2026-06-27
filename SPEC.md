@@ -1,6 +1,6 @@
 # petekIO — subsurface data model & IO library (build spec)
 
-> Repo: `Koding/Rust/geoSuite` · crate name: `petekio` (lowercase for
+> Repo: `Koding/Rust/petekIO` · crate name: `petekio` (lowercase for
 > crates.io — confirm availability). Sibling to `logSuite`. This is the handover
 > spec for the build agent.
 

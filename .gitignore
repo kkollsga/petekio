@@ -1,7 +1,8 @@
 # Rust / Cargo
 /target/
 **/*.rs.bk
-Cargo.lock          # library crate — let downstreams pin
+# Library crate — do not commit the lockfile; let downstreams pin.
+Cargo.lock
 
 # Python / PyO3 (py feature, maturin)
 __pycache__/

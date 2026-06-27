@@ -1,0 +1,25 @@
+[package]
+name = "petekio"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Subsurface data ingestion + structure layer: surfaces, wells, points, polygons with loading, interpolation, and statistics."
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[dependencies]
+thiserror = "2"
+ndarray = "0.17"
+indexmap = "2"
+
+[features]
+default = []
+# PyO3 bindings land in Phase 7. Empty placeholder for now so that
+# `cargo build --all-features` stays buildable without a Python toolchain.
+py = []
+# f32 storage typedef for memory-bound large surfaces (SPEC "Storage
+# precision"). Wiring deferred — API.md locks `Array2<f64>` for now.
+f32 = []
+
+[dev-dependencies]
+approx = "0.5"

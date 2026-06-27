@@ -13,3 +13,6 @@ All notable changes to petekIO are recorded here. The format loosely follows
 - `foundation` layer: `GeoError`/`Result`, `Unit` (+conversions), `Point3`,
   `BBox`, `GridGeometry` (rotation + `yflip`, with `node_xy`/`xy_to_ij`/`bbox`),
   and NaN-skipping `Stats` (`of`/`weighted`/`percentile`).
+- `Surface` (`core`): construction (`new`/`constant`), attribute layers
+  (`attr`/`set_attr`/`attr_names`/`as_attr_surface`), and **IRAP-classic** read/
+  write (`load_irap_classic`/`save_irap_classic`).

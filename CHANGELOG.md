@@ -16,3 +16,5 @@ All notable changes to petekIO are recorded here. The format loosely follows
 - `Surface` (`core`): construction (`new`/`constant`), attribute layers
   (`attr`/`set_attr`/`attr_names`/`as_attr_surface`), and **IRAP-classic** read/
   write (`load_irap_classic`/`save_irap_classic`).
+- `Surface::sample` (strict NaN-aware bilinear) + `Surface::resample` onto a
+  target geometry.

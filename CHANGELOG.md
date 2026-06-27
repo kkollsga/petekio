@@ -22,3 +22,5 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `sqrt`/`abs`/`powf`/`clamp_min`/`clamp`; surface↔surface `plus`/`minus`/
   `times`/`divided_by` + `thickness`; operator overloads (scalar `+ - * /` →
   `Surface`, surface `+ - * /` → `Result<Surface>`).
+- `Surface` statistics/volumetrics: `stats`, `area_below`/`area_above`,
+  `volume_between`, and the `hypsometry` (area-vs-depth) curve.

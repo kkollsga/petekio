@@ -31,6 +31,17 @@ impl Surface {
         })
     }
 
+    /// Build a surface from a geometry + values without shape validation, for
+    /// internal callers (operations) that already guarantee the shape. No
+    /// attributes are carried over.
+    pub(crate) fn from_values_unchecked(geom: GridGeometry, values: Array2<f64>) -> Surface {
+        Surface {
+            geom,
+            values,
+            attributes: IndexMap::new(),
+        }
+    }
+
     /// A surface whose every node holds `value`.
     pub fn constant(geom: GridGeometry, value: f64) -> Surface {
         let values = Array2::from_elem((geom.ncol, geom.nrow), value);

@@ -18,3 +18,7 @@ All notable changes to petekIO are recorded here. The format loosely follows
   write (`load_irap_classic`/`save_irap_classic`).
 - `Surface::sample` (strict NaN-aware bilinear) + `Surface::resample` onto a
   target geometry.
+- `Surface` math (immutable, NaN-propagating): element-wise `ln`/`log10`/`exp`/
+  `sqrt`/`abs`/`powf`/`clamp_min`/`clamp`; surface↔surface `plus`/`minus`/
+  `times`/`divided_by` + `thickness`; operator overloads (scalar `+ - * /` →
+  `Surface`, surface `+ - * /` → `Result<Surface>`).

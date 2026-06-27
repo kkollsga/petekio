@@ -1,6 +1,6 @@
-# geoSuite — Claude Code Conventions
+# petekIO — Claude Code Conventions
 
-geoSuite is a standalone Rust subsurface data-model + IO library (with optional
+petekIO is a standalone Rust subsurface data-model + IO library (with optional
 PyO3 bindings). The two committed sources of truth are **`SPEC.md`** (design
 constitution + architecture) and **`API.md`** (the *locked* public API
 contract). Read both before non-trivial work. The dev-docs + inbox + skills

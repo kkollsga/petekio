@@ -1,6 +1,6 @@
-# geoSuite — subsurface data model & IO library (build spec)
+# petekIO — subsurface data model & IO library (build spec)
 
-> Repo: `Koding/Rust/geoSuite` · crate name: `geosuite` (lowercase for
+> Repo: `Koding/Rust/geoSuite` · crate name: `petekio` (lowercase for
 > crates.io — confirm availability). Sibling to `logSuite`. This is the handover
 > spec for the build agent.
 
@@ -44,7 +44,7 @@ scannable). Composes the author's own crates + the Rust geo ecosystem; does NOT
 reinvent them.
 
 ```
-geosuite/
+petekio/
   foundation/   errors · units · geometry (Point2/Point3, BBox, GridGeometry)
   io/           irap · zmap · csv · las (←las_rs) · excel (←calamine) · survey · tops · vector (←geozero)
   core/         Surface · Well→Sidetrack→Trajectory · Log · Top · PointSet · PolygonSet  (+ operation traits)
@@ -143,7 +143,7 @@ Python ergonomics:
 ```python
 top  = geo.load_surface("top.irap")
 base = geo.load_surface("base.irap")
-thick = geosuite.Surface.thickness(top, base, clamp_zero=True)   # or (base - top).clamp_min(0)
+thick = petekio.Surface.thickness(top, base, clamp_zero=True)   # or (base - top).clamp_min(0)
 trend = top.attr("seismic").ln()
 top.stats.p50
 top.area_below(8240)                 # ft² below the OWC
@@ -293,7 +293,7 @@ impl GeoData {
 }
 ```
 ```python
-geo = geosuite.GeoData(unit="ft")
+geo = petekio.GeoData(unit="ft")
 geo.load_surface("top.irap"); geo.load_well("wells/A1/", wellhead=(x,y), kb=82)
 geo.wells.filter(field="Gullfaks").tops("Brent").ntg      # broadcast → Stats per well
 ```

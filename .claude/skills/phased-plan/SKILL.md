@@ -62,7 +62,7 @@ go-ahead.** If they decline, proceed without it.
 - If this is a bug-driven fix: reproduce and confirm the **root cause with
   evidence** before planning the fix (CLAUDE.md "Working style").
 - **Decide the safety net in Phase 0, and confirm it catches *this* class of
-  change.** geoSuite's net is **golden / analytic tests** (SPEC §"Build
+  change.** petekIO's net is **golden / analytic tests** (SPEC §"Build
   phasing"): round-trip a known IRAP file; bilinear resample vs a hand calc;
   `area_below` vs an analytic value; a worked deviation survey + the
   vertical-well degenerate case for minimum-curvature. For a behaviour-
@@ -183,5 +183,5 @@ ships). This skill never bumps, never pushes `main`.
 - Branch pushes during the loop are routine (no publish). Only the **`main`**
   push at `release` time is the approval-gated one.
 - New `io/` reader? Land its golden round-trip test in the same phase — a reader
-  without a fixture round-trip isn't trusted (the geoSuite analogue of "passes
+  without a fixture round-trip isn't trusted (the petekIO analogue of "passes
   not in the corpus aren't trusted").

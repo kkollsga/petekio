@@ -47,7 +47,7 @@ footer, and archival (step 5).
 ## 4. Route actionable items to the party who can act
 If a message carries an **actionable task for another project**, file a note to
 their inbox via the **`notify`** skill (it resolves the target under `Koding/`
-and writes `YYYY-MM-DD-from-geosuite-<topic>.md` into their `inbox/unread/`).
+and writes `YYYY-MM-DD-from-petekio-<topic>.md` into their `inbox/unread/`).
 Natural targets: `las-rs` / `Sheetio` (an IO bug we trace to a dependency),
 `SimulatoRS` (a downstream-consumer heads-up), or `mcp-servers` (the whole
 ecosystem, one inbox). Only route if there's genuinely something for them to
@@ -55,7 +55,7 @@ do — don't clutter their `unread/`.
 
 ## 5. Append Status footer, move to read/
 Append a one-line footer to the message before archiving:
-`## Status (geosuite, <date>): <lifted to dev-docs/...; todo added | routed to X | no action>`
+`## Status (petekio, <date>): <lifted to dev-docs/...; todo added | routed to X | no action>`
 then move it from `inbox/unread/` to `inbox/read/`. `unread/` must end empty —
 every message is either lifted+tracked, routed, or a logged no-action ack.
 

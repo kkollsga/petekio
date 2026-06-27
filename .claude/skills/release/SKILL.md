@@ -1,12 +1,12 @@
 ---
 name: release
-description: Cut a geoSuite release — goal-check against the phased-plan, gate (build + fmt + clippy + tests + golden suite), confirm the public surface still matches the locked API.md, bump the crate version, promote CHANGELOG, commit, and (with explicit approval) push + publish to crates.io (and PyPI once the py wheel ships), then tidy dev-docs.
+description: Cut a petekIO release — goal-check against the phased-plan, gate (build + fmt + clippy + tests + golden suite), confirm the public surface still matches the locked API.md, bump the crate version, promote CHANGELOG, commit, and (with explicit approval) push + publish to crates.io (and PyPI once the py wheel ships), then tidy dev-docs.
 ---
 
 # Release
 
 ## Preconditions
-- **Must be a git repo with a clean-ish tree.** If geoSuite isn't a git repo
+- **Must be a git repo with a clean-ish tree.** If petekIO isn't a git repo
   yet, release is premature — `git init` + an initial commit comes first (the
   `phased-plan` skill handles that). Don't publish from an un-versioned tree.
 - Check no release is already staged:
@@ -45,7 +45,7 @@ description: Cut a geoSuite release — goal-check against the phased-plan, gate
    expansion), STOP and ask one quick clarification before starting. Bump the
    single source of truth: the workspace `[workspace.package] version` in the
    root `Cargo.toml` (or the crate's `version` if it's a single crate). If
-   geoSuite is a multi-crate workspace, all members inherit that one version —
+   petekIO is a multi-crate workspace, all members inherit that one version —
    keep them in lockstep, never per-crate drift.
 5. **Promote CHANGELOG** `[Unreleased]` → `[x.y.z]` (dated).
 6. **Commit** as the final phase: `release(x.y.z): ...` (version bump +
@@ -66,17 +66,17 @@ description: Cut a geoSuite release — goal-check against the phased-plan, gate
    the umbrella crate — waiting for each to index before the next (a crate can't
    publish until its path-deps resolve on crates.io). Once the `py` wheel ships,
    also publish it to **PyPI** (via `maturin publish` / the wheels workflow).
-9. **If a CI workflow exists, poll it until green** (`gh` Checks API). geoSuite
+9. **If a CI workflow exists, poll it until green** (`gh` Checks API). petekIO
    may have no CI yet — if so, the local gate (step 2) + a clean
    `cargo publish --dry-run` is the gate. CI fix-and-push loop: if a push fails
    on a shipped-code/infra bug (not a scope change), push `fix(...)`/`ci(...)`
    without re-asking until green; stop after ~3 iterations or any release-shape
    change.
 10. **Verify published.** crates.io shows the crate(s) at `x.y.z`
-    (`curl -s -H "User-Agent: geosuite-release" https://crates.io/api/v1/crates/geosuite | jq -r .crate.max_version`
+    (`curl -s -H "User-Agent: petekio-release" https://crates.io/api/v1/crates/petekio | jq -r .crate.max_version`
     — the User-Agent header is required or the API returns null and looks like a
     failed publish). If a PyPI wheel was published:
-    `curl -s https://pypi.org/pypi/geosuite/json | jq -r .info.version`.
+    `curl -s https://pypi.org/pypi/petekio/json | jq -r .info.version`.
 11. **Delete the released branch** if you worked one (the merge is done):
     `git branch -f main origin/main` → `git switch main` (zero-diff switch when
     `main == HEAD`, preserves WIP) → `git branch -d <branch>` (refuses if

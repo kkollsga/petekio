@@ -1,4 +1,4 @@
-# geoSuite — locked public API
+# petekIO — locked public API
 
 > **This file is the contract.** The build must expose exactly these signatures
 > (names, arguments, return types). Bodies are the implementer's; the *surface* is
@@ -262,9 +262,9 @@ impl Cube {
 ## Python (PyO3) surface — the same contract, fluent
 
 ```python
-import geosuite
+import petekio
 
-geo = geosuite.GeoData(unit="ft")
+geo = petekio.GeoData(unit="ft")
 geo.load_surface("top", "top.irap")
 top, base = geo.surface("top"), geo.surface("base")
 

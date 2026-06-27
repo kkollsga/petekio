@@ -9,7 +9,7 @@ Deliver a message to a sibling project's inbox so its maintainer/agent picks it
 up on their next `read-inbox`. Input: a **target repo** (name or path) and the
 **message** (topic + body; compose from the conversation if not given).
 
-geoSuite's frequent correspondents: **`las-rs`** / **`Sheetio`** (its IO
+petekIO's frequent correspondents: **`las-rs`** / **`Sheetio`** (its IO
 dependency crates), **`SimulatoRS`** (the downstream consumer of a `GeoData`),
 and **`mcp-servers`** (the whole ecosystem, one inbox).
 
@@ -47,13 +47,13 @@ mkdir -p "<target>/inbox/unread"
 (Create it if the project has no inbox yet — that's expected for a first note.)
 
 ## 3. Compose the message (the schema)
-Filename: **`<YYYY-MM-DD>-from-geosuite-<topic-slug>.md`** (date = session date,
+Filename: **`<YYYY-MM-DD>-from-petekio-<topic-slug>.md`** (date = session date,
 kebab-case topic). Body:
 
 ```markdown
 # <Short title>
 
-- **From:** geosuite
+- **From:** petekio
 - **To:** <target repo>
 - **Date:** <YYYY-MM-DD>
 - **Type:** feedback | bug | coordination | heads-up | request

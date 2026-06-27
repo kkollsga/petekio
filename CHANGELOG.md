@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-28
+
 ### Added
 - Project scaffolding: single layered `petekio` crate
   (`foundation → io → core → analysis → manager → py`), MSRV 1.88, `py`/`f32`
@@ -24,3 +26,6 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `Surface`, surface `+ - * /` → `Result<Surface>`).
 - `Surface` statistics/volumetrics: `stats`, `area_below`/`area_above`,
   `volume_between`, and the `hypsometry` (area-vs-depth) curve.
+- **Python bindings** (the `petekio` wheel, via PyO3/abi3 + maturin): a thin
+  layer exposing `Surface` (`load_irap_classic`/`save_irap_classic`/`sample`/
+  `area_below`/`area_above`/`stats`, `ncol`/`nrow`/`rotation_deg`) and `Stats`.

@@ -20,5 +20,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-features
+      # Scope clippy/test to the library crate; the PyO3 wheel crate is built +
+      # validated by the maturin wheel job in release.yml (it needs a Python env).
+      - run: cargo clippy -p petekio --all-targets --all-features -- -D warnings
+      - run: cargo test -p petekio --all-features

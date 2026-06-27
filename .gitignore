@@ -26,3 +26,7 @@ __pycache__/
 
 # OS noise
 .DS_Store
+
+# Python build artifacts
+/dist/
+*.whl

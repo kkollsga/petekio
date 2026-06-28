@@ -29,9 +29,11 @@ impl<'a> WellsView<'a> {
         WellsView::new(self.wells.iter().copied().filter(|w| pred(w)).collect())
     }
 
-    /// Iterate the wells of this view in insertion order.
-    pub fn iter(&self) -> impl Iterator<Item = &Well> {
-        self.wells.iter().copied()
+    /// Iterate the wells of this view in insertion order. Yielded borrows are
+    /// tied to the project (`'a`), not to this view, so they outlive a
+    /// temporary `geo.wells()`.
+    pub fn iter(&self) -> impl Iterator<Item = &'a Well> {
+        self.wells.clone().into_iter()
     }
 
     /// A new view narrowed to the wells that *have* the named top (the main

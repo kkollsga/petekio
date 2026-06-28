@@ -7,6 +7,18 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- `GeoData` (`manager`): the load-once project substrate. Named, insertion-
+  ordered collections under one `Unit`; `new`, fluent loaders returning `&T`
+  (`load_surface` IRAP classic; `load_points`/`load_polygons` extension-
+  dispatched over the supported formats; `load_well` from a directory or single
+  file — `*.las` → logs, tops `*.csv` (`name`,`md`) → tops on the main bore, with
+  a vertical trajectory synthesized from the log MD span); named getters
+  `surface`/`well`/`points`/`polygons` (miss → `None`); `surfaces()` iterator and
+  `wells() -> WellsView`.
+- `WellsView<'a>` (`manager`): a lightweight, broadcastable borrow over a
+  project's wells (no cloning) — `filter(pred)`, `iter()`, and `tops(name)`
+  (narrow to wells carrying that marker), plus `len`/`is_empty`. The substrate
+  behind the per-well `Stats` broadcast.
 - `PointSet` (`core`): scattered N×3 points with named `f64` attribute columns.
   Loaders `load_csv` (named X/Y/Z columns; other numeric columns → attributes)
   and `load_irap_points` (RMS plain `X Y Z`); ops `len`/`is_empty`/`filter`/

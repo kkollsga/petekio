@@ -25,5 +25,5 @@ pub mod analysis;
 pub mod manager;
 
 // Public types are re-exported at the crate root.
-pub use core::{Station, Surface, Trajectory, TrajectoryInput};
+pub use core::{Sidetrack, Station, Surface, Trajectory, TrajectoryInput, Well};
 pub use foundation::{BBox, GeoError, GridGeometry, Point3, Result, Stats, Unit};

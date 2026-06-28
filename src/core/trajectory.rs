@@ -80,8 +80,6 @@ const STEER_STEP: f64 = 30.0;
 impl Trajectory {
     /// Normalize a survey input into a positioned path, accumulating from the
     /// wellhead `head` and datum `kb`. `Err` on empty or non-increasing input.
-    // Wired into `Sidetrack::add_trajectory` in the next sub-phase.
-    #[allow(dead_code)]
     pub(crate) fn from_input(input: TrajectoryInput, head: (f64, f64), kb: f64) -> Result<Self> {
         let nodes = match input {
             TrajectoryInput::Xyz(pts) => nodes_from_xyz(pts)?,
@@ -161,7 +159,6 @@ impl Trajectory {
 
 /// Minimum-curvature normalization of a station list. See module docs for the
 /// depth convention.
-#[allow(dead_code)]
 fn min_curvature(stations: &[Station], head: (f64, f64), kb: f64) -> Result<Vec<Node>> {
     let s0 = *stations
         .first()
@@ -205,7 +202,6 @@ fn min_curvature(stations: &[Station], head: (f64, f64), kb: f64) -> Result<Vec<
 
 /// Explicit positions → nodes; `md` is cumulative 3-D chord length from the
 /// first point.
-#[allow(dead_code)]
 fn nodes_from_xyz(points: Vec<Point3>) -> Result<Vec<Node>> {
     let first = *points
         .first()
@@ -224,7 +220,6 @@ fn nodes_from_xyz(points: Vec<Point3>) -> Result<Vec<Node>> {
 
 /// Sample a `Steer` segment into stations at a fixed MD step (build/turn rates
 /// are degrees per 100 MD, linear in MD).
-#[allow(dead_code)]
 fn steer_stations(
     from: Station,
     build_per_100: f64,
@@ -250,7 +245,6 @@ fn steer_stations(
 }
 
 /// Linear interpolation between two points at parameter `t ∈ [0, 1]`.
-#[allow(dead_code)]
 fn lerp3(a: Point3, b: Point3, t: f64) -> Point3 {
     Point3::new(
         a.x + (b.x - a.x) * t,
@@ -260,7 +254,6 @@ fn lerp3(a: Point3, b: Point3, t: f64) -> Point3 {
 }
 
 /// Euclidean 3-D distance between two points.
-#[allow(dead_code)]
 fn dist3(a: Point3, b: Point3) -> f64 {
     ((b.x - a.x).powi(2) + (b.y - a.y).powi(2) + (b.z - a.z).powi(2)).sqrt()
 }

@@ -12,6 +12,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `Trajectory` via the **minimum-curvature** method (dogleg β + ratio-factor with
   a β→0 Taylor guard). `Trajectory` exposes `xyz`/`tvd`/`md_at_tvd`/`md_range`
   with linear interpolation and shallowest-crossing TVD inversion.
+- `Well` → `Sidetrack` hierarchy (`core`): `Well::new`/`sidetrack`/
+  `sidetrack_mut` (lazy bore creation)/`main`/`sidetracks`; `Sidetrack`
+  `add_trajectory` (newest → active)/`set_active`/`active`/`trajectories`.
+  `Well` and `Sidetrack` delegate `xyz`/`tvd`/`md_at_tvd` to the main/active
+  trajectory. (Tops/logs deferred to Phase 4.)
 
 ## [0.1.0] - 2026-06-28
 

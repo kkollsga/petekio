@@ -26,7 +26,7 @@ pub mod manager;
 
 // Public types are re-exported at the crate root.
 pub use core::{
-    GridMethod, Interval, Log, LogView, PointSet, Sidetrack, Station, Surface, Top, Trajectory,
-    TrajectoryInput, Well,
+    GridMethod, Interval, Log, LogView, PointSet, PolygonSet, Sidetrack, Station, Surface, Top,
+    Trajectory, TrajectoryInput, Well,
 };
 pub use foundation::{BBox, GeoError, GridGeometry, Point3, Result, Stats, Unit};

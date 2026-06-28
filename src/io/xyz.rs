@@ -56,7 +56,6 @@ pub fn load_points(path: &Path) -> Result<Vec<[f64; 3]>> {
 
 /// Read polygons: consecutive `X Y Z` lines form one ring; a `999.0` separator
 /// line closes the current ring and starts the next. Empty rings are dropped.
-#[allow(dead_code)] // wired in by PolygonSet (sub-phase B)
 pub fn load_polygons(path: &Path) -> Result<Vec<Vec<[f64; 3]>>> {
     let text = std::fs::read_to_string(path)?;
     let mut rings: Vec<Vec<[f64; 3]>> = Vec::new();

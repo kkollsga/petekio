@@ -5,6 +5,7 @@
 mod gridding; // scattered-point → Surface interpolation (Nearest/IDW/min-curvature)
 pub mod log; // Log + LogView — MD-indexed well curves and views
 pub mod points; // PointSet — scattered points + attributes + gridding
+pub mod polygons; // PolygonSet — rings + contains/area/bbox/clip
 pub mod surface;
 mod surface_ops; // arithmetic + operator overloads on Surface
 mod surface_stats; // statistics + volumetrics on Surface
@@ -14,6 +15,7 @@ pub mod well; // Well → Sidetrack → Trajectory hierarchy
 
 pub use log::{Log, LogView};
 pub use points::{GridMethod, PointSet};
+pub use polygons::PolygonSet;
 pub use surface::Surface;
 pub use tops::{Interval, Top};
 pub use trajectory::{Station, Trajectory, TrajectoryInput};

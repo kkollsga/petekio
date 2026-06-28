@@ -16,6 +16,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
   curvature is a biharmonic (∇⁴z=0) SOR relaxation anchored at data nodes
   (interior 13-point stencil, near-edge 5-point harmonic fallback). New deps:
   `geo`, `rstar`.
+- `PolygonSet` (`core`): polygon rings backed by `geo` predicates. Loader
+  `load_irap_polygons` (RMS rings split on the `999.0` sentinel); ops
+  `contains(x,y)` (point-in-polygon, **boundary-exclusive** per `geo`),
+  `area()` (Σ `unsigned_area`), `bbox()`, and `clip(&Surface)` (masks nodes
+  outside all polygons → `NaN`).
 - Well logs (`core`): `Log` (MD-indexed curve, `new`/`len`/`view`) and
   `LogView<'a>` — a borrowed-or-owned (`Cow`) window with `stats`,
   `stats_weighted` (element-wise PV-weighting), `filter`, `at_md` (linear

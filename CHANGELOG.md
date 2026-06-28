@@ -16,6 +16,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
   (`add_log`/`add_tops`/`top`/`log`) and `Well` (delegating `top`/`log` to the
   main bore): tops sort by MD, the interval base is the next top's MD or total
   depth, enabling the `well.top("Brent")?.log("NTG")?.stats()` chain.
+- IO (`io`): LAS reader via `las_rs` 0.2 (`Log::load_las` / `load_las_all`,
+  NULL→NaN, shared index/MD curve) and a headered tops CSV reader via `csv`
+  (`Top::load_csv`, name/MD columns by header). New deps: `las_rs`, `csv`.
 - Well geometry (`core`): `Station` and the `TrajectoryInput` survey variants
   (`Xyz`/`MdIncAzi`/`Stations`/`Hold`/`Steer`), normalized to a positioned
   `Trajectory` via the **minimum-curvature** method (dogleg β + ratio-factor with

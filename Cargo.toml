@@ -29,6 +29,8 @@ exclude = ["/python", "/pyproject.toml", "/.github", "/.cargo", "/dist", "/.clau
 thiserror = "2"
 ndarray = "0.17"
 indexmap = "2"
+las_rs = "0.2"
+csv = "1"
 
 [features]
 default = []

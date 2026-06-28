@@ -14,6 +14,8 @@
 //! flagged in the Phase-4 brief: the public fields are unchanged.
 
 use crate::core::log::{Log, LogView};
+use crate::foundation::Result;
+use std::path::Path;
 
 /// A formation top: a name and its entry measured depth.
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +33,13 @@ impl Top {
             name: name.into(),
             md,
         }
+    }
+
+    /// Load tops from a headered CSV, taking the marker name from `name_col` and
+    /// the measured depth from `md_col` (matched by header name).
+    pub fn load_csv(path: impl AsRef<Path>, name_col: &str, md_col: &str) -> Result<Vec<Top>> {
+        let recs = crate::io::tops::load(path.as_ref(), name_col, md_col)?;
+        Ok(recs.into_iter().map(|r| Top::new(r.name, r.md)).collect())
     }
 }
 

@@ -2,3 +2,5 @@
 //! external crates behind petekIO's own types. Imports only from `foundation`.
 
 pub mod irap;
+pub mod las;
+pub mod tops;

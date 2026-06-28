@@ -14,6 +14,7 @@
 use crate::foundation::{GeoError, Result, Stats};
 use ndarray::Array1;
 use std::borrow::Cow;
+use std::path::Path;
 
 /// One measured-depth-indexed well curve: parallel `md`/`values` with
 /// `f64::NAN` for undefined samples. `md` is ascending.
@@ -53,6 +54,29 @@ impl Log {
             md: Array1::from(md),
             values: Array1::from(values),
         })
+    }
+
+    /// Load every non-index curve of a LAS file as a [`Log`], each sharing the
+    /// file's index (depth) curve as its MD. NULL samples arrive as `f64::NAN`.
+    pub fn load_las_all(path: impl AsRef<Path>) -> Result<Vec<Log>> {
+        let d = crate::io::las::load(path.as_ref())?;
+        let md = d.index;
+        d.curves
+            .into_iter()
+            .map(|c| Log::new(c.mnemonic, c.unit, md.clone(), c.values))
+            .collect()
+    }
+
+    /// Load a single curve `mnemonic` (case-insensitive) from a LAS file.
+    /// `Err(NotFound)` if the file has no such curve.
+    pub fn load_las(path: impl AsRef<Path>, mnemonic: &str) -> Result<Log> {
+        let d = crate::io::las::load(path.as_ref())?;
+        let c = d
+            .curves
+            .into_iter()
+            .find(|c| c.mnemonic.eq_ignore_ascii_case(mnemonic))
+            .ok_or_else(|| GeoError::NotFound(format!("LAS curve '{mnemonic}'")))?;
+        Log::new(c.mnemonic, c.unit, d.index, c.values)
     }
 
     /// Number of samples.

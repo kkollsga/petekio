@@ -21,6 +21,12 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `contains(x,y)` (point-in-polygon, **boundary-exclusive** per `geo`),
   `area()` (Σ `unsigned_area`), `bbox()`, and `clip(&Surface)` (masks nodes
   outside all polygons → `NaN`).
+- Vector IO (`io`): GeoJSON + ESRI shapefile via `geozero` 0.15 —
+  `PointSet::load_geojson` (a streaming `FeatureProcessor` carries each
+  feature's **numeric** `properties{}` into attribute columns, NaN-filling the
+  schemaless union; strings dropped), `PolygonSet::load_geojson`, and
+  `PolygonSet::load_shapefile`. New dep: `geozero`
+  (`with-geo`/`with-geojson`/`with-wkt`/`with-shp`).
 - Well logs (`core`): `Log` (MD-indexed curve, `new`/`len`/`view`) and
   `LogView<'a>` — a borrowed-or-owned (`Cow`) window with `stats`,
   `stats_weighted` (element-wise PV-weighting), `filter`, `at_md` (linear

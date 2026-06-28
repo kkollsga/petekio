@@ -34,10 +34,23 @@ impl PolygonSet {
         PolygonSet { polys }
     }
 
+    /// Load polygons from a GeoJSON file (`Polygon`/`MultiPolygon`/`LineString`
+    /// features; each ring becomes one polygon).
+    pub fn load_geojson(path: impl AsRef<Path>) -> Result<PolygonSet> {
+        let rings = crate::io::vector::load_polygon_rings_geojson(path.as_ref())?;
+        Ok(PolygonSet::from_rings(rings))
+    }
+
     /// Load polygons from an IRAP/RMS plain `X Y Z` file (rings separated by the
     /// `999.0` sentinel).
     pub fn load_irap_polygons(path: impl AsRef<Path>) -> Result<PolygonSet> {
         let rings = crate::io::xyz::load_polygons(path.as_ref())?;
+        Ok(PolygonSet::from_rings(rings))
+    }
+
+    /// Load polygons from an ESRI shapefile (pass the `.shp` path).
+    pub fn load_shapefile(path: impl AsRef<Path>) -> Result<PolygonSet> {
+        let rings = crate::io::vector::load_polygon_rings_shapefile(path.as_ref())?;
         Ok(PolygonSet::from_rings(rings))
     }
 

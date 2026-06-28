@@ -50,6 +50,15 @@ impl PointSet {
         Ok(PointSet::from_parts(coords, attrs))
     }
 
+    /// Load point features from a GeoJSON file. Each feature's numeric
+    /// `properties{}` become attribute columns (the union of all features'
+    /// numeric property names, NaN-filling features that lack one); string and
+    /// other non-numeric properties are ignored.
+    pub fn load_geojson(path: impl AsRef<Path>) -> Result<PointSet> {
+        let (coords, attrs) = crate::io::vector::load_point_set_geojson(path.as_ref())?;
+        Ok(PointSet::from_parts(coords, attrs))
+    }
+
     /// Load scattered points from an IRAP/RMS plain `X Y Z` file. No named
     /// attributes (the format carries none).
     pub fn load_irap_points(path: impl AsRef<Path>) -> Result<PointSet> {

@@ -7,6 +7,15 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- `PointSet` (`core`): scattered N×3 points with named `f64` attribute columns.
+  Loaders `load_csv` (named X/Y/Z columns; other numeric columns → attributes)
+  and `load_irap_points` (RMS plain `X Y Z`); ops `len`/`is_empty`/`filter`/
+  `attr`/`stats`/`bbox`/`nearest` (rstar R*-tree, areal). Gridding
+  `to_surface(geom, GridMethod)` with `GridMethod::{Nearest, InverseDistance,
+  MinimumCurvature}` — Nearest + IDW (p=2, exact at data) are full; minimum
+  curvature is a biharmonic (∇⁴z=0) SOR relaxation anchored at data nodes
+  (interior 13-point stencil, near-edge 5-point harmonic fallback). New deps:
+  `geo`, `rstar`.
 - Well logs (`core`): `Log` (MD-indexed curve, `new`/`len`/`view`) and
   `LogView<'a>` — a borrowed-or-owned (`Cow`) window with `stats`,
   `stats_weighted` (element-wise PV-weighting), `filter`, `at_md` (linear

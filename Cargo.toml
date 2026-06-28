@@ -31,6 +31,8 @@ ndarray = "0.17"
 indexmap = "2"
 las_rs = "0.2"
 csv = "1"
+geo = "0.33"
+rstar = "0.13"
 
 [features]
 default = []

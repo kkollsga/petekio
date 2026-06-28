@@ -7,6 +7,21 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- Python wheel (`py`, PyO3): grew the `petekio` bindings from the early
+  Surface+Stats layer to mirror `API.md` §"Python (PyO3) surface".
+  - `Surface`: `load_irap_classic`/`constant`/`save_irap_classic`, `sample`,
+    `resample`, element-wise math (`ln`/`log10`/`exp`/`sqrt`/`abs`/`powf`/
+    `clamp_min`/`clamp`), named surface↔surface forms (`plus`/`minus`/`times`/
+    `divided_by`) and the `+ - * /` operator overloads (scalar **and**
+    surface↔surface, raising on geometry mismatch; reflected scalar forms),
+    `thickness` (staticmethod), `stats`/`area_below`/`area_above`/
+    `volume_between`/`hypsometry`, attribute access via `surface.attr["name"]`
+    /`surface.attr(name)` (promotes to a `Surface`) + `attr_names`/`set_attr`,
+    and `geometry`/`ncol`/`nrow`/`rotation_deg`/`bbox` getters.
+  - `GridGeometry` (constructable) and `BBox` value types; `Stats` fields stay
+    read-only attributes with `percentile`.
+  - Numpy/`ndarray` exposure is out of scope (no numpy dependency): attribute
+    layers are returned as promoted `Surface`s, never raw arrays.
 - `GeoData` (`manager`): the load-once project substrate. Named, insertion-
   ordered collections under one `Unit`; `new`, fluent loaders returning `&T`
   (`load_surface` IRAP classic; `load_points`/`load_polygons` extension-

@@ -6,6 +6,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- Well geometry (`core`): `Station` and the `TrajectoryInput` survey variants
+  (`Xyz`/`MdIncAzi`/`Stations`/`Hold`/`Steer`), normalized to a positioned
+  `Trajectory` via the **minimum-curvature** method (dogleg β + ratio-factor with
+  a β→0 Taylor guard). `Trajectory` exposes `xyz`/`tvd`/`md_at_tvd`/`md_range`
+  with linear interpolation and shallowest-crossing TVD inversion.
+
 ## [0.1.0] - 2026-06-28
 
 ### Added

@@ -33,6 +33,17 @@ All notable changes to petekIO are recorded here. The format loosely follows
     `surface`/`points`/`polygons` (miss → `None`), `surfaces()`, and the `unit`
     getter. Points/polygons hand back lightweight views that re-resolve into
     the project; surfaces are deep-cloned owned copies.
+  - `Well`/`Interval`/`LogView`: `GeoData.load_well`/`well`/`wells` plus
+    `well.xyz`/`tvd`/`md_at_tvd`, `well.top(name)` → `Interval`,
+    `well.log(mnemonic)` → `LogView`; `Interval.top_md`/`base_md`/`name`/
+    `thickness_md`/`log`; `LogView.stats`/`values`/`md`/`at_md`/`len`. The
+    headline dynamic chain: `w.brent` → `Interval` and `w.brent.ntg` /
+    `w.brent.phie.mean` → `Stats` via `__getattr__` (unknown names fall back to
+    `AttributeError`). Wells are views into the project.
+  - `WellsView` broadcast (`geo.wells`): `filter(predicate)` (a Python callable
+    over `Well`), `tops(name)`, `iter()`/`len`, and `__getattr__` broadcast —
+    `geo.wells.tops("Brent").ntg` (or `geo.wells.brent.ntg`) yields a per-well
+    `list[Stats]`.
 - `GeoData` (`manager`): the load-once project substrate. Named, insertion-
   ordered collections under one `Unit`; `new`, fluent loaders returning `&T`
   (`load_surface` IRAP classic; `load_points`/`load_polygons` extension-

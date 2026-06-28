@@ -222,3 +222,97 @@ def test_geodata_points_polygons():
     geo.load_polygons("outline", SQUARE_GEOJSON)
     assert geo.polygons("outline").contains(0.5, 0.5)
     assert geo.polygons("missing") is None
+
+
+# --------------------------------------------------------------------------
+# Wells: geometry, tops/logs, and the dynamic __getattr__ chain
+# --------------------------------------------------------------------------
+
+
+def _geo_with_well():
+    geo = petekio.GeoData(unit="m")
+    geo.load_well("15/9-A1", (1200.0, 1500.0), 82.0, WELL_DIR)
+    return geo
+
+
+def test_well_geometry():
+    geo = _geo_with_well()
+    w = geo.well("15/9-A1")
+    assert w.id == "15/9-A1"
+    assert w.head == (1200.0, 1500.0)
+    assert w.kb == 82.0
+    # synthesized vertical trajectory: tvd = md - kb
+    x, y, z = w.xyz(2420.0)
+    assert math.isclose(x, 1200.0)
+    assert math.isclose(z, 2420.0 - 82.0)
+    assert math.isclose(w.tvd(2420.0), 2420.0 - 82.0)
+    assert geo.well("missing") is None
+
+
+def test_well_top_log_explicit():
+    geo = _geo_with_well()
+    w = geo.well("15/9-A1")
+    brent = w.top("Brent")
+    assert brent is not None
+    assert math.isclose(brent.top_md, 2400.0)
+    assert math.isclose(brent.base_md, 2450.0)
+    assert math.isclose(brent.thickness_md(), 50.0)
+    lv = brent.log("NTG")
+    assert lv is not None
+    st = lv.stats()
+    assert st.count == 5
+    assert math.isclose(st.mean, 0.3, rel_tol=1e-9)
+    assert len(lv.md()) == 5
+    assert lv.values()[0] == 0.1
+    assert w.top("Nope") is None
+
+
+def test_well_getattr_chain():
+    geo = _geo_with_well()
+    w = geo.well("15/9-A1")
+    # w.brent -> Interval; w.brent.ntg -> Stats
+    ntg = w.brent.ntg
+    assert isinstance(ntg, petekio.Stats)
+    assert ntg.count == 5
+    assert math.isclose(ntg.mean, 0.3, rel_tol=1e-9)
+    # w.brent.ntg.mean (chained attribute)
+    assert math.isclose(w.brent.ntg.mean, 0.3, rel_tol=1e-9)
+    # unknown top -> AttributeError
+    with pytest.raises(AttributeError):
+        _ = w.nonexistent_top
+    # unknown log on a real interval -> AttributeError
+    with pytest.raises(AttributeError):
+        _ = w.brent.no_such_log
+
+
+def test_well_full_log_view():
+    geo = _geo_with_well()
+    w = geo.well("15/9-A1")
+    gr = w.log("GR")
+    assert gr is not None
+    # GR has a NULL sample -> stats skip it
+    assert gr.stats().count == 4
+    assert w.log("missing") is None
+
+
+def test_wells_broadcast():
+    geo = petekio.GeoData(unit="m")
+    geo.load_well("15/9-A1", (1200.0, 1500.0), 82.0, WELL_DIR)
+    geo.load_well("only-logs", (0.0, 0.0), 0.0, LAS)
+    wells = geo.wells
+    assert len(wells) == 2
+    # filter by a Python predicate over Well
+    east = wells.filter(lambda w: w.head[0] > 1000.0)
+    assert east.len() == 1
+    assert east.iter()[0].id == "15/9-A1"
+    # tops() narrows to wells carrying the marker
+    brent = wells.tops("Brent")
+    assert brent.len() == 1
+    # broadcast a log over the narrowed view -> list[Stats]
+    means = [s.mean for s in brent.ntg]
+    assert len(means) == 1
+    assert math.isclose(means[0], 0.3, rel_tol=1e-9)
+    # attribute-style top selection then log broadcast
+    stats_list = geo.wells.brent.ntg
+    assert len(stats_list) == 1
+    assert math.isclose(stats_list[0].mean, 0.3, rel_tol=1e-9)

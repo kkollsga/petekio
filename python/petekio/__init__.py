@@ -10,10 +10,14 @@ from ._petekio import (
     BBox,
     GeoData,
     GridGeometry,
+    Interval,
+    LogView,
     PointSet,
     PolygonSet,
     Stats,
     Surface,
+    Well,
+    WellsView,
     __version__,
 )
 
@@ -21,9 +25,13 @@ __all__ = [
     "BBox",
     "GeoData",
     "GridGeometry",
+    "Interval",
+    "LogView",
     "PointSet",
     "PolygonSet",
     "Stats",
     "Surface",
+    "Well",
+    "WellsView",
     "__version__",
 ]

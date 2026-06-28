@@ -16,6 +16,7 @@ mod geometry;
 mod points;
 mod stats;
 mod surface;
+mod well;
 
 use petekio::{GeoError, GridMethod};
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -70,6 +71,10 @@ fn _petekio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<surface::AttrAccessor>()?;
     m.add_class::<points::PointSet>()?;
     m.add_class::<points::PolygonSet>()?;
+    m.add_class::<well::Well>()?;
+    m.add_class::<well::Interval>()?;
+    m.add_class::<well::LogView>()?;
     m.add_class::<geodata::GeoData>()?;
+    m.add_class::<geodata::WellsView>()?;
     Ok(())
 }

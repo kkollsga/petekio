@@ -7,9 +7,12 @@
 //! substrate — see `well.rs`.
 
 use crate::points::{PointSet, PolygonSet};
+use crate::stats::Stats;
 use crate::surface::{clone_surface, Surface};
+use crate::well::Well;
 use crate::{parse_unit, to_pyerr};
 use petekio::GeoData as RsGeoData;
+use pyo3::exceptions::PyAttributeError;
 use pyo3::prelude::*;
 
 /// A load-once subsurface project under one declared length unit.
@@ -94,11 +97,171 @@ impl GeoData {
             .then(|| PolygonSet::view(slf.clone().unbind(), name.to_string()))
     }
 
+    /// Load a well from `files` (a per-well directory or single file) under
+    /// `id`, returning a view. `head` is the wellhead `(x, y)`; `kb` the datum.
+    #[pyo3(signature = (id, head, kb, files))]
+    fn load_well(
+        slf: Bound<'_, Self>,
+        id: &str,
+        head: (f64, f64),
+        kb: f64,
+        files: &str,
+    ) -> PyResult<Well> {
+        slf.borrow_mut()
+            .inner
+            .load_well(id, head, kb, files)
+            .map_err(to_pyerr)?;
+        Ok(Well::view(slf.clone().unbind(), id.to_string()))
+    }
+
+    /// The well stored under `id` (view), or `None`.
+    fn well(slf: Bound<'_, Self>, id: &str) -> Option<Well> {
+        slf.borrow()
+            .inner
+            .well(id)
+            .is_some()
+            .then(|| Well::view(slf.clone().unbind(), id.to_string()))
+    }
+
     /// All surfaces in insertion order, as owned copies.
     fn surfaces(&self) -> Vec<Surface> {
         self.inner
             .surfaces()
             .map(|s| Surface::wrap(clone_surface(s)))
             .collect()
+    }
+
+    /// A broadcastable, filterable view over all wells (insertion order).
+    #[getter]
+    fn wells(slf: Bound<'_, Self>) -> WellsView {
+        let ids: Vec<String> = slf
+            .borrow()
+            .inner
+            .wells()
+            .iter()
+            .map(|w| w.id.clone())
+            .collect();
+        WellsView::new(slf.clone().unbind(), ids, None)
+    }
+}
+
+/// A lightweight, broadcastable, filterable view over a project's wells.
+///
+/// Holds the owning `GeoData` plus the well ids in view. `filter`/`tops` narrow
+/// the set; `__getattr__` broadcasts: with no pending top it resolves a top name
+/// (returning a narrowed view), and after `tops(name)` it resolves a log
+/// mnemonic to a per-well `list[Stats]`.
+#[pyclass(name = "WellsView")]
+pub struct WellsView {
+    geo: Py<GeoData>,
+    ids: Vec<String>,
+    /// The top set by a prior `tops(...)`/attribute step, if any.
+    current_top: Option<String>,
+}
+
+impl WellsView {
+    fn new(geo: Py<GeoData>, ids: Vec<String>, current_top: Option<String>) -> WellsView {
+        WellsView {
+            geo,
+            ids,
+            current_top,
+        }
+    }
+}
+
+#[pymethods]
+impl WellsView {
+    fn __len__(&self) -> usize {
+        self.ids.len()
+    }
+
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    /// The wells in this view as `Well` objects (insertion order).
+    fn iter(&self, py: Python<'_>) -> Vec<Well> {
+        self.ids
+            .iter()
+            .map(|id| Well::view(self.geo.clone_ref(py), id.clone()))
+            .collect()
+    }
+
+    /// A new view keeping only wells for which `pred(well)` is truthy.
+    fn filter(&self, py: Python<'_>, pred: &Bound<'_, PyAny>) -> PyResult<WellsView> {
+        let mut kept = Vec::new();
+        for id in &self.ids {
+            let w = Well::view(self.geo.clone_ref(py), id.clone());
+            if pred.call1((w,))?.is_truthy()? {
+                kept.push(id.clone());
+            }
+        }
+        Ok(WellsView::new(
+            self.geo.clone_ref(py),
+            kept,
+            self.current_top.clone(),
+        ))
+    }
+
+    /// A new view narrowed to wells that have the named top; remembers the top
+    /// so a following attribute access resolves a log to a per-well `Stats`.
+    fn tops(&self, py: Python<'_>, name: &str) -> WellsView {
+        let g = self.geo.borrow(py);
+        let kept: Vec<String> = self
+            .ids
+            .iter()
+            .filter(|id| {
+                g.inner
+                    .well(id)
+                    .map(|w| w.top(name).is_some())
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        drop(g);
+        WellsView::new(self.geo.clone_ref(py), kept, Some(name.to_string()))
+    }
+
+    /// Broadcast attribute access. With no pending top, `name` is a top marker →
+    /// a narrowed view (like `tops`). After `tops(name)`, `name` is a log
+    /// mnemonic → a per-well `list[Stats]` over that top's interval.
+    fn __getattr__(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+        if name.starts_with('_') {
+            return Err(PyAttributeError::new_err(name.to_string()));
+        }
+        match &self.current_top {
+            None => {
+                let view = self.tops(py, name);
+                if view.ids.is_empty() {
+                    return Err(PyAttributeError::new_err(format!(
+                        "no well in this view carries top '{name}'"
+                    )));
+                }
+                Ok(view.into_pyobject(py)?.into_any().unbind())
+            }
+            Some(top) => {
+                let g = self.geo.borrow(py);
+                let mut out: Vec<Stats> = Vec::new();
+                for id in &self.ids {
+                    if let Some(stats) = g
+                        .inner
+                        .well(id)
+                        .and_then(|w| w.top(top))
+                        .and_then(|iv| iv.log(name).map(|lv| lv.stats()))
+                    {
+                        out.push(Stats::new(stats));
+                    }
+                }
+                Ok(out.into_pyobject(py)?.into_any().unbind())
+            }
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("WellsView(len={})", self.ids.len())
     }
 }

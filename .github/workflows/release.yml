@@ -50,8 +50,9 @@ jobs:
         include:
           - { runner: ubuntu-latest, target: x86_64 }
           - { runner: ubuntu-latest, target: aarch64 }
-          - { runner: macos-14, target: aarch64 }
-          - { runner: macos-13, target: x86_64 }
+          # One macOS job: a universal2 wheel (x86_64 + arm64) built on the
+          # Apple-Silicon runner — no separate Intel (macos-13) runner needed.
+          - { runner: macos-14, target: universal2-apple-darwin }
           - { runner: windows-latest, target: x64 }
     steps:
       - uses: actions/checkout@v4

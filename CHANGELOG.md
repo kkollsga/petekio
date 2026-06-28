@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-28
+
 ### Added
 - Python wheel (`py`, PyO3): grew the `petekio` bindings from the early
   Surface+Stats layer to mirror `API.md` §"Python (PyO3) surface".

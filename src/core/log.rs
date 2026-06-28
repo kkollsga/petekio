@@ -81,9 +81,8 @@ impl Log {
     }
 
     /// A borrowed view clipped to the half-open MD window `[top_md, base_md)`.
-    /// Returns an empty view when the window selects no samples.
-    // Consumed by `Interval::log` (tops module, Phase 4B); exercised here in tests.
-    #[allow(dead_code)]
+    /// Returns an empty view when the window selects no samples. Consumed by
+    /// [`Interval::log`](crate::core::tops::Interval::log).
     pub(crate) fn clip(&self, top_md: f64, base_md: f64) -> LogView<'_> {
         let md = self.md_slice();
         // md is ascending: first index ≥ top_md … first index ≥ base_md.

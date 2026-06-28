@@ -6,8 +6,14 @@
 //! delegate position queries (`xyz`/`tvd`/`md_at_tvd`) to the main/active
 //! trajectory.
 //!
-//! Logs and tops (the Phase-4 surface) are intentionally absent here.
+//! Each sidetrack also owns its [`Log`]s and formation [`Top`]s: `add_log`/
+//! `add_tops` ingest them, `log` returns a full-curve [`LogView`], and `top`
+//! resolves a marker into the [`Interval`] it names (base = the next top's MD by
+//! sorted MD, else the active trajectory's total depth). `Well` delegates `top`/
+//! `log` to the main bore.
 
+use crate::core::log::{Log, LogView};
+use crate::core::tops::{Interval, Top};
 use crate::core::trajectory::{Trajectory, TrajectoryInput};
 use crate::foundation::{GeoError, Point3, Result};
 use indexmap::IndexMap;
@@ -80,6 +86,16 @@ impl Well {
     pub fn md_at_tvd(&self, tvd: f64) -> Option<f64> {
         self.main().md_at_tvd(tvd)
     }
+
+    /// The interval named by top `name` on the main bore, or `None`.
+    pub fn top(&self, name: &str) -> Option<Interval<'_>> {
+        self.main().top(name)
+    }
+
+    /// A full-curve view of log `mnemonic` on the main bore, or `None`.
+    pub fn log(&self, mnemonic: &str) -> Option<LogView<'_>> {
+        self.main().log(mnemonic)
+    }
 }
 
 /// A single bore: an ordered set of trajectories with one active. Carries the
@@ -91,6 +107,10 @@ pub struct Sidetrack {
     kb: f64,
     trajectories: Vec<Trajectory>,
     active: usize,
+    logs: Vec<Log>,
+    /// Formation tops, kept sorted ascending by MD so the next top resolves a
+    /// base. Invariant maintained by [`add_tops`](Sidetrack::add_tops).
+    tops: Vec<Top>,
 }
 
 impl Sidetrack {
@@ -102,6 +122,8 @@ impl Sidetrack {
             kb,
             trajectories: Vec::new(),
             active: 0,
+            logs: Vec::new(),
+            tops: Vec::new(),
         }
     }
 
@@ -158,6 +180,45 @@ impl Sidetrack {
         self.trajectories
             .get(self.active)
             .and_then(|t| t.md_at_tvd(tvd))
+    }
+
+    /// Add a log to this sidetrack.
+    pub fn add_log(&mut self, log: Log) {
+        self.logs.push(log);
+    }
+
+    /// Add formation tops, keeping the set sorted ascending by MD (so the next
+    /// top resolves an interval base).
+    pub fn add_tops(&mut self, tops: Vec<Top>) {
+        self.tops.extend(tops);
+        self.tops.sort_by(|a, b| a.md.total_cmp(&b.md));
+    }
+
+    /// The interval named by top `name` (case-insensitive): `[top.md, base)`,
+    /// where `base` is the next top's MD by sorted MD, or — for the deepest top
+    /// — total depth (the active trajectory's `md_range().1`). `None` if no top
+    /// matches.
+    pub fn top(&self, name: &str) -> Option<Interval<'_>> {
+        let i = self
+            .tops
+            .iter()
+            .position(|t| t.name.eq_ignore_ascii_case(name))?;
+        let top = &self.tops[i];
+        let base = self
+            .tops
+            .get(i + 1)
+            .map(|n| n.md)
+            .or_else(|| self.trajectories.get(self.active).map(|t| t.md_range().1))
+            .unwrap_or(f64::NAN);
+        Some(Interval::new(top.name.clone(), top.md, base, &self.logs))
+    }
+
+    /// A full-curve view of log `mnemonic` (case-insensitive), or `None`.
+    pub fn log(&self, mnemonic: &str) -> Option<LogView<'_>> {
+        self.logs
+            .iter()
+            .find(|l| l.mnemonic.eq_ignore_ascii_case(mnemonic))
+            .map(|l| l.view())
     }
 }
 
@@ -218,6 +279,77 @@ mod tests {
         assert_relative_eq!(p.z, 400.0 - 30.0, epsilon = 1e-9); // tvd = md - kb
         assert_relative_eq!(w.tvd(400.0).unwrap(), 370.0, epsilon = 1e-9);
         assert_relative_eq!(w.md_at_tvd(370.0).unwrap(), 400.0, epsilon = 1e-9);
+    }
+
+    fn ntg_log() -> Log {
+        // NTG sampled every 10 MD from 2400 to 2500.
+        Log::new(
+            "NTG",
+            "v/v",
+            vec![
+                2400.0, 2410.0, 2420.0, 2430.0, 2440.0, 2450.0, 2460.0, 2470.0, 2480.0, 2490.0,
+                2500.0,
+            ],
+            vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.0],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn top_resolves_interval_to_next_top() {
+        let mut w = Well::new("w", (0.0, 0.0), 0.0);
+        let st = w.sidetrack_mut("");
+        st.add_trajectory(vertical(0.0, 3000.0)).unwrap();
+        st.add_tops(vec![Top::new("Brent", 2400.0), Top::new("Dunlin", 2450.0)]);
+        st.add_log(ntg_log());
+
+        let brent = w.top("Brent").unwrap();
+        assert_eq!(brent.top_md, 2400.0);
+        assert_eq!(brent.base_md, 2450.0); // next top
+        assert_eq!(brent.thickness_md(), 50.0);
+
+        // NTG clipped to [2400, 2450): samples 2400..2440 → 0.1..0.5
+        let v = brent.log("NTG").unwrap();
+        assert_eq!(v.md(), &[2400.0, 2410.0, 2420.0, 2430.0, 2440.0]);
+        let s = v.stats();
+        assert_eq!(s.count, 5);
+        assert_relative_eq!(s.mean, 0.3, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn deepest_top_runs_to_td() {
+        let mut w = Well::new("w", (0.0, 0.0), 0.0);
+        let st = w.sidetrack_mut("");
+        st.add_trajectory(vertical(0.0, 2500.0)).unwrap(); // TD = 2500
+        st.add_tops(vec![Top::new("Brent", 2400.0), Top::new("Dunlin", 2450.0)]);
+        let dunlin = w.top("Dunlin").unwrap();
+        assert_eq!(dunlin.top_md, 2450.0);
+        assert_eq!(dunlin.base_md, 2500.0); // last top → TD
+    }
+
+    #[test]
+    fn ergonomic_chain_stats() {
+        // well.top("Brent")?.log("NTG")?.stats()
+        let mut w = Well::new("15/9-A1", (0.0, 0.0), 0.0);
+        let st = w.sidetrack_mut("");
+        st.add_trajectory(vertical(0.0, 3000.0)).unwrap();
+        st.add_tops(vec![Top::new("Brent", 2400.0), Top::new("Dunlin", 2450.0)]);
+        st.add_log(ntg_log());
+        let stats = w.top("Brent").unwrap().log("NTG").unwrap().stats();
+        assert_relative_eq!(stats.mean, 0.3, epsilon = 1e-12);
+        // Case-insensitive top + log lookup.
+        assert!(w.top("brent").unwrap().log("ntg").is_some());
+        assert!(w.top("Nope").is_none());
+    }
+
+    #[test]
+    fn well_log_returns_full_curve() {
+        let mut w = Well::new("w", (0.0, 0.0), 0.0);
+        let st = w.sidetrack_mut("");
+        st.add_log(ntg_log());
+        let v = w.log("NTG").unwrap();
+        assert_eq!(v.md().len(), 11);
+        assert!(w.log("GR").is_none());
     }
 
     #[test]

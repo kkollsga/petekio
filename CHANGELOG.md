@@ -11,6 +11,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `LogView<'a>` — a borrowed-or-owned (`Cow`) window with `stats`,
   `stats_weighted` (element-wise PV-weighting), `filter`, `at_md` (linear
   interpolation), `resample(step)`, `values`/`md`. NaN = undefined throughout.
+- Tops + intervals (`core`): `Top` (name + MD) and `Interval<'a>` (`log` clips a
+  curve to `[top_md, base_md)`, `thickness_md`). Wired into `Sidetrack`
+  (`add_log`/`add_tops`/`top`/`log`) and `Well` (delegating `top`/`log` to the
+  main bore): tops sort by MD, the interval base is the next top's MD or total
+  depth, enabling the `well.top("Brent")?.log("NTG")?.stats()` chain.
 - Well geometry (`core`): `Station` and the `TrajectoryInput` survey variants
   (`Xyz`/`MdIncAzi`/`Stations`/`Hold`/`Steer`), normalized to a positioned
   `Trajectory` via the **minimum-curvature** method (dogleg β + ratio-factor with

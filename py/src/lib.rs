@@ -11,17 +11,51 @@
 //! dependency); attribute layers are returned as promoted `Surface`s and curve
 //! samples as plain `list[float]`.
 
+mod geodata;
 mod geometry;
+mod points;
 mod stats;
 mod surface;
 
-use petekio::GeoError;
-use pyo3::exceptions::PyValueError;
+use petekio::{GeoError, GridMethod};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 /// Convert a Rust `GeoError` into a Python `ValueError`.
 pub(crate) fn to_pyerr(e: GeoError) -> PyErr {
     PyValueError::new_err(e.to_string())
+}
+
+/// Parse a project length unit from a string (`"ft"`/`"feet"` or
+/// `"m"`/`"metre(s)"`/`"meter(s)"`, case-insensitive).
+pub(crate) fn parse_unit(s: &str) -> PyResult<petekio::Unit> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "ft" | "feet" | "foot" => Ok(petekio::Unit::Feet),
+        "m" | "metre" | "metres" | "meter" | "meters" => Ok(petekio::Unit::Metres),
+        other => Err(PyValueError::new_err(format!(
+            "unknown unit '{other}' (expected 'ft' or 'm')"
+        ))),
+    }
+}
+
+/// Parse a gridding method name (`"nearest"`, `"idw"`/`"inverse_distance"`, or
+/// `"min_curvature"`/`"minimum_curvature"`, case-insensitive).
+pub(crate) fn parse_grid_method(s: &str) -> PyResult<GridMethod> {
+    match s
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_")
+        .as_str()
+    {
+        "nearest" => Ok(GridMethod::Nearest),
+        "idw" | "inverse_distance" | "inversedistance" => Ok(GridMethod::InverseDistance),
+        "min_curvature" | "minimum_curvature" | "mincurvature" | "minimumcurvature" => {
+            Ok(GridMethod::MinimumCurvature)
+        }
+        other => Err(PyTypeError::new_err(format!(
+            "unknown grid method '{other}' (expected 'nearest', 'idw', or 'min_curvature')"
+        ))),
+    }
 }
 
 /// The compiled extension module (`petekio._petekio`); re-exported by the
@@ -34,5 +68,8 @@ fn _petekio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<geometry::GridGeometry>()?;
     m.add_class::<surface::Surface>()?;
     m.add_class::<surface::AttrAccessor>()?;
+    m.add_class::<points::PointSet>()?;
+    m.add_class::<points::PolygonSet>()?;
+    m.add_class::<geodata::GeoData>()?;
     Ok(())
 }

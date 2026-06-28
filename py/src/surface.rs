@@ -13,6 +13,21 @@ use petekio::Surface as RsSurface;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 
+/// Deep-copy a Rust surface (primary layer + all attribute layers) via the
+/// public API — `Surface` is not `Clone`, but every binding hand-back is owned.
+pub(crate) fn clone_surface(s: &RsSurface) -> RsSurface {
+    let mut out = RsSurface::new(s.geom.clone(), s.values().clone())
+        .expect("surface geometry matches its own values");
+    let names: Vec<String> = s.attr_names().iter().map(|n| n.to_string()).collect();
+    for name in names {
+        if let Some(a) = s.attr(&name) {
+            out.set_attr(&name, a.clone())
+                .expect("attribute matches surface geometry");
+        }
+    }
+    out
+}
+
 /// A regular gridded surface (IRAP/RMS model): a primary value layer plus named
 /// attribute layers on the same geometry. `NaN` = undefined.
 #[pyclass(name = "Surface")]

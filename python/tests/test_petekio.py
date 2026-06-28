@@ -144,3 +144,81 @@ def test_stats_fields():
     for f in ("count", "mean", "min", "max", "std", "sum", "p10", "p50", "p90"):
         getattr(st, f)  # read-only attributes exist
     assert "Stats(" in repr(st)
+
+
+# --------------------------------------------------------------------------
+# PointSet / PolygonSet
+# --------------------------------------------------------------------------
+
+
+def test_pointset_geojson():
+    p = petekio.PointSet.load_geojson(POINTS_GEOJSON)
+    assert len(p) == 3
+    poro = p.attr("poro")
+    assert poro == [0.10, 0.20, 0.30]
+    assert p.attr("missing") is None
+    st = p.stats("poro")
+    assert st.count == 3
+    assert math.isclose(st.mean, 0.20)
+    b = p.bbox()
+    assert b.xmin == 0.0 and b.xmax == 10.0
+    # nearest to (9, 1) -> index 1 (the point at (10, 0))
+    assert p.nearest(9.0, 1.0) == 1
+
+
+def test_pointset_to_surface():
+    p = petekio.PointSet.load_geojson(POINTS_GEOJSON)
+    g = petekio.GridGeometry(0.0, 0.0, 5.0, 5.0, 3, 3)
+    surf = p.to_surface(g, "idw")
+    assert surf.ncol == 3 and surf.nrow == 3
+    # nearest method also valid
+    surf2 = p.to_surface(g, "nearest")
+    assert surf2.stats().count > 0
+    with pytest.raises(TypeError):
+        p.to_surface(g, "bogus")
+
+
+def test_polygonset_geojson():
+    poly = petekio.PolygonSet.load_geojson(SQUARE_GEOJSON)
+    assert math.isclose(poly.area(), 1.0)
+    assert poly.contains(0.5, 0.5)
+    assert not poly.contains(2.0, 2.0)
+    b = poly.bbox()
+    assert b.xmin == 0.0 and b.xmax == 1.0
+
+
+def test_polygonset_clip():
+    poly = petekio.PolygonSet.load_geojson(SQUARE_GEOJSON)
+    g = petekio.GridGeometry(0.0, 0.0, 0.5, 0.5, 3, 3)
+    s = petekio.Surface.constant(g, 5.0)
+    clipped = poly.clip(s)
+    # only nodes strictly inside the unit square keep their value
+    assert clipped.stats().count >= 1
+    assert clipped.stats().count <= s.stats().count
+
+
+# --------------------------------------------------------------------------
+# GeoData (surfaces / points / polygons)
+# --------------------------------------------------------------------------
+
+
+def test_geodata_surfaces():
+    geo = petekio.GeoData(unit="ft")
+    assert geo.unit == "ft"
+    top = geo.load_surface("top", IRAP)
+    assert top.ncol == 3
+    assert geo.surface("top") is not None
+    assert geo.surface("missing") is None
+    assert len(geo.surfaces()) == 1
+
+
+def test_geodata_points_polygons():
+    geo = petekio.GeoData(unit="m")
+    pts = geo.load_points("samples", POINTS_GEOJSON)
+    assert len(pts) == 3
+    # round-trip via getter (a view into the project)
+    assert geo.points("samples").stats("poro").count == 3
+    assert geo.points("missing") is None
+    geo.load_polygons("outline", SQUARE_GEOJSON)
+    assert geo.polygons("outline").contains(0.5, 0.5)
+    assert geo.polygons("missing") is None

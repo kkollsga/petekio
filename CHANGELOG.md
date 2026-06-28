@@ -22,6 +22,17 @@ All notable changes to petekIO are recorded here. The format loosely follows
     read-only attributes with `percentile`.
   - Numpy/`ndarray` exposure is out of scope (no numpy dependency): attribute
     layers are returned as promoted `Surface`s, never raw arrays.
+  - `PointSet`: `load_csv`/`load_geojson`/`load_irap_points` classmethods,
+    `len`, `attr` (→ `list[float]`), `stats`, `bbox`, `nearest`, and
+    `to_surface(geom, method)` with `method` a string (`"nearest"`/`"idw"`/
+    `"min_curvature"`, IDW default).
+  - `PolygonSet`: `load_geojson`/`load_irap_polygons`/`load_shapefile`,
+    `contains`, `area`, `bbox`, `clip`.
+  - `GeoData(unit="ft"|"m")`: `load_surface` (→ owned `Surface`),
+    `load_points`/`load_polygons` (→ views), named getters
+    `surface`/`points`/`polygons` (miss → `None`), `surfaces()`, and the `unit`
+    getter. Points/polygons hand back lightweight views that re-resolve into
+    the project; surfaces are deep-cloned owned copies.
 - `GeoData` (`manager`): the load-once project substrate. Named, insertion-
   ordered collections under one `Unit`; `new`, fluent loaders returning `&T`
   (`load_surface` IRAP classic; `load_points`/`load_polygons` extension-

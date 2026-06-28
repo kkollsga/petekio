@@ -8,7 +8,10 @@ broadcastable wells view. See https://github.com/kkollsga/petekio.
 
 from ._petekio import (
     BBox,
+    GeoData,
     GridGeometry,
+    PointSet,
+    PolygonSet,
     Stats,
     Surface,
     __version__,
@@ -16,7 +19,10 @@ from ._petekio import (
 
 __all__ = [
     "BBox",
+    "GeoData",
     "GridGeometry",
+    "PointSet",
+    "PolygonSet",
     "Stats",
     "Surface",
     "__version__",

@@ -7,6 +7,10 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- Well logs (`core`): `Log` (MD-indexed curve, `new`/`len`/`view`) and
+  `LogView<'a>` — a borrowed-or-owned (`Cow`) window with `stats`,
+  `stats_weighted` (element-wise PV-weighting), `filter`, `at_md` (linear
+  interpolation), `resample(step)`, `values`/`md`. NaN = undefined throughout.
 - Well geometry (`core`): `Station` and the `TrajectoryInput` survey variants
   (`Xyz`/`MdIncAzi`/`Stations`/`Hold`/`Steer`), normalized to a positioned
   `Trajectory` via the **minimum-curvature** method (dogleg β + ratio-factor with

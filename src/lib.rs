@@ -30,3 +30,4 @@ pub use core::{
     Trajectory, TrajectoryInput, Well,
 };
 pub use foundation::{BBox, GeoError, GridGeometry, Point3, Result, Stats, Unit};
+pub use manager::{GeoData, WellsView};

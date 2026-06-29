@@ -125,6 +125,8 @@ impl Well {
     pub fn md_at_tvd(&self, tvd: f64) -> Option<f64>;
     pub fn top(&self, name: &str) -> Option<Interval>;
     pub fn log(&self, mnemonic: &str) -> Option<LogView>;
+    pub fn logs(&self) -> impl Iterator<Item = &Log>;   // all main-bore logs, insertion order
+    pub fn mnemonics(&self) -> Vec<&str>;
 }
 
 pub struct Sidetrack { pub label: String /* trajectories, logs, tops private */ }
@@ -138,6 +140,7 @@ impl Sidetrack {
     pub fn xyz(&self, md: f64) -> Option<Point3>;
     pub fn top(&self, name: &str) -> Option<Interval>;
     pub fn log(&self, mnemonic: &str) -> Option<LogView>;
+    pub fn logs(&self) -> impl Iterator<Item = &Log>;   // all logs on this bore, insertion order
 }
 
 pub struct Station { pub md: f64, pub inc_deg: f64, pub azi_deg: f64 }

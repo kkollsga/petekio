@@ -16,6 +16,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
   the `with_provenance` builder.
 - `Unit::area_to_acres` — planar area (m²/ft²) → acres, backing
   `reservoir_area_acres`.
+- `Well::logs()`/`Well::mnemonics()` and `Sidetrack::logs()` — enumerate every
+  curve on a bore (previously curves were only fetchable by mnemonic).
 
 ## [0.2.0] - 2026-06-28
 

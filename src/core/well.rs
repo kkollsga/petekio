@@ -96,6 +96,16 @@ impl Well {
     pub fn log(&self, mnemonic: &str) -> Option<LogView<'_>> {
         self.main().log(mnemonic)
     }
+
+    /// All logs on the main bore, in insertion order.
+    pub fn logs(&self) -> impl Iterator<Item = &Log> {
+        self.main().logs()
+    }
+
+    /// The mnemonics of all main-bore logs, in insertion order.
+    pub fn mnemonics(&self) -> Vec<&str> {
+        self.main().logs().map(|l| l.mnemonic.as_str()).collect()
+    }
 }
 
 /// A single bore: an ordered set of trajectories with one active. Carries the
@@ -220,6 +230,13 @@ impl Sidetrack {
             .find(|l| l.mnemonic.eq_ignore_ascii_case(mnemonic))
             .map(|l| l.view())
     }
+
+    /// All logs on this bore, in insertion order. Lets a consumer enumerate
+    /// every curve (e.g. to assemble model-ready well curves) rather than only
+    /// fetch one by mnemonic.
+    pub fn logs(&self) -> impl Iterator<Item = &Log> {
+        self.logs.iter()
+    }
 }
 
 #[cfg(test)]
@@ -325,6 +342,16 @@ mod tests {
         let dunlin = w.top("Dunlin").unwrap();
         assert_eq!(dunlin.top_md, 2450.0);
         assert_eq!(dunlin.base_md, 2500.0); // last top → TD
+    }
+
+    #[test]
+    fn enumerate_logs_and_mnemonics() {
+        let mut w = Well::new("w", (0.0, 0.0), 0.0);
+        let st = w.sidetrack_mut("");
+        st.add_log(ntg_log());
+        st.add_log(Log::new("GR", "GAPI", vec![2400.0, 2410.0], vec![40.0, 60.0]).unwrap());
+        assert_eq!(w.logs().count(), 2);
+        assert_eq!(w.mnemonics(), vec!["NTG", "GR"]); // insertion order
     }
 
     #[test]

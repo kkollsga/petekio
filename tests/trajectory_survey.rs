@@ -51,6 +51,28 @@ fn min_curvature_reproduces_survey_table() {
 }
 
 #[test]
+fn mid_station_tvd_matches_arc_ground_truth() {
+    // Ground-truth RKB TVD (densified min-curvature reference) at mid-segment MDs.
+    // petekIO must follow the arc, not lerp node positions (which was ~40 m off).
+    let w = survey_well();
+    let kb = 27.3;
+    let truth = [
+        (1655.81395, 1624.59611),
+        (1769.76744, 1709.51138),
+        (1851.16279, 1762.11764),
+        (2245.0, 1976.88204),
+        (2365.0, 2027.57597),
+    ];
+    for (md, tvd_rkb) in truth {
+        let got = w.tvd(md).unwrap() + kb;
+        assert!(
+            (got - tvd_rkb).abs() < 0.05,
+            "MD {md}: TVD {got} vs {tvd_rkb}"
+        );
+    }
+}
+
+#[test]
 fn vertical_section_is_exact() {
     // Above the first build, tvd = md - kb (the degenerate vertical case).
     let w = survey_well();

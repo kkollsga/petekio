@@ -158,7 +158,7 @@ pub enum TrajectoryInput {
 pub struct Trajectory { /* normalized positioned path */ }
 impl Trajectory {
     pub fn from_input(input: TrajectoryInput, head: (f64, f64), kb: f64) -> Result<Trajectory>;  // standalone build (min-curvature)
-    pub fn xyz(&self, md: f64) -> Option<Point3>;   // linear interpolation between survey-station nodes
+    pub fn xyz(&self, md: f64) -> Option<Point3>;   // minimum-curvature arc interpolation between stations
     pub fn tvd(&self, md: f64) -> Option<f64>;
     pub fn md_at_tvd(&self, tvd: f64) -> Option<f64>;
     pub fn md_range(&self) -> (f64, f64);

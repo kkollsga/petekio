@@ -13,6 +13,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
   head=(x, y), kb=…)` plus `xyz` / `tvd` / `md_at_tvd` / `md_range` — directional
   surveys can now be built and queried directly from Python.
 
+### Fixed
+- `Trajectory::xyz`/`tvd` now interpolate along the **minimum-curvature arc**
+  between survey stations (slerp of station tangents + partial dogleg) instead of
+  straight-lining between station nodes. Mid-station TVD was previously off by up
+  to ~40 m in build sections; it now matches an independent survey reference to
+  <0.05 m. (`Xyz` paths still use straight-line interpolation.)
+
 ## [0.2.1] - 2026-06-29
 
 ### Added

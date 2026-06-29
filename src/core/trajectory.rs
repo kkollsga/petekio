@@ -56,11 +56,15 @@ pub enum TrajectoryInput {
     },
 }
 
-/// One positioned node on the path.
+/// One positioned node on the path. `dir` is the unit tangent
+/// `[north, east, down]` from the station's inc/azi, present for survey-derived
+/// nodes (it drives arc-consistent interpolation between stations) and `None`
+/// for explicit `Xyz` paths (which fall back to straight-line interpolation).
 #[derive(Debug, Clone, Copy)]
 struct Node {
     md: f64,
     p: Point3,
+    dir: Option<[f64; 3]>,
 }
 
 /// A normalized, positioned well path: a monotone `md → (x, y, z)` curve with
@@ -112,7 +116,9 @@ impl Trajectory {
     }
 
     /// Interpolated position at measured depth `md`, or `None` outside the
-    /// path's `md_range`. Linear interpolation between bracketing nodes.
+    /// path's `md_range`. Between two survey stations the position is taken along
+    /// the **minimum-curvature arc** (slerp of the station tangents); an explicit
+    /// `Xyz` path (no tangents) falls back to straight-line interpolation.
     pub fn xyz(&self, md: f64) -> Option<Point3> {
         let (lo, hi) = self.md_range();
         if md.is_nan() || md < lo || md > hi {
@@ -125,7 +131,11 @@ impl Trajectory {
                 if span <= 0.0 {
                     return Some(a.p);
                 }
-                return Some(lerp3(a.p, b.p, (md - a.md) / span));
+                let f = (md - a.md) / span;
+                return Some(match (a.dir, b.dir) {
+                    (Some(t1), Some(t2)) => arc_point(a.p, t1, t2, f, span),
+                    _ => lerp3(a.p, b.p, f),
+                });
             }
         }
         // Single-node path: only the exact MD resolves.
@@ -170,6 +180,7 @@ fn min_curvature(stations: &[Station], head: (f64, f64), kb: f64) -> Result<Vec<
     nodes.push(Node {
         md: s0.md,
         p: Point3::new(head.0 + east, head.1 + north, tvd),
+        dir: Some(tangent(s0.inc_deg, s0.azi_deg)),
     });
     for w in stations.windows(2) {
         let (a, b) = (w[0], w[1]);
@@ -195,9 +206,56 @@ fn min_curvature(stations: &[Station], head: (f64, f64), kb: f64) -> Result<Vec<
         nodes.push(Node {
             md: b.md,
             p: Point3::new(head.0 + east, head.1 + north, tvd),
+            dir: Some(tangent(b.inc_deg, b.azi_deg)),
         });
     }
     Ok(nodes)
+}
+
+/// Unit tangent `[north, east, down]` for a station's inclination/azimuth.
+fn tangent(inc_deg: f64, azi_deg: f64) -> [f64; 3] {
+    let (i, a) = (inc_deg.to_radians(), azi_deg.to_radians());
+    [i.sin() * a.cos(), i.sin() * a.sin(), i.cos()]
+}
+
+/// Position at fraction `f ∈ [0, 1]` of the minimum-curvature arc from station
+/// `pa` (tangent `t1`) to the next station (tangent `t2`) over MD span `dmd`.
+/// The tangent at `f` is the slerp of `t1`/`t2`; the partial dogleg is `f·β`.
+/// At `f = 1` this reproduces the next station's stored position exactly.
+fn arc_point(pa: Point3, t1: [f64; 3], t2: [f64; 3], f: f64, dmd: f64) -> Point3 {
+    let dot = (t1[0] * t2[0] + t1[1] * t2[1] + t1[2] * t2[2]).clamp(-1.0, 1.0);
+    let beta = dot.acos();
+    // Interpolated unit tangent at fraction f (slerp; lerp in the small-angle limit).
+    let tf = if beta < SMALL_BETA {
+        let l = [
+            t1[0] + (t2[0] - t1[0]) * f,
+            t1[1] + (t2[1] - t1[1]) * f,
+            t1[2] + (t2[2] - t1[2]) * f,
+        ];
+        let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt().max(1e-300);
+        [l[0] / n, l[1] / n, l[2] / n]
+    } else {
+        let s = beta.sin();
+        let (w1, w2) = (((1.0 - f) * beta).sin() / s, (f * beta).sin() / s);
+        [
+            w1 * t1[0] + w2 * t2[0],
+            w1 * t1[1] + w2 * t2[1],
+            w1 * t1[2] + w2 * t2[2],
+        ]
+    };
+    let beta_f = f * beta;
+    let rf = if beta_f < SMALL_BETA {
+        1.0 + beta_f * beta_f / 12.0
+    } else {
+        (2.0 / beta_f) * (beta_f / 2.0).tan()
+    };
+    let half = 0.5 * (f * dmd) * rf;
+    // p.y ← north, p.x ← east, p.z ← down (matches min_curvature accumulation).
+    Point3::new(
+        pa.x + half * (t1[1] + tf[1]),
+        pa.y + half * (t1[0] + tf[0]),
+        pa.z + half * (t1[2] + tf[2]),
+    )
 }
 
 /// Explicit positions → nodes; `md` is cumulative 3-D chord length from the
@@ -209,10 +267,14 @@ fn nodes_from_xyz(points: Vec<Point3>) -> Result<Vec<Node>> {
     let mut nodes = Vec::with_capacity(points.len());
     let mut md = 0.0;
     let mut prev = first;
-    nodes.push(Node { md, p: first });
+    nodes.push(Node {
+        md,
+        p: first,
+        dir: None,
+    });
     for p in points.into_iter().skip(1) {
         md += dist3(prev, p);
-        nodes.push(Node { md, p });
+        nodes.push(Node { md, p, dir: None });
         prev = p;
     }
     Ok(nodes)
@@ -327,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn xyz_interpolates_linearly_between_stations() {
+    fn xyz_follows_min_curvature_arc_between_stations() {
         let t = traj(
             TrajectoryInput::MdIncAzi(vec![
                 Station::new(3500.0, 15.0, 20.0),
@@ -339,9 +401,19 @@ mod tests {
         let a = t.xyz(3500.0).unwrap();
         let b = t.xyz(3600.0).unwrap();
         let mid = t.xyz(3550.0).unwrap();
-        assert_relative_eq!(mid.x, (a.x + b.x) / 2.0, epsilon = 1e-9);
-        assert_relative_eq!(mid.y, (a.y + b.y) / 2.0, epsilon = 1e-9);
-        assert_relative_eq!(mid.z, (a.z + b.z) / 2.0, epsilon = 1e-9);
+        // The arc bows off the straight chord between stations — it is NOT the
+        // linear midpoint (that was the pre-fix behaviour).
+        let (cx, cy, cz) = ((a.x + b.x) / 2.0, (a.y + b.y) / 2.0, (a.z + b.z) / 2.0);
+        let dev = ((mid.x - cx).powi(2) + (mid.y - cy).powi(2) + (mid.z - cz).powi(2)).sqrt();
+        assert!(
+            dev > 1e-3,
+            "arc midpoint should depart from the chord (dev={dev})"
+        );
+        // Endpoints still reproduce the stored station nodes exactly.
+        assert_relative_eq!(t.xyz(3500.0).unwrap().z, a.z, epsilon = 1e-12);
+        assert_relative_eq!(t.xyz(3600.0).unwrap().z, b.z, epsilon = 1e-12);
+        // MD spacing along the arc is monotone in TVD here (building, TVD increases).
+        assert!(a.z < mid.z && mid.z < b.z);
     }
 
     #[test]

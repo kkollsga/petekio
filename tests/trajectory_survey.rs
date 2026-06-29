@@ -4,7 +4,7 @@
 
 use petekio::{Station, TrajectoryInput, Well};
 
-/// The survey: (MD, INC°, AZI°). head = (558650, 6812460), kb = 27.3.
+/// The survey: (MD, INC°, AZI°). head = (1000, 2000), kb = 27.3.
 fn survey_well() -> Well {
     let stations = vec![
         Station::new(0.0, 0.0, 145.0),
@@ -16,7 +16,7 @@ fn survey_well() -> Well {
         Station::new(3900.0, 89.0, 135.0),
         Station::new(4400.0, 89.0, 135.0),
     ];
-    let mut w = Well::new("SURVEY", (558650.0, 6812460.0), 27.3);
+    let mut w = Well::new("SURVEY", (1000.0, 2000.0), 27.3);
     w.sidetrack_mut("")
         .add_trajectory(TrajectoryInput::Stations(stations))
         .unwrap();
@@ -45,8 +45,8 @@ fn min_curvature_reproduces_survey_table() {
             p.z + kb
         );
         // NS = ΔY (northing), EW = ΔX (easting) from the wellhead.
-        assert!((p.y - 6812460.0 - ns).abs() < 0.5, "MD {md} NS");
-        assert!((p.x - 558650.0 - ew).abs() < 0.5, "MD {md} EW");
+        assert!((p.y - 2000.0 - ns).abs() < 0.5, "MD {md} NS");
+        assert!((p.x - 1000.0 - ew).abs() < 0.5, "MD {md} EW");
     }
 }
 

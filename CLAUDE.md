@@ -7,6 +7,25 @@ contract). Read both before non-trivial work. The dev-docs + inbox + skills
 system below is local working state — see `dev-docs/README.md` and
 `inbox/README.md` for the canonical maps.
 
+## Data confidentiality — NEVER leak `/Volumes/EksternalHome/Data`
+
+Anything under **`/Volumes/EksternalHome/Data`** (the external data folder — real
+datasets like the Cerisa/Duva modelling project) is **confidential and must never
+enter any repo**. Concretely:
+
+- **Never commit** a file copied/derived from there, and never paste its
+  **contents** (coordinates, values, well/field names, survey rows, log samples)
+  into committed code, fixtures, tests, examples, docs, commit messages, or
+  `CHANGELOG.md`.
+- **Test/example data stays in the data folder, not the repo.** Tests/notebooks
+  resolve it via `PETEKIO_TEST_DATA` (see `tests/common/mod.rs`) and **skip when
+  absent** — they never carry a committed copy. Golden fixtures committed to the
+  repo must be **synthetic** (hand-authored to format spec), not real values.
+- The published crate ships **no** test/example data (`Cargo.toml` `exclude`s
+  `/tests` + `/examples`); keep it that way.
+- This binds inbox notes and the planning graph too — reference the dataset by
+  *path*, never by copying its content.
+
 ## Working style
 
 - **Keep each response under 400 tokens.** For any long output, write it to a

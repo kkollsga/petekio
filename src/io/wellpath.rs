@@ -92,7 +92,7 @@ pub fn load(path: &Path) -> Result<WellPath> {
 }
 
 /// Extract the trailing number from a header line like
-/// `WELL HEAD X-COORDINATE: 558650.0 (m)` (last token that parses as `f64`).
+/// `WELL HEAD X-COORDINATE: 1000.0 (m)` (last token that parses as `f64`).
 fn header_value(comment: &str) -> Option<f64> {
     let after = comment.rsplit(':').next().unwrap_or(comment);
     after.split_whitespace().find_map(|tok| {
@@ -120,18 +120,18 @@ mod tests {
     fn parses_header_and_rows() {
         let body = "\
 # WELL TRACE FROM PETREL
-# WELL HEAD X-COORDINATE: 558650.0 (m)
-# WELL HEAD Y-COORDINATE: 6812460.0 (m)
+# WELL HEAD X-COORDINATE: 1000.0 (m)
+# WELL HEAD Y-COORDINATE: 2000.0 (m)
 # WELL DATUM (KB, Kelly bushing, from MSL): 27.3 (m)
 # CRS: ED50 / UTM zone 31N
 # MD AND TVD ARE REFERENCED AT WELL DATUM
 ==========
 MD  X  Y  Z  TVD  DX  DY  AZIM_TN  INCL  DLS  AZIM_GN
-0    558650 6812460   0    0   0 0 145 0  0 145
-1200 558650 6812460 -1200 1200 0 0 145 0  0 145
+0    1000 2000   0    0   0 0 145 0  0 145
+1200 1000 2000 -1200 1200 0 0 145 0  0 145
 ";
         let wp = load(&write("petekio_wp_test.wellpath", body)).unwrap();
-        assert_eq!(wp.head, (558650.0, 6812460.0));
+        assert_eq!(wp.head, (1000.0, 2000.0));
         assert_eq!(wp.kb, 27.3);
         assert!(wp.crs.as_deref().unwrap().contains("UTM"));
         assert_eq!(wp.rows.len(), 2);

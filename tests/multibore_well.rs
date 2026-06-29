@@ -17,7 +17,7 @@ fn multibore_well_organizes_from_wellpaths() {
     let w = geo.well("36/7-X").unwrap();
 
     // Header taken from the wellpath, not the placeholder call args.
-    assert_eq!(w.head, (558650.0, 6812460.0));
+    assert_eq!(w.head, (1000.0, 2000.0));
     assert!((w.kb - 27.3).abs() < 1e-9);
     assert!(w.crs().unwrap().contains("UTM"));
 

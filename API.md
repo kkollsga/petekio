@@ -99,6 +99,10 @@ impl Surface {
     // resample (native)
     pub fn resample(&self, target: &GridGeometry) -> Surface;
 
+    // filtering + outline
+    pub fn smooth(&self, radius: usize) -> Surface;          // NaN-aware moving average; preserves the defined mask
+    pub fn boundary_polygon(&self) -> Option<PolygonSet>;    // convex hull of defined nodes; None if <3
+
     // cube extraction (Phase 3) → a surface attribute
     pub fn slice_cube(&self, cube: &Cube, sampling: Sampling) -> Surface;
     pub fn slice_cube_window(&self, cube: &Cube, above: f64, below: f64, agg: WindowAgg) -> Surface;
@@ -194,6 +198,7 @@ impl PointSet {
     pub fn bbox(&self) -> BBox;
     pub fn nearest(&self, x: f64, y: f64) -> Option<usize>;
     pub fn to_surface(&self, geom: GridGeometry, method: GridMethod) -> Result<Surface>;
+    pub fn regrid_min_curvature(&self, prior: &Surface) -> Result<Surface>;  // warm-started incremental re-grid on prior's lattice
 }
 pub enum GridMethod { Nearest, InverseDistance, MinimumCurvature }
 

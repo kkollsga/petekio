@@ -33,8 +33,26 @@ pub(crate) fn grid(coords: &[[f64; 3]], geom: GridGeometry, method: GridMethod) 
     let values = match method {
         GridMethod::Nearest => grid_nearest(coords, &geom),
         GridMethod::InverseDistance => grid_idw(coords, &geom),
-        GridMethod::MinimumCurvature => grid_min_curvature(coords, &geom),
+        GridMethod::MinimumCurvature => grid_min_curvature(coords, &geom, None),
     };
+    Surface::new(geom, values)
+}
+
+/// Warm-started minimum-curvature re-grid: relax from `seed` (a prior solution on
+/// the same lattice) instead of a cold IDW seed. When the control points have only
+/// shifted slightly, this converges in far fewer iterations — the incremental
+/// re-grid path. `seed` must match `geom`'s shape or it is ignored (cold start).
+pub(crate) fn grid_min_curvature_warm(
+    coords: &[[f64; 3]],
+    geom: GridGeometry,
+    seed: &Array2<f64>,
+) -> Result<Surface> {
+    if coords.is_empty() {
+        return Err(GeoError::NotFound(
+            "PointSet::regrid_min_curvature: no points to grid".into(),
+        ));
+    }
+    let values = grid_min_curvature(coords, &geom, Some(seed));
     Surface::new(geom, values)
 }
 
@@ -93,10 +111,18 @@ fn idw_at(coords: &[[f64; 3]], x: f64, y: f64) -> f64 {
 /// fall back to the 5-point harmonic (Laplacian) update. Data are honoured by
 /// snapping each sample to its nearest node and holding those fixed. Linear
 /// trends (the exact biharmonic solution) are reproduced to tolerance.
-fn grid_min_curvature(coords: &[[f64; 3]], geom: &GridGeometry) -> Array2<f64> {
+fn grid_min_curvature(
+    coords: &[[f64; 3]],
+    geom: &GridGeometry,
+    seed: Option<&Array2<f64>>,
+) -> Array2<f64> {
     let (nc, nr) = (geom.ncol, geom.nrow);
-    // Seed with IDW so the relaxation starts from a smooth, in-range field.
-    let mut z = grid_idw(coords, geom);
+    // Warm-start from a prior solution when one of the right shape is supplied;
+    // otherwise seed with IDW so relaxation starts from a smooth, in-range field.
+    let mut z = match seed {
+        Some(s) if s.dim() == (nc, nr) => s.clone(),
+        _ => grid_idw(coords, geom),
+    };
 
     // Anchor nodes: snap each sample to the nearest node, averaging collisions.
     let mut fixed = Array2::from_elem((nc, nr), false);

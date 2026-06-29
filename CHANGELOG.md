@@ -33,6 +33,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
 - `analysis::characterise` — fit an `Uncertain` from a sample set:
   `DistributionShape` (Normal / Triangular = P10/P50/P90 / LogNormal) and
   `characterise`, collapsing to Deterministic below two defined values.
+- `Surface::smooth` (NaN-aware moving-average, preserves the defined mask),
+  `Surface::boundary_polygon` (convex hull of defined nodes), and
+  `PointSet::regrid_min_curvature` (warm-started incremental min-curvature
+  re-grid on a prior surface's lattice, honouring control points as hard
+  constraints).
 
 ## [0.2.0] - 2026-06-28
 

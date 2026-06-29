@@ -7,6 +7,7 @@ pub mod log; // Log + LogView — MD-indexed well curves and views
 pub mod points; // PointSet — scattered points + attributes + gridding
 pub mod polygons; // PolygonSet — rings + contains/area/bbox/clip
 pub mod surface;
+mod surface_filter; // NaN-aware smoothing + boundary polygon on Surface
 mod surface_ops; // arithmetic + operator overloads on Surface
 mod surface_stats; // statistics + volumetrics on Surface
 pub mod tops; // Top → Interval — formation tops and the depth interval each names

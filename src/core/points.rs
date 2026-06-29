@@ -147,6 +147,16 @@ impl PointSet {
         gridding::grid(&self.coords, geom, method)
     }
 
+    /// Warm-started minimum-curvature re-grid onto `prior`'s lattice, relaxing
+    /// from `prior`'s values instead of a cold IDW seed. For an incremental
+    /// re-grid (control points nudged, a point added) this converges much faster
+    /// than [`to_surface`](Self::to_surface) with `MinimumCurvature` while giving
+    /// the same converged field. Honours the points as hard constraints, as the
+    /// cold path does.
+    pub fn regrid_min_curvature(&self, prior: &Surface) -> Result<Surface> {
+        gridding::grid_min_curvature_warm(&self.coords, prior.geom.clone(), prior.values())
+    }
+
     /// Build an areal R*-tree over the points' XY, payloaded with their index.
     pub(crate) fn rtree_xy(&self) -> RTree<AerialEntry> {
         gridding::build_rtree(&self.coords)
@@ -215,5 +225,45 @@ mod tests {
         let p = PointSet::from_parts(Vec::new(), IndexMap::new());
         assert!(p.is_empty());
         assert!(p.nearest(0.0, 0.0).is_none());
+    }
+
+    fn grid5() -> crate::foundation::GridGeometry {
+        crate::foundation::GridGeometry {
+            xori: 0.0,
+            yori: 0.0,
+            xinc: 2.5,
+            yinc: 2.5,
+            ncol: 5,
+            nrow: 5,
+            rotation_deg: 0.0,
+            yflip: false,
+        }
+    }
+
+    #[test]
+    fn warm_start_honours_constraints_and_converges() {
+        let p = pts();
+        let cold = p.to_surface(grid5(), GridMethod::MinimumCurvature).unwrap();
+        let warm = p.regrid_min_curvature(&cold).unwrap();
+        assert_eq!(warm.geom, cold.geom);
+        // Hard constraints: each input point snaps to a node held at its z.
+        // Points (0,0,1)→node[0,0], (10,0,2)→node[4,0], (0,10,3)→node[0,4].
+        approx::assert_relative_eq!(warm.values()[[0, 0]], 1.0, epsilon = 1e-9);
+        approx::assert_relative_eq!(warm.values()[[4, 0]], 2.0, epsilon = 1e-9);
+        approx::assert_relative_eq!(warm.values()[[0, 4]], 3.0, epsilon = 1e-9);
+        // A second warm pass is a near-fixed point (the field has converged).
+        let warm2 = p.regrid_min_curvature(&warm).unwrap();
+        for (a, b) in warm2.values().iter().zip(warm.values().iter()) {
+            approx::assert_relative_eq!(a, b, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn regrid_empty_errors() {
+        let empty = PointSet::from_parts(Vec::new(), IndexMap::new());
+        let prior = pts()
+            .to_surface(grid5(), GridMethod::MinimumCurvature)
+            .unwrap();
+        assert!(empty.regrid_min_curvature(&prior).is_err());
     }
 }

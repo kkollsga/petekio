@@ -308,6 +308,12 @@ impl NameMap {
     pub fn insert(&mut self, alias: impl Into<String>, canonical: impl Into<String>);
     pub fn canonical(&self, name: &str) -> String;
 }
+
+// analysis::validate — physical validity ranges; out-of-range → NaN (undefined)
+pub fn validity_range(canonical_mnemonic: &str) -> Option<(f64, f64)>;  // inclusive (lo,hi), None = unranged
+pub fn in_range(canonical_mnemonic: &str, value: f64) -> bool;           // NaN never in range
+pub fn mask_out_of_range(canonical_mnemonic: &str, values: &mut [f64]) -> usize;  // → NaN in place, returns count rejected
+// Provenance is assigned at derivation (measured→HardData, gridded→Interpolated, default→Defaulted), not here.
 ```
 
 ## Cube (Phase 3 — locked sketch)

@@ -23,6 +23,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `is_percent_unit`, `harmonise_fraction` (percent→fraction), `harmonise_length`,
   and `NameMap` (case-insensitive formation/well alias → canonical, identity for
   unknowns).
+- `analysis::validate` — physical validity ranges per canonical mnemonic
+  (`validity_range`, `in_range`) and `mask_out_of_range`, which rejects
+  out-of-range samples to `NaN` (the undefined convention) and reports the count.
 
 ## [0.2.0] - 2026-06-28
 

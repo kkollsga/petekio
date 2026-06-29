@@ -7,24 +7,26 @@ contract). Read both before non-trivial work. The dev-docs + inbox + skills
 system below is local working state — see `dev-docs/README.md` and
 `inbox/README.md` for the canonical maps.
 
-## Data confidentiality — NEVER leak `/Volumes/EksternalHome/Data`
+## Data confidentiality — nothing leaves `/Volumes/EksternalHome/Data`
 
-Anything under **`/Volumes/EksternalHome/Data`** (the external data folder holding
-real subsurface datasets) is **confidential and must never enter any repo**.
-Concretely:
+You **may read and evaluate against** data under **`/Volumes/EksternalHome/Data`**
+(the external folder holding real subsurface datasets) — run it through petekIO,
+inspect it, build local eval harnesses. The hard rule is that **no information from
+it may ever *leave* the folder**: nothing derived from its *contents* may land in a
+repo, a published artifact, an inbox message, the planning graph, or any
+committed/exported output. Concretely:
 
 - **Never commit** a file copied/derived from there, and never paste its
   **contents** (coordinates, values, well/field names, survey rows, log samples)
-  into committed code, fixtures, tests, examples, docs, commit messages, or
-  `CHANGELOG.md`.
-- **Test/example data stays in the data folder, not the repo.** Tests/notebooks
-  resolve it via `PETEKIO_TEST_DATA` (see `tests/common/mod.rs`) and **skip when
-  absent** — they never carry a committed copy. Golden fixtures committed to the
-  repo must be **synthetic** (hand-authored to format spec), not real values.
+  into committed code, fixtures, tests, examples, docs, commit messages,
+  `CHANGELOG.md`, or a note to another repo's inbox. Reference the dataset by
+  *path* and by *format*, never by content.
+- **Committed tests/examples use SYNTHETIC data** — hand-authored to format spec
+  (e.g. `tests/common/mod.rs` builds fixtures in a temp dir; `examples/data/` is
+  synthetic). Real-data evaluation happens in a **harness that lives in the data
+  folder**, whose output also stays there (print structure/counts, never values).
 - The published crate ships **no** test/example data (`Cargo.toml` `exclude`s
   `/tests` + `/examples`); keep it that way.
-- This binds inbox notes and the planning graph too — reference the dataset by
-  *path*, never by copying its content.
 
 ## Working style
 

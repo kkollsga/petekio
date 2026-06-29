@@ -19,6 +19,7 @@
 //! `petekio::core::Surface`.
 
 pub mod foundation;
+pub mod algorithms;
 pub(crate) mod io;
 pub mod core;
 pub mod analysis;

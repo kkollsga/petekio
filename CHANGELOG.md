@@ -13,6 +13,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
   head=(x, y), kb=…)` plus `xyz` / `tvd` / `md_at_tvd` / `md_range` — directional
   surveys can now be built and queried directly from Python.
 
+### Changed
+- New **`algorithms/`** layer: pure, type-light numeric kernels grouped by
+  discipline (`algorithms::wells` — minimum-curvature survey: `tangent`,
+  `dogleg`, `ratio_factor`, `arc_point`, `survey_positions`), with analytic QC
+  tests. `Trajectory` now delegates to it (no behaviour change); the ratio-factor
+  formula has a single home. See `SPEC.md` §9 (the algorithm discipline).
+
 ### Fixed
 - `Trajectory::xyz`/`tvd` now interpolate along the **minimum-curvature arc**
   between survey stations (slerp of station tangents + partial dogleg) instead of

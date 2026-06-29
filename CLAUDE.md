@@ -31,9 +31,16 @@ system below is local working state — see `dev-docs/README.md` and
 
 ## Architecture — the design constitution (from `SPEC.md`)
 
-- **Strictly layered, one-way deps:** `foundation → io → core → analysis →
-  manager → py`. A layer imports only from below — never sideways, never up. A
-  change that needs to point the other way is a design smell; rethink it.
+- **Strictly layered, one-way deps:** `foundation → algorithms → io → core →
+  analysis → manager → py`. A layer imports only from below — never sideways,
+  never up. A change that needs to point the other way is a design smell;
+  rethink it.
+- **Algorithms = isolated, QC-able, discipline-grouped kernels** (`SPEC.md` §9).
+  High-value numeric routines live in `algorithms/<discipline>/` (e.g. `wells`)
+  as pure, type-light functions (primitives + `foundation` types, no domain/IO
+  coupling), one home per formula, with analytic QC tests. Domain types call in;
+  don't inline a formula. Keeps each kernel cheap to QC and cheap to lift into
+  the external **petekAlgorithms** library.
 - **Manager substrate, no per-item loops.** Load once into a `GeoData` project;
   operations broadcast across the collection (views = read-only filtered
   subsets).

@@ -12,6 +12,7 @@
 //! first station is assumed vertical, so the first station sits at
 //! `z = md₀ - kb`. A vertical well therefore satisfies `tvd(md) = md - kb`.
 
+use crate::algorithms::wells;
 use crate::foundation::{GeoError, Point3, Result};
 
 /// A directional-survey station: measured depth with inclination and azimuth.
@@ -74,10 +75,6 @@ pub struct Trajectory {
     nodes: Vec<Node>,
 }
 
-/// Below this dogleg (radians) the ratio factor is taken from its Taylor
-/// expansion `RF ≈ 1 + β²/12` to avoid the `0/0` in `(2/β)·tan(β/2)`.
-const SMALL_BETA: f64 = 1e-4;
-
 /// MD step (project units) used to integrate a `Steer` segment into stations.
 const STEER_STEP: f64 = 30.0;
 
@@ -133,7 +130,7 @@ impl Trajectory {
                 }
                 let f = (md - a.md) / span;
                 return Some(match (a.dir, b.dir) {
-                    (Some(t1), Some(t2)) => arc_point(a.p, t1, t2, f, span),
+                    (Some(t1), Some(t2)) => wells::arc_point(a.p, t1, t2, f, span),
                     _ => lerp3(a.p, b.p, f),
                 });
             }
@@ -167,95 +164,24 @@ impl Trajectory {
     }
 }
 
-/// Minimum-curvature normalization of a station list. See module docs for the
-/// depth convention.
+/// Minimum-curvature normalization of a station list → positioned nodes. The
+/// numerics live in [`algorithms::wells`](crate::algorithms::wells); this just
+/// marshals `Station` ↔ the kernel's `(md, inc, azi)` rows.
 fn min_curvature(stations: &[Station], head: (f64, f64), kb: f64) -> Result<Vec<Node>> {
-    let s0 = *stations
-        .first()
-        .ok_or_else(|| GeoError::OutOfRange("trajectory needs at least one station".into()))?;
-    let mut north = 0.0_f64;
-    let mut east = 0.0_f64;
-    let mut tvd = s0.md - kb;
-    let mut nodes = Vec::with_capacity(stations.len());
-    nodes.push(Node {
-        md: s0.md,
-        p: Point3::new(head.0 + east, head.1 + north, tvd),
-        dir: Some(tangent(s0.inc_deg, s0.azi_deg)),
-    });
-    for w in stations.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        let dmd = b.md - a.md;
-        if dmd <= 0.0 {
-            return Err(GeoError::OutOfRange(
-                "station measured depth must strictly increase".into(),
-            ));
-        }
-        let (i1, i2) = (a.inc_deg.to_radians(), b.inc_deg.to_radians());
-        let (a1, a2) = (a.azi_deg.to_radians(), b.azi_deg.to_radians());
-        let cos_b = (i2 - i1).cos() - i1.sin() * i2.sin() * (1.0 - (a2 - a1).cos());
-        let beta = cos_b.clamp(-1.0, 1.0).acos();
-        let rf = if beta < SMALL_BETA {
-            1.0 + beta * beta / 12.0
-        } else {
-            (2.0 / beta) * (beta / 2.0).tan()
-        };
-        let half = 0.5 * dmd * rf;
-        north += half * (i1.sin() * a1.cos() + i2.sin() * a2.cos());
-        east += half * (i1.sin() * a1.sin() + i2.sin() * a2.sin());
-        tvd += half * (i1.cos() + i2.cos());
-        nodes.push(Node {
-            md: b.md,
-            p: Point3::new(head.0 + east, head.1 + north, tvd),
-            dir: Some(tangent(b.inc_deg, b.azi_deg)),
-        });
-    }
-    Ok(nodes)
-}
-
-/// Unit tangent `[north, east, down]` for a station's inclination/azimuth.
-fn tangent(inc_deg: f64, azi_deg: f64) -> [f64; 3] {
-    let (i, a) = (inc_deg.to_radians(), azi_deg.to_radians());
-    [i.sin() * a.cos(), i.sin() * a.sin(), i.cos()]
-}
-
-/// Position at fraction `f ∈ [0, 1]` of the minimum-curvature arc from station
-/// `pa` (tangent `t1`) to the next station (tangent `t2`) over MD span `dmd`.
-/// The tangent at `f` is the slerp of `t1`/`t2`; the partial dogleg is `f·β`.
-/// At `f = 1` this reproduces the next station's stored position exactly.
-fn arc_point(pa: Point3, t1: [f64; 3], t2: [f64; 3], f: f64, dmd: f64) -> Point3 {
-    let dot = (t1[0] * t2[0] + t1[1] * t2[1] + t1[2] * t2[2]).clamp(-1.0, 1.0);
-    let beta = dot.acos();
-    // Interpolated unit tangent at fraction f (slerp; lerp in the small-angle limit).
-    let tf = if beta < SMALL_BETA {
-        let l = [
-            t1[0] + (t2[0] - t1[0]) * f,
-            t1[1] + (t2[1] - t1[1]) * f,
-            t1[2] + (t2[2] - t1[2]) * f,
-        ];
-        let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt().max(1e-300);
-        [l[0] / n, l[1] / n, l[2] / n]
-    } else {
-        let s = beta.sin();
-        let (w1, w2) = (((1.0 - f) * beta).sin() / s, (f * beta).sin() / s);
-        [
-            w1 * t1[0] + w2 * t2[0],
-            w1 * t1[1] + w2 * t2[1],
-            w1 * t1[2] + w2 * t2[2],
-        ]
-    };
-    let beta_f = f * beta;
-    let rf = if beta_f < SMALL_BETA {
-        1.0 + beta_f * beta_f / 12.0
-    } else {
-        (2.0 / beta_f) * (beta_f / 2.0).tan()
-    };
-    let half = 0.5 * (f * dmd) * rf;
-    // p.y ← north, p.x ← east, p.z ← down (matches min_curvature accumulation).
-    Point3::new(
-        pa.x + half * (t1[1] + tf[1]),
-        pa.y + half * (t1[0] + tf[0]),
-        pa.z + half * (t1[2] + tf[2]),
-    )
+    let rows: Vec<(f64, f64, f64)> = stations
+        .iter()
+        .map(|s| (s.md, s.inc_deg, s.azi_deg))
+        .collect();
+    let positioned = wells::survey_positions(&rows, head, kb)?;
+    Ok(stations
+        .iter()
+        .zip(positioned)
+        .map(|(s, (p, dir))| Node {
+            md: s.md,
+            p,
+            dir: Some(dir),
+        })
+        .collect())
 }
 
 /// Explicit positions → nodes; `md` is cumulative 3-D chord length from the

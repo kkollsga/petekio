@@ -20,8 +20,10 @@ volumetrics) lives here; that's the consumer's job.
 
 ## Design constitution (adopted from logSuite)
 
-1. **Strictly layered, one-way deps.** `foundation → io → core → analysis →
-   manager`. A layer imports only from below — never sideways, never up.
+1. **Strictly layered, one-way deps.** `foundation → algorithms → io → core →
+   analysis → manager`. A layer imports only from below — never sideways, never
+   up. (`algorithms` depends only on `foundation`; `io` and `algorithms` are
+   siblings above it.)
 2. **A manager substrate.** Load once into a `GeoData` project; everything reads
    from it. **No per-item loops** — operations broadcast across the collection.
 3. **Domain objects carry their operations** (arithmetic, filters, interpolation,
@@ -34,6 +36,16 @@ volumetrics) lives here; that's the consumer's job.
 7. **Minimal public surface.** Re-export only what users need.
 8. **Rust core + thin PyO3.** All logic in Rust; bindings only marshal. The
    Python API mirrors the Rust API in the fluent logSuite style.
+9. **Algorithms are isolated, QC-able, discipline-grouped kernels.** High-value
+   numeric / geostatistical routines live in **`algorithms/`, grouped by
+   discipline** (`wells`, `grids`, …) as **pure, type-light functions** —
+   primitives + `foundation` types in/out, no domain-object (`Surface`/`Well`/…)
+   or IO coupling. Domain types call into them; a kernel's math has **one home**
+   (never duplicated across call sites). Rationale: each kernel is trivial to
+   **QC in isolation** (analytic tests on raw numbers), and a kernel that proves
+   high-value is a cheap **lift-and-shift into the external `petekAlgorithms`
+   library** (the module mirrors its type-light boundary). Don't inline a formula
+   in a domain type.
 
 ---
 
@@ -46,9 +58,10 @@ reinvent them.
 ```
 petekio/
   foundation/   errors · units · geometry (Point2/Point3, BBox, GridGeometry)
+  algorithms/   pure numeric kernels, grouped by discipline: wells (min-curvature survey) · grids (gridding) — type-light, QC-able, petekAlgorithms-offloadable
   io/           irap · zmap · csv · las (←las_rs) · excel (←calamine) · survey · tops · vector (←geozero)
   core/         Surface · Well→Sidetrack→Trajectory · Log · Top · PointSet · PolygonSet  (+ operation traits)
-  analysis/     resample · min_curvature · statistics · filters · arithmetic
+  analysis/     resample · statistics · filters · arithmetic · model-ready-inputs pipeline
   manager/      GeoData (the substrate) · Views
   py/           PyO3 bindings (optional feature)
 ```

@@ -30,6 +30,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `Cutoffs` (φ/Sw/Vsh, defaulted 0.08/0.5/0.5), `net_flags` (per-sample
   reservoir/pay flag), `net_pay` (Σ Voronoi thickness over net samples, TVD
   depth), `net_to_gross`, and `leverett_j`.
+- `analysis::characterise` — fit an `Uncertain` from a sample set:
+  `DistributionShape` (Normal / Triangular = P10/P50/P90 / LogNormal) and
+  `characterise`, collapsing to Deterministic below two defined values.
 
 ## [0.2.0] - 2026-06-28
 

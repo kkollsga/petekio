@@ -321,6 +321,10 @@ pub fn net_flags(phi: &[f64], sw: &[f64], vsh: Option<&[f64]>, cut: &Cutoffs) ->
 pub fn net_pay(depth: &[f64], net: &[bool]) -> f64;        // Σ representative (Voronoi) thickness over net samples; depth = TVD
 pub fn net_to_gross(depth: &[f64], net: &[bool]) -> f64;   // net_pay / gross span
 pub fn leverett_j(pc: f64, ift: f64, perm: f64, phi: f64) -> f64;  // (Pc/ift)·√(perm/phi), consistent units; NaN if phi≤0
+
+// analysis::characterise — fit a Distribution + Provenance from samples (petekIO characterises, consumer samples)
+pub enum DistributionShape { Normal, Triangular, LogNormal }  // Triangular = P10/P50/P90; LogNormal fitted on ln of positives
+pub fn characterise(values: &[f64], shape: DistributionShape, provenance: Provenance) -> Uncertain;  // <2 defined → Deterministic
 ```
 
 ## Cube (Phase 3 — locked sketch)

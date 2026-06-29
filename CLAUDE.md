@@ -112,6 +112,20 @@ compose per the schema, drop into its `inbox/unread/`). The canonical map is
 `SimulatoRS` (the consumer), and `mcp-servers` (one inbox for the whole
 ecosystem — never resolve a name to `mcp-servers/<subdir>/`).
 
+## Planning graph — the cross-library source of truth
+
+The petekSim **planning graph** (`research/graph/research.kgl`, served by the
+`contract` MCP) is the single source of truth for the inter-library contracts
+(the `ModelInputs` seam, the layered architecture), decisions, and open
+questions. Reach for it on anything cross-cutting — read the contract before
+changing a shared seam; record blocking issues and choices there, not only in
+local docs. Contribute **without cluttering**: runtime types only (`Question` /
+`Decision` / `Artifact` / `Task` — never the managed research nodes
+Algorithm/AlgorithmSpec/Tool/…; raise a `Question` if one is wrong or missing);
+**MERGE on id, never CREATE**; one node per concept; `write_scope` to those
+types; stamp `git_sha` + `modified_by='petekio'`. No direct graph access → route
+it through the **inbox** to petekSim, who curates it in.
+
 ## Commits & releases
 
 Commit format: `type: short description` (`feat`, `fix`, `docs`, `refactor`,

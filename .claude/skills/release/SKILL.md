@@ -40,9 +40,13 @@ description: Cut a petekIO release — goal-check against the phased-plan, gate 
    up, else read the changed `pub` items). If the surface changed, the change
    needed sign-off (per `API.md`'s header) and `API.md` itself must already be
    updated to match — if it isn't, **stop** and reconcile before publishing.
-4. **Bump version — patch by default** (`x.y.Z` → `x.y.Z+1`). If the changes
-   warrant a **minor/major** bump (new feature, breaking change, scope
-   expansion), STOP and ask one quick clarification before starting. Bump the
+4. **Bump version — ALWAYS patch** (`x.y.Z` → `x.y.Z+1`) unless the user
+   *explicitly told you in this run* to do a minor/major bump. Do **not**
+   self-promote to minor/major on your own judgment — "it adds a feature" /
+   "scope expanded" is **not** license to bump minor. During active development
+   nearly every release adds features; that is exactly why the default is a
+   hard patch. If you genuinely think a minor/major is warranted, STOP and ask
+   one quick clarification first — never decide it yourself. Bump the
    single source of truth: the workspace `[workspace.package] version` in the
    root `Cargo.toml` (or the crate's `version` if it's a single crate). If
    petekIO is a multi-crate workspace, all members inherit that one version —

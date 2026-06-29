@@ -17,7 +17,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 - LAS reader: fall back to the **first curve as the depth index** when the index
   mnemonic isn't the standard `DEPT` (e.g. Petrel core logs name it `DEPTH`).
 - LAS/Petrel readers (`wellpath`, `petrel_tops`): **decode Latin-1/Windows-1252**
-  exports lossily instead of erroring on non-UTF-8 bytes (Norwegian names).
+  exports (each byte → its Unicode code point) instead of erroring on non-UTF-8 —
+  Norwegian names (`ø`/`å`/`æ`) now decode correctly rather than to `�`.
 
 ## [0.2.2] - 2026-06-29
 

@@ -8,20 +8,20 @@ mod common;
 
 #[test]
 fn multibore_well_organizes_from_wellpaths() {
-    let Some(well_dir) = common::require("wells_multibore/36_7-X") else {
+    let Some(well_dir) = common::require("wells_multibore/99_9-X") else {
         return;
     };
     let mut geo = GeoData::new(Unit::Metres);
     // Pass placeholder head/kb — the .wellpath header is authoritative.
-    geo.load_well("36/7-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
-    let w = geo.well("36/7-X").unwrap();
+    geo.load_well("99/9-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
+    let w = geo.well("99/9-X").unwrap();
 
     // Header taken from the wellpath, not the placeholder call args.
     assert_eq!(w.head, (1000.0, 2000.0));
     assert!((w.kb - 27.3).abs() < 1e-9);
     assert!(w.crs().unwrap().contains("UTM"));
 
-    // Two bores: A and ST2 (labels = stem minus shared "36_7-X_" prefix).
+    // Two bores: A and ST2 (labels = stem minus shared "99_9-X_" prefix).
     let labels: Vec<&str> = w.sidetracks().map(|s| s.label.as_str()).collect();
     assert!(labels.contains(&"A"), "labels={labels:?}");
     assert!(labels.contains(&"ST2"), "labels={labels:?}");
@@ -47,31 +47,23 @@ fn multibore_well_organizes_from_wellpaths() {
 
 #[test]
 fn petrel_tops_route_to_well_and_bore() {
-    let Some(well_dir) = common::require("wells_multibore/36_7-X") else {
+    let Some(well_dir) = common::require("wells_multibore/99_9-X") else {
         return;
     };
-    let tops = common::require("wells_multibore/CerisaTops_like.tops").unwrap();
+    let tops = common::require("wells_multibore/wells_tops.tops").unwrap();
     let mut geo = GeoData::new(Unit::Metres);
-    geo.load_well("36/7-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
+    geo.load_well("99/9-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
     let added = geo.load_well_tops(&tops).unwrap();
-    // 2 valid picks land (the -999-MD row + the unknown well "36/7-Z" are skipped).
+    // 2 valid picks land (the -999-MD row + the unknown well "99/9-Z" are skipped).
     assert_eq!(added, 2);
-    let w = geo.well("36/7-X").unwrap();
-    // "Cerisa Main top" picked on bore A at MD 1210, and on ST2 at MD 1510.
+    let w = geo.well("99/9-X").unwrap();
+    // "Top A" picked on bore A at MD 1210, and on ST2 at MD 1510.
     assert_eq!(
-        w.sidetrack("A")
-            .unwrap()
-            .top("Cerisa Main top")
-            .unwrap()
-            .top_md,
+        w.sidetrack("A").unwrap().top("Top A").unwrap().top_md,
         1210.0
     );
     assert_eq!(
-        w.sidetrack("ST2")
-            .unwrap()
-            .top("Cerisa Main top")
-            .unwrap()
-            .top_md,
+        w.sidetrack("ST2").unwrap().top("Top A").unwrap().top_md,
         1510.0
     );
 }
@@ -79,21 +71,21 @@ fn petrel_tops_route_to_well_and_bore() {
 #[test]
 fn split_layout_recursion_and_id_filter() {
     // Real Petrel layout: Paths/ + Logs/ in separate subdirs, and a foreign
-    // well's log that must NOT be ingested into 36/7-Y.
+    // well's log that must NOT be ingested into 99/9-Y.
     let Some(root) = common::require("wells_split") else {
         return;
     };
     let mut geo = GeoData::new(Unit::Metres);
-    geo.load_well("36/7-Y", (0.0, 0.0), 0.0, &root).unwrap();
-    let w = geo.well("36/7-Y").unwrap();
-    // Two bores found across the split dirs; the foreign 36_7-OTHER log excluded.
+    geo.load_well("99/9-Y", (0.0, 0.0), 0.0, &root).unwrap();
+    let w = geo.well("99/9-Y").unwrap();
+    // Two bores found across the split dirs; the foreign 99_9-OTHER log excluded.
     let labels: Vec<&str> = w.sidetracks().map(|s| s.label.as_str()).collect();
     assert!(
         labels.contains(&"A") && labels.contains(&"B"),
         "labels={labels:?}"
     );
     assert!(w.sidetrack("A").unwrap().log("GR").is_some());
-    // The foreign 36_7-OTHER log was filtered out, so it did NOT fall back onto
+    // The foreign 99_9-OTHER log was filtered out, so it did NOT fall back onto
     // the main bore (which has no wellpath/logs of its own here).
     assert_eq!(w.sidetrack("").unwrap().logs().count(), 0);
 }

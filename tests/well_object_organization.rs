@@ -11,14 +11,14 @@ mod common;
 
 #[test]
 fn well_object_is_fully_organized() {
-    let Some(well_dir) = common::require("wells_multibore/36_7-X") else {
+    let Some(well_dir) = common::require("wells_multibore/99_9-X") else {
         return;
     };
-    let tops = common::require("wells_multibore/CerisaTops_like.tops").unwrap();
+    let tops = common::require("wells_multibore/wells_tops.tops").unwrap();
     let mut geo = GeoData::new(Unit::Metres);
-    geo.load_well("36/7-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
+    geo.load_well("99/9-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
     geo.load_well_tops(&tops).unwrap();
-    let w = geo.well("36/7-X").unwrap();
+    let w = geo.well("99/9-X").unwrap();
 
     // Header captured from the .wellpath (authoritative), incl. CRS.
     assert_eq!(w.head, (1000.0, 2000.0));
@@ -45,7 +45,7 @@ fn well_object_is_fully_organized() {
 
     // Tops routed to the bore; per-zone aggregation computes.
     let zs = a.zone_stats("PHIE_2025");
-    let cerisa = zs.iter().find(|(z, _)| z == "Cerisa Main top").unwrap();
+    let cerisa = zs.iter().find(|(z, _)| z == "Top A").unwrap();
     // Zone [1210, TD): PHIE samples 1210/1220 → 0.22/0.18 → mean 0.20.
     assert!(
         (cerisa.1.mean - 0.20).abs() < 1e-9,

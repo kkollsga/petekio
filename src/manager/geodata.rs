@@ -73,11 +73,11 @@ impl GeoData {
     /// `files` is a directory or a single file. A directory is walked
     /// **recursively** (so a Petrel export tree with separate `Paths/`/`Logs/`
     /// subdirs works, not just a flat folder); when filenames carry the well id
-    /// (`36_7-5_A.wellpath`), only this well's files are taken (others sharing the
+    /// (`99_9-1_A.wellpath`), only this well's files are taken (others sharing the
     /// tree are skipped). Each file is ingested by extension:
     /// - `*.wellpath` → a **positioned** trajectory; one bore (sidetrack) per
     ///   file, labelled by its filename stem minus the shared prefix
-    ///   (`36_7-5_A`/`36_7-5_ST2` → bores `A`/`ST2`). The header's wellhead XY /
+    ///   (`99_9-1_A`/`99_9-1_ST2` → bores `A`/`ST2`). The header's wellhead XY /
     ///   KB / CRS are taken as authoritative.
     /// - `*.las` → every non-index curve becomes a [`Log`], routed to the bore
     ///   whose label appears in the filename (else the main bore). A LAS that
@@ -108,7 +108,7 @@ impl GeoData {
         };
         paths.retain(|p| p.is_file());
 
-        // In a shared tree the files are well-id-named (`36_7-5_A.wellpath`);
+        // In a shared tree the files are well-id-named (`99_9-1_A.wellpath`);
         // keep only this well's. If no filename carries the id (a flat folder
         // with generic names like `sample.las`), every file belongs to the well.
         let id_key = normalize_id(id);
@@ -206,7 +206,7 @@ impl GeoData {
     /// Load a multi-well **Petrel well-tops** file and distribute each pick to
     /// the matching already-loaded well + bore. The record's `Well` field is
     /// matched to a loaded well id (exact, or the id is a separator-delimited
-    /// prefix — `"36/7-5 B"` → well `36/7-5`, bore `B` if that bore exists, else
+    /// prefix — `"99/9-1 B"` → well `99/9-1`, bore `B` if that bore exists, else
     /// the main bore). Records for unknown wells are skipped. Returns the number
     /// of tops assigned. (Load wells *before* their tops.)
     pub fn load_well_tops(&mut self, path: impl AsRef<Path>) -> Result<usize> {
@@ -329,7 +329,7 @@ fn log_md_span(logs: &[Log]) -> Option<(f64, f64)> {
 }
 
 /// Pair each `.wellpath` with a bore label = its filename stem minus the longest
-/// `_`-delimited prefix shared by all the stems (so `36_7-5_A`/`36_7-5_ST2` →
+/// `_`-delimited prefix shared by all the stems (so `99_9-1_A`/`99_9-1_ST2` →
 /// `A`/`ST2`). A single wellpath, or no shared prefix, → the main bore `""`.
 fn bore_labels(wellpaths: &[std::path::PathBuf]) -> Vec<(std::path::PathBuf, String)> {
     let stems: Vec<String> = wellpaths
@@ -383,14 +383,14 @@ fn collect_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<()> {
 }
 
 /// Normalize a well id/filename token for matching: lower-cased, with `/`, `-`,
-/// and space folded to `_` (so id `36/7-5` ↔ filename stem `36_7-5`).
+/// and space folded to `_` (so id `99/9-1` ↔ filename stem `99_9-1`).
 fn normalize_id(s: &str) -> String {
     s.trim().to_ascii_lowercase().replace(['/', '-', ' '], "_")
 }
 
 /// Whether a file's name belongs to the well `id_key` (normalized) — its
-/// normalized stem starts with the id followed by `_` or end (so `36_7-5_A`
-/// matches `36/7-5` but `36_7-50` does not).
+/// normalized stem starts with the id followed by `_` or end (so `99_9-1_A`
+/// matches `99/9-1` but `99_9-10` does not).
 fn file_matches_id(path: &Path, id_key: &str) -> bool {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let norm = normalize_id(stem);
@@ -418,8 +418,8 @@ fn load_tagged_logs(path: &Path) -> Result<Vec<Log>> {
 }
 
 /// Whether a Petrel tops `Well` field names the loaded well `id`: an exact match,
-/// or `id` followed by a separator (so `"36/7-5"` matches `"36/7-5 B"` but not
-/// `"36/7-50"`).
+/// or `id` followed by a separator (so `"99/9-1"` matches `"99/9-1 B"` but not
+/// `"99/9-10"`).
 fn well_name_matches(id: &str, record_well: &str) -> bool {
     let rec = record_well.trim();
     rec == id
@@ -429,7 +429,7 @@ fn well_name_matches(id: &str, record_well: &str) -> bool {
 }
 
 /// The bore label in a Petrel `Well` field after the well id (e.g.
-/// `("36/7-5", "36/7-5 B")` → `"B"`); empty for the main bore.
+/// `("99/9-1", "99/9-1 B")` → `"B"`); empty for the main bore.
 fn bore_suffix(id: &str, record_well: &str) -> String {
     record_well
         .trim()

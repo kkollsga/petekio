@@ -7,6 +7,16 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- `analysis::normalize::canonical_mnemonic_with` + `NameMap::get` — resolve LAS
+  mnemonics against a user alias map first (for the choices the table can't guess,
+  e.g. `NTG_PhieLam` vs `NTG_VShale` → `NTG`), then the built-in table.
+
+### Changed
+- `canonical_mnemonic` now strips a trailing vintage tag (`PHIE_2025` → `PHIE`)
+  and keeps **effective vs total water saturation distinct** (`SWT` no longer
+  collapses to `SW`); unknown mnemonics pass through vintage-stripped (original case).
+
+### Added
 - `Trajectory::from_input` is now public — build a positioned path from a survey
   (`TrajectoryInput`) standalone, without a `Well`/`GeoData`.
 - Python `Trajectory` binding: `Trajectory.from_stations([(md, inc, azi), …],

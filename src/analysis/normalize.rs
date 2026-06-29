@@ -5,8 +5,8 @@
 //! [`ModelInputs`](super::model_inputs::ModelInputs).
 //!
 //! Open/closed: the mnemonic table and unit tables are extended by adding rows,
-//! never by editing call sites; unknown inputs pass through unchanged (uppercased
-//! + trimmed for mnemonics) so an unrecognised curve is preserved, not dropped.
+//! never by editing call sites; unknown inputs pass through (vintage-tag stripped,
+//! original case kept) so an unrecognised curve is preserved, not dropped.
 
 use crate::foundation::Unit;
 use std::collections::HashMap;
@@ -14,20 +14,27 @@ use std::collections::HashMap;
 /// Canonical curve mnemonic for a raw LAS mnemonic (case-insensitive, trimmed).
 ///
 /// Maps common vendor variants of the *same* physical curve to one canonical
-/// name. Physically distinct curves (e.g. neutron `NPHI` vs effective `PHIE`)
-/// keep distinct canonicals. An unrecognised mnemonic is returned uppercased and
-/// trimmed — never dropped.
+/// name. Physically distinct curves (neutron `NPHI` vs effective `PHIE`,
+/// effective `SW` vs total `SWT`) keep distinct canonicals. An unrecognised
+/// mnemonic is returned vintage-stripped (original case) — never dropped.
 pub fn canonical_mnemonic(raw: &str) -> String {
-    let key = raw.trim().to_ascii_uppercase();
+    // Strip a trailing vintage tag (`_2025`, `_2024`, …) before matching, so
+    // Petrel comp-log names like `PHIE_2025`/`SW_2025` resolve. Semantic variants
+    // the table can't guess (`NTG_PhieLam` vs `NTG_VShale`, `PERM_Lam`) are left to
+    // a user alias map — see [`canonical_mnemonic_with`].
+    let stem = strip_vintage(raw.trim());
+    let key = stem.to_ascii_uppercase();
     let canonical = match key.as_str() {
         // Effective porosity.
         "PHIE" | "PHI" | "PHI_E" | "EFFPHI" | "PHIEF" => "PHIE",
-        // Total porosity.
+        // Total porosity (kept distinct from effective).
         "PHIT" | "PHI_T" | "TOTPHI" => "PHIT",
         // Neutron porosity.
         "NPHI" | "TNPH" | "NEU" | "CNL" => "NPHI",
-        // Water saturation.
-        "SW" | "SWE" | "SUWI" | "SW_E" | "SWT" => "SW",
+        // Effective water saturation.
+        "SW" | "SWE" | "SUWI" | "SW_E" => "SW",
+        // Total water saturation (kept distinct from effective SW).
+        "SWT" | "SW_T" | "SWTOT" => "SWT",
         // Gamma ray.
         "GR" | "GRC" | "SGR" | "CGR" | "GAMMA" => "GR",
         // Shale/clay volume.
@@ -42,9 +49,29 @@ pub fn canonical_mnemonic(raw: &str) -> String {
         "RT" | "RES" | "ILD" | "LLD" | "RDEP" => "RT",
         // Net-to-gross.
         "NTG" | "NET_GROSS" | "N_G" => "NTG",
-        other => return other.to_string(),
+        _ => return stem.to_string(),
     };
     canonical.to_string()
+}
+
+/// Canonical mnemonic honouring a **user alias map** first (exact, case-
+/// insensitive), then falling back to [`canonical_mnemonic`]. The alias map is
+/// how a project resolves the choices the built-in table can't guess — e.g.
+/// which net-to-gross is canonical (`NTG_PhieLam` vs `NTG_VShale` → `NTG`),
+/// `PERM_Lam_2025` → `PERM`, or any vendor-specific name.
+pub fn canonical_mnemonic_with(raw: &str, aliases: &NameMap) -> String {
+    aliases.get(raw).unwrap_or_else(|| canonical_mnemonic(raw))
+}
+
+/// Strip a trailing `_<4-digit year>` vintage tag (e.g. `PHIE_2025` → `PHIE`),
+/// leaving everything else untouched.
+fn strip_vintage(s: &str) -> &str {
+    if let Some((head, tail)) = s.rsplit_once('_') {
+        if tail.len() == 4 && tail.bytes().all(|b| b.is_ascii_digit()) {
+            return head;
+        }
+    }
+    s
 }
 
 /// Parse a length-unit string (case-insensitive) to a [`Unit`], or `None` if
@@ -113,10 +140,16 @@ impl NameMap {
 
     /// The canonical name for `name`, or `name` trimmed if no alias is registered.
     pub fn canonical(&self, name: &str) -> String {
+        self.get(name).unwrap_or_else(|| name.trim().to_string())
+    }
+
+    /// The registered canonical for `name` (case-insensitive), or `None` if
+    /// unmapped — unlike [`canonical`](Self::canonical), no identity fallback, so
+    /// callers can fall through to other resolution (e.g. the mnemonic table).
+    pub fn get(&self, name: &str) -> Option<String> {
         self.map
             .get(name.trim().to_ascii_lowercase().as_str())
             .cloned()
-            .unwrap_or_else(|| name.trim().to_string())
     }
 }
 
@@ -133,8 +166,34 @@ mod tests {
         // physically distinct porosities stay distinct
         assert_eq!(canonical_mnemonic("NPHI"), "NPHI");
         assert_eq!(canonical_mnemonic("PHIT"), "PHIT");
-        // unknown passes through uppercased + trimmed
-        assert_eq!(canonical_mnemonic(" custom "), "CUSTOM");
+        // unknown passes through (vintage-stripped) — not forced uppercase
+        assert_eq!(canonical_mnemonic("NTG_PhieLam"), "NTG_PhieLam");
+    }
+
+    #[test]
+    fn vintage_suffix_is_stripped() {
+        assert_eq!(canonical_mnemonic("PHIE_2025"), "PHIE");
+        assert_eq!(canonical_mnemonic("SW_2025"), "SW");
+        assert_eq!(canonical_mnemonic("VShale_2025"), "VSH");
+        // effective vs total water saturation stay distinct (was a wrong SWT→SW)
+        assert_eq!(canonical_mnemonic("SWT_2025"), "SWT");
+        assert_eq!(canonical_mnemonic("PHIT_2025"), "PHIT");
+        // a non-year trailing tag is NOT stripped
+        assert_eq!(canonical_mnemonic("PERM_Lam"), "PERM_Lam");
+    }
+
+    #[test]
+    fn user_alias_map_resolves_the_unguessable() {
+        let aliases = NameMap::from_pairs([
+            ("NTG_PhieLam".to_string(), "NTG".to_string()),
+            ("PERM_Lam_2025".to_string(), "PERM".to_string()),
+        ]);
+        // user map wins (the NTG-collision choice)
+        assert_eq!(canonical_mnemonic_with("NTG_PhieLam", &aliases), "NTG");
+        assert_eq!(canonical_mnemonic_with("perm_lam_2025", &aliases), "PERM"); // case-insensitive
+                                                                                // unmapped falls through to the table (+ vintage strip)
+        assert_eq!(canonical_mnemonic_with("PHIE_2025", &aliases), "PHIE");
+        assert_eq!(NameMap::new().get("nope"), None);
     }
 
     #[test]

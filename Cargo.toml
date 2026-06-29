@@ -35,7 +35,7 @@ exclude = [
 thiserror = "2"
 ndarray = "0.17"
 indexmap = "2"
-las_rs = "0.2"
+las_rs = "0.2.1"
 csv = "1"
 geo = "0.33"
 geozero = { version = "0.15", features = ["with-geo", "with-geojson", "with-wkt", "with-shp"] }

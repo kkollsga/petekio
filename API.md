@@ -301,7 +301,9 @@ pub struct SpatialInputs {              // for the 3D grid build + upscaling
 pub struct HorizonInput { pub name: String, pub surface: Surface, pub provenance: Provenance }
 pub struct WellCurveInput {
     pub well_id: String, pub mnemonic: String,  // canonical post-normalize, e.g. "PHIE"
-    pub md: Vec<f64>, pub values: Vec<f64>, pub provenance: Provenance,
+    pub md: Vec<f64>, pub values: Vec<f64>,
+    pub xyz: Vec<[f64; 3]>,                      // world (x,y,z=TVD) per sample, 1:1 with md; [NaN;3] if unpositioned
+    pub provenance: Provenance,
 }
 
 // analysis::normalize — canonicalisation passes (the first half of the pipeline)

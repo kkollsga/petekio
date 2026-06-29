@@ -43,6 +43,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `ModelInputs` contract (summary scalars as `Uncertain`, horizons, canonical
   well curves, boundary). `GeoData::surfaces_named`/`polygons_named` accessors;
   `Surface` and `PolygonSet` are now `Clone`.
+- `WellCurveInput.xyz` — each curve sample positioned to world `(x, y, z=TVD)`
+  via the trajectory, so consumers can upscale logs onto grid cells without
+  touching positioning (which is petekio's responsibility).
 
 ## [0.2.0] - 2026-06-28
 

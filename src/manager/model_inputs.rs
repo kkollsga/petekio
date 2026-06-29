@@ -70,11 +70,20 @@ impl GeoData {
                 .map(|v| harmonise_fraction(*v, &log.unit))
                 .collect();
             mask_out_of_range(&mnemonic, &mut values);
+            // Position each sample via the trajectory (positioning is ours).
+            let xyz: Vec<[f64; 3]> = md
+                .iter()
+                .map(|&m| match well.xyz(m) {
+                    Some(p) => [p.x, p.y, p.z],
+                    None => [f64::NAN; 3],
+                })
+                .collect();
             well_curves.push(WellCurveInput {
                 well_id: well.id.clone(),
                 mnemonic,
                 md,
                 values,
+                xyz,
                 provenance: Provenance::HardData,
             });
         }

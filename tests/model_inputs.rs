@@ -82,4 +82,11 @@ fn well_curves_are_canonical_and_harmonised() {
     assert!((sw.values[2] - 0.80).abs() < 1e-9);
     assert_eq!(sw.provenance, Provenance::HardData);
     assert_eq!(sw.md.len(), 5);
+
+    // Positioned to world (x,y,z=TVD): well head (1200,1500), kb 0, vertical →
+    // first sample at md 2400 → (1200, 1500, 2400).
+    assert_eq!(sw.xyz.len(), sw.md.len());
+    assert!((sw.xyz[0][0] - 1200.0).abs() < 1e-9);
+    assert!((sw.xyz[0][1] - 1500.0).abs() < 1e-9);
+    assert!((sw.xyz[0][2] - 2400.0).abs() < 1e-9);
 }

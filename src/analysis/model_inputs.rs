@@ -59,12 +59,17 @@ pub struct HorizonInput {
     pub provenance: Provenance,
 }
 
-/// An interpreted, MD-indexed log curve (canonical mnemonic) along a well.
+/// An interpreted, MD-indexed log curve (canonical mnemonic) along a well,
+/// positioned to world `(x, y, z=TVD)` so a consumer can upscale it onto grid
+/// cells without touching the trajectory (positioning is petekio's job).
 pub struct WellCurveInput {
     pub well_id: String,
     /// Canonical (post-normalize) mnemonic, e.g. `"PHIE"`, `"SW"`.
     pub mnemonic: String,
     pub md: Vec<f64>,
     pub values: Vec<f64>,
+    /// World position `[x, y, z]` (z = subsea TVD) of each sample, aligned 1:1
+    /// with `md`/`values`. `[NaN; 3]` where the trajectory can't position an MD.
+    pub xyz: Vec<[f64; 3]>,
     pub provenance: Provenance,
 }

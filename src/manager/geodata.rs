@@ -12,7 +12,7 @@
 //! method for the formats it accepts.
 
 use crate::core::{Log, PointSet, PolygonSet, Station, Surface, Top, TrajectoryInput, Well};
-use crate::foundation::{GeoError, Result, Unit};
+use crate::foundation::{GeoError, Point3, Result, Unit};
 use crate::manager::wells_view::WellsView;
 use indexmap::IndexMap;
 use std::path::Path;
@@ -70,13 +70,16 @@ impl GeoData {
     ///
     /// `files` is a directory (the common case — a per-well folder) or a single
     /// file. Each contained file is ingested by extension:
-    /// - `*.las` → every non-index curve becomes a [`Log`] on the main bore;
+    /// - `*.wellpath` → a **positioned** trajectory; one bore (sidetrack) per
+    ///   file, labelled by its filename stem minus the shared prefix
+    ///   (`36_7-5_A`/`36_7-5_ST2` → bores `A`/`ST2`). The header's wellhead XY /
+    ///   KB / CRS are taken as authoritative.
+    /// - `*.las` → every non-index curve becomes a [`Log`], routed to the bore
+    ///   whose label appears in the filename (else the main bore).
     /// - `*.csv` → formation tops (columns `name`, `md`) on the main bore.
     ///
-    /// Other files are ignored. When logs are present a vertical trajectory
-    /// spanning their measured-depth range is synthesized so positions resolve
-    /// and the deepest top's interval runs to total depth. (There is no well
-    /// deviation loader yet; survey ingest lands when `io` grows one.)
+    /// With **no** `.wellpath`, a single main bore is built with a vertical
+    /// trajectory synthesized over the logs' measured-depth range.
     pub fn load_well(
         &mut self,
         id: &str,
@@ -100,18 +103,32 @@ impl GeoData {
         };
         paths.retain(|p| p.is_file());
 
-        let mut logs: Vec<Log> = Vec::new();
+        let wellpaths: Vec<_> = paths
+            .iter()
+            .filter(|p| ext_of(p) == "wellpath")
+            .cloned()
+            .collect();
+        let las: Vec<_> = paths
+            .iter()
+            .filter(|p| ext_of(p) == "las")
+            .cloned()
+            .collect();
         let mut tops: Vec<Top> = Vec::new();
         for path in &paths {
-            match ext_of(path).as_str() {
-                "las" => logs.extend(Log::load_las_all(path)?),
-                "csv" => tops.extend(Top::load_csv(path, "name", "md")?),
-                _ => {} // ignore unrelated files in a well folder
+            if ext_of(path) == "csv" {
+                tops.extend(Top::load_csv(path, "name", "md")?);
             }
         }
 
         let mut well = Well::new(id, head, kb);
-        {
+
+        if wellpaths.is_empty() {
+            // No survey files → single main bore with a synthesized vertical
+            // trajectory spanning the logs' MD range.
+            let mut logs = Vec::new();
+            for p in &las {
+                logs.extend(Log::load_las_all(p)?);
+            }
             let st = well.sidetrack_mut("");
             if let Some((lo, hi)) = log_md_span(&logs) {
                 st.add_trajectory(TrajectoryInput::Stations(vec![
@@ -122,9 +139,48 @@ impl GeoData {
             for log in logs {
                 st.add_log(log);
             }
-            if !tops.is_empty() {
-                st.add_tops(tops);
+        } else {
+            // One bore per .wellpath (label = filename stem minus the shared
+            // prefix); positioned trajectory used directly (z = TVD − kb).
+            let labels = bore_labels(&wellpaths);
+            for (i, (wp_path, label)) in labels.iter().enumerate() {
+                let wp = crate::io::wellpath::load(wp_path)?;
+                if i == 0 {
+                    // The .wellpath header is authoritative for the wellhead datum.
+                    well.head = wp.head;
+                    well.kb = wp.kb;
+                    if let Some(c) = &wp.crs {
+                        well.set_crs(c.clone());
+                    }
+                }
+                let rows: Vec<(Station, Point3)> = wp
+                    .rows
+                    .iter()
+                    .map(|r| {
+                        (
+                            Station::new(r.md, r.inc_deg, r.azi_deg),
+                            Point3::new(r.x, r.y, r.tvd - wp.kb),
+                        )
+                    })
+                    .collect();
+                well.sidetrack_mut(label)
+                    .add_trajectory(TrajectoryInput::PositionedSurvey(rows))?;
             }
+            // Route each LAS to the bore whose label appears in its filename
+            // (fallback: the main bore).
+            let label_list: Vec<String> = labels.iter().map(|(_, l)| l.clone()).collect();
+            for p in &las {
+                let bore = route_bore(p, &label_list);
+                let st = well.sidetrack_mut(&bore);
+                for log in Log::load_las_all(p)? {
+                    st.add_log(log);
+                }
+            }
+        }
+        // Tops are well-level here (CSV) → main bore. (Petrel per-well tops land
+        // in a later phase.)
+        if !tops.is_empty() {
+            well.sidetrack_mut("").add_tops(tops);
         }
 
         let entry = self.wells.entry(id.to_string());
@@ -226,6 +282,59 @@ fn log_md_span(logs: &[Log]) -> Option<(f64, f64)> {
         }
     }
     (lo.is_finite() && hi.is_finite() && hi > lo).then_some((lo, hi))
+}
+
+/// Pair each `.wellpath` with a bore label = its filename stem minus the longest
+/// `_`-delimited prefix shared by all the stems (so `36_7-5_A`/`36_7-5_ST2` →
+/// `A`/`ST2`). A single wellpath, or no shared prefix, → the main bore `""`.
+fn bore_labels(wellpaths: &[std::path::PathBuf]) -> Vec<(std::path::PathBuf, String)> {
+    let stems: Vec<String> = wellpaths
+        .iter()
+        .map(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    let prefix = shared_underscore_prefix(&stems);
+    wellpaths
+        .iter()
+        .zip(&stems)
+        .map(|(p, stem)| {
+            let label = stem.strip_prefix(&prefix).unwrap_or(stem).to_string();
+            (p.clone(), label)
+        })
+        .collect()
+}
+
+/// The longest prefix ending at a `_` boundary shared by every stem (`""` if
+/// fewer than two stems or nothing common).
+fn shared_underscore_prefix(stems: &[String]) -> String {
+    if stems.len() < 2 {
+        return String::new();
+    }
+    let first = &stems[0];
+    let mut prefix = String::new();
+    for (i, _) in first.match_indices('_') {
+        let cand = &first[..=i]; // include the underscore
+        if stems.iter().all(|s| s.starts_with(cand)) {
+            prefix = cand.to_string();
+        }
+    }
+    prefix
+}
+
+/// The bore label whose token appears in `path`'s filename (split on `_`/`-`/`.`/
+/// space), or the main bore `""` if none matches.
+fn route_bore(path: &Path, labels: &[String]) -> String {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let tokens: Vec<&str> = stem.split(['_', '-', '.', ' ']).collect();
+    labels
+        .iter()
+        .find(|label| !label.is_empty() && tokens.iter().any(|t| t.eq_ignore_ascii_case(label)))
+        .cloned()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

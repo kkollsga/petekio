@@ -116,9 +116,11 @@ impl std::ops::Sub<&Surface> for &Surface { type Output = Result<Surface>; }
 ## Wells: `Well` → `Sidetrack` → `Trajectory` (+ tops, logs)
 
 ```rust
-pub struct Well { pub id: String, pub head: (f64, f64), pub kb: f64 /* sidetracks private */ }
+pub struct Well { pub id: String, pub head: (f64, f64), pub kb: f64 /* crs + sidetracks private */ }
 impl Well {
     pub fn new(id: impl Into<String>, head: (f64, f64), kb: f64) -> Well;
+    pub fn crs(&self) -> Option<&str>;                  // CRS label (provenance; never reprojected)
+    pub fn set_crs(&mut self, crs: impl Into<String>);
     pub fn sidetrack(&self, label: &str) -> Option<&Sidetrack>;
     pub fn sidetrack_mut(&mut self, label: &str) -> &mut Sidetrack;   // creates if missing
     pub fn main(&self) -> &Sidetrack;                                  // label ""
@@ -152,6 +154,7 @@ pub enum TrajectoryInput {
     Xyz(Vec<Point3>),
     MdIncAzi(Vec<Station>),                                  // → minimum-curvature
     Stations(Vec<Station>),
+    PositionedSurvey(Vec<(Station, Point3)>),               // explicit positions; preserves MD (e.g. .wellpath)
     Hold  { from: Station, to_md: f64 },
     Steer { from: Station, build_per_100: f64, turn_per_100: f64, to_md: f64 },
 }

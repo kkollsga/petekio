@@ -6,4 +6,5 @@ pub mod irap;
 pub mod las;
 pub mod tops;
 pub mod vector;
+pub mod wellpath;
 pub mod xyz;

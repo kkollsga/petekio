@@ -11,6 +11,14 @@ All notable changes to petekIO are recorded here. The format loosely follows
   mnemonics against a user alias map first (for the choices the table can't guess,
   e.g. `NTG_PhieLam` vs `NTG_VShale` → `NTG`), then the built-in table.
 
+- **`.wellpath` ingest + multi-sidetrack wells** — `GeoData::load_well` reads
+  Petrel `.wellpath` traces: one **bore per file** (labelled by filename stem),
+  each a **positioned** trajectory (`TrajectoryInput::PositionedSurvey`, MD
+  preserved, subsea `z = TVD − kb`); logs route to the matching bore. The
+  wellhead XY / KB / **CRS** from the header are authoritative (`Well::crs`/
+  `set_crs`; CRS recorded, never reprojected). No-`.wellpath` wells keep the
+  synthesized-vertical behaviour.
+
 ### Changed
 - `canonical_mnemonic` now strips a trailing vintage tag (`PHIE_2025` → `PHIE`)
   and keeps **effective vs total water saturation distinct** (`SWT` no longer

@@ -46,6 +46,11 @@ pub enum TrajectoryInput {
     MdIncAzi(Vec<Station>),
     /// MD/inclination/azimuth stations → minimum-curvature (alias).
     Stations(Vec<Station>),
+    /// A **positioned** survey: each station paired with its explicit world
+    /// position (e.g. from a Petrel `.wellpath`). The given MD and `(x, y, z)`
+    /// are used **directly** (no min-curvature synthesis); the station's inc/azi
+    /// set the tangent so interpolation between rows follows the arc.
+    PositionedSurvey(Vec<(Station, Point3)>),
     /// A constant inclination/azimuth segment from `from` to `to_md`.
     Hold { from: Station, to_md: f64 },
     /// A build/turn-rate segment (degrees per 100 MD) from `from` to `to_md`.
@@ -87,6 +92,7 @@ impl Trajectory {
             TrajectoryInput::MdIncAzi(s) | TrajectoryInput::Stations(s) => {
                 min_curvature(&s, head, kb)?
             }
+            TrajectoryInput::PositionedSurvey(rows) => nodes_from_positioned(rows)?,
             TrajectoryInput::Hold { from, to_md } => {
                 let end = Station::new(to_md, from.inc_deg, from.azi_deg);
                 min_curvature(&[from, end], head, kb)?
@@ -182,6 +188,33 @@ fn min_curvature(stations: &[Station], head: (f64, f64), kb: f64) -> Result<Vec<
             dir: Some(dir),
         })
         .collect())
+}
+
+/// Positioned survey → nodes: use each station's explicit position and MD
+/// directly, with the tangent from its inc/azi (so between-row interpolation
+/// follows the arc). `Err` on empty or non-increasing MD.
+fn nodes_from_positioned(rows: Vec<(Station, Point3)>) -> Result<Vec<Node>> {
+    if rows.is_empty() {
+        return Err(GeoError::OutOfRange(
+            "trajectory needs at least one station".into(),
+        ));
+    }
+    let mut nodes = Vec::with_capacity(rows.len());
+    let mut prev_md = f64::NEG_INFINITY;
+    for (s, p) in rows {
+        if s.md <= prev_md {
+            return Err(GeoError::OutOfRange(
+                "station measured depth must strictly increase".into(),
+            ));
+        }
+        prev_md = s.md;
+        nodes.push(Node {
+            md: s.md,
+            p,
+            dir: Some(wells::tangent(s.inc_deg, s.azi_deg)),
+        });
+    }
+    Ok(nodes)
 }
 
 /// Explicit positions → nodes; `md` is cumulative 3-D chord length from the

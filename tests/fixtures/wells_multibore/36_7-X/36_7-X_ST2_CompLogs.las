@@ -1,0 +1,15 @@
+~Version
+ VERS. 2.0 :
+ WRAP. NO :
+~Well
+ STRT.M 1500.0 :
+ STOP.M 1520.0 :
+ STEP.M 10.0 :
+ NULL. -999.25 :
+~Curve
+ DEPT.M :
+ SW_2025.v/v :
+~ASCII
+1500.0 0.30
+1510.0 0.35
+1520.0 0.40

@@ -29,6 +29,9 @@ pub struct Well {
     pub head: (f64, f64),
     /// Kelly-bushing elevation (the measured-depth / TVD datum).
     pub kb: f64,
+    /// Coordinate reference system label (e.g. `"ED50 / UTM zone 31N"`), if
+    /// known. Recorded for provenance; petekIO never reprojects.
+    crs: Option<String>,
     /// Bores keyed by label; `""` is the main bore (always present).
     sidetracks: IndexMap<String, Sidetrack>,
 }
@@ -43,8 +46,19 @@ impl Well {
             id: id.into(),
             head,
             kb,
+            crs: None,
             sidetracks,
         }
+    }
+
+    /// The coordinate reference system label, if recorded.
+    pub fn crs(&self) -> Option<&str> {
+        self.crs.as_deref()
+    }
+
+    /// Record the coordinate reference system label (provenance only).
+    pub fn set_crs(&mut self, crs: impl Into<String>) {
+        self.crs = Some(crs.into());
     }
 
     /// The sidetrack with `label`, if it exists.

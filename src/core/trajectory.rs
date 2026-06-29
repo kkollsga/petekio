@@ -80,7 +80,7 @@ const STEER_STEP: f64 = 30.0;
 impl Trajectory {
     /// Normalize a survey input into a positioned path, accumulating from the
     /// wellhead `head` and datum `kb`. `Err` on empty or non-increasing input.
-    pub(crate) fn from_input(input: TrajectoryInput, head: (f64, f64), kb: f64) -> Result<Self> {
+    pub fn from_input(input: TrajectoryInput, head: (f64, f64), kb: f64) -> Result<Self> {
         let nodes = match input {
             TrajectoryInput::Xyz(pts) => nodes_from_xyz(pts)?,
             TrajectoryInput::MdIncAzi(s) | TrajectoryInput::Stations(s) => {

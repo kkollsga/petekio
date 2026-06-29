@@ -157,7 +157,8 @@ pub enum TrajectoryInput {
 }
 pub struct Trajectory { /* normalized positioned path */ }
 impl Trajectory {
-    pub fn xyz(&self, md: f64) -> Option<Point3>;
+    pub fn from_input(input: TrajectoryInput, head: (f64, f64), kb: f64) -> Result<Trajectory>;  // standalone build (min-curvature)
+    pub fn xyz(&self, md: f64) -> Option<Point3>;   // linear interpolation between survey-station nodes
     pub fn tvd(&self, md: f64) -> Option<f64>;
     pub fn md_at_tvd(&self, tvd: f64) -> Option<f64>;
     pub fn md_range(&self) -> (f64, f64);
@@ -383,6 +384,11 @@ ongrid = top.resample(grid_geom)
 geo.load_well("15/9-A1", wellhead=(1200, 1500), kb=82, files="wells/A1/")
 w = geo.well("15/9-A1")
 w.xyz(2450)                              # interpolated position at MD
+
+# Standalone trajectory from a directional survey (no project needed):
+traj = petekio.Trajectory.from_stations(      # [(md, inc_deg, azi_deg), ...]
+    [(0, 0, 145), (1200, 0, 145), (1900, 57, 145)], head=(558650, 6812460), kb=27.3)
+traj.tvd(1655.81)                        # subsea TVD (RKB = + kb); xyz / md_at_tvd / md_range too
 w.brent.ntg                             # -> Stats  (dynamic: __getattr__ top → log)
 w.brent.phie.mean
 geo.wells.filter(field="Gullfaks").tops("Brent")   # broadcast view

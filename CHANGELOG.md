@@ -6,6 +6,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- `Trajectory::from_input` is now public — build a positioned path from a survey
+  (`TrajectoryInput`) standalone, without a `Well`/`GeoData`.
+- Python `Trajectory` binding: `Trajectory.from_stations([(md, inc, azi), …],
+  head=(x, y), kb=…)` plus `xyz` / `tvd` / `md_at_tvd` / `md_range` — directional
+  surveys can now be built and queried directly from Python.
+
 ## [0.2.1] - 2026-06-29
 
 ### Added

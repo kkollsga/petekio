@@ -133,6 +133,8 @@ impl Well {
     pub fn log(&self, mnemonic: &str) -> Option<LogView>;
     pub fn logs(&self) -> impl Iterator<Item = &Log>;   // all main-bore logs, insertion order
     pub fn mnemonics(&self) -> Vec<&str>;
+    pub fn zones(&self) -> Vec<Interval>;                          // every formation zone (consecutive tops)
+    pub fn zone_stats(&self, mnemonic: &str) -> Vec<(String, Stats)>;  // per-zone average(mean)+sum
 }
 
 pub struct Sidetrack { pub label: String /* trajectories, logs, tops private */ }
@@ -147,6 +149,8 @@ impl Sidetrack {
     pub fn top(&self, name: &str) -> Option<Interval>;
     pub fn log(&self, mnemonic: &str) -> Option<LogView>;
     pub fn logs(&self) -> impl Iterator<Item = &Log>;   // all logs on this bore, insertion order
+    pub fn zones(&self) -> Vec<Interval>;
+    pub fn zone_stats(&self, mnemonic: &str) -> Vec<(String, Stats)>;
 }
 
 pub struct Station { pub md: f64, pub inc_deg: f64, pub azi_deg: f64 }

@@ -15,7 +15,7 @@
 use crate::core::log::{Log, LogView};
 use crate::core::tops::{Interval, Top};
 use crate::core::trajectory::{Trajectory, TrajectoryInput};
-use crate::foundation::{GeoError, Point3, Result};
+use crate::foundation::{GeoError, Point3, Result, Stats};
 use indexmap::IndexMap;
 
 /// The label of the main bore.
@@ -119,6 +119,18 @@ impl Well {
     /// The mnemonics of all main-bore logs, in insertion order.
     pub fn mnemonics(&self) -> Vec<&str> {
         self.main().logs().map(|l| l.mnemonic.as_str()).collect()
+    }
+
+    /// Every formation zone on the main bore (see [`Sidetrack::zones`]).
+    pub fn zones(&self) -> Vec<Interval<'_>> {
+        self.main().zones()
+    }
+
+    /// Per-zone average/sum of curve `mnemonic` on the main bore (see
+    /// [`Sidetrack::zone_stats`]). Broadcast across a project via
+    /// `geo.wells().iter().map(|w| w.zone_stats(..))`.
+    pub fn zone_stats(&self, mnemonic: &str) -> Vec<(String, Stats)> {
+        self.main().zone_stats(mnemonic)
     }
 }
 
@@ -251,6 +263,37 @@ impl Sidetrack {
     pub fn logs(&self) -> impl Iterator<Item = &Log> {
         self.logs.iter()
     }
+
+    /// Every formation zone as an [`Interval`] `[top.md, base)`, in MD order
+    /// (each top's base is the next top's MD, or total depth for the deepest).
+    /// The basis for per-zone aggregation.
+    pub fn zones(&self) -> Vec<Interval<'_>> {
+        let td = self.trajectories.get(self.active).map(|t| t.md_range().1);
+        self.tops
+            .iter()
+            .enumerate()
+            .map(|(i, top)| {
+                let base = self
+                    .tops
+                    .get(i + 1)
+                    .map(|n| n.md)
+                    .or(td)
+                    .unwrap_or(f64::NAN);
+                Interval::new(top.name.clone(), top.md, base, &self.logs)
+            })
+            .collect()
+    }
+
+    /// Per-zone statistics of curve `mnemonic` (case-insensitive): one
+    /// `(zone_name, Stats)` per zone the curve is defined in. `Stats` carries
+    /// the **average** (`mean`) and **sum** (and percentiles); zones where the
+    /// curve has no samples are omitted.
+    pub fn zone_stats(&self, mnemonic: &str) -> Vec<(String, Stats)> {
+        self.zones()
+            .into_iter()
+            .filter_map(|z| z.log(mnemonic).map(|lv| (z.name.clone(), lv.stats())))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -345,6 +388,30 @@ mod tests {
         let s = v.stats();
         assert_eq!(s.count, 5);
         assert_relative_eq!(s.mean, 0.3, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn zone_stats_average_and_sum_per_zone() {
+        let mut w = Well::new("w", (0.0, 0.0), 0.0);
+        let st = w.sidetrack_mut("");
+        st.add_trajectory(vertical(0.0, 2500.0)).unwrap(); // TD 2500
+        st.add_tops(vec![Top::new("Brent", 2400.0), Top::new("Dunlin", 2450.0)]);
+        st.add_log(ntg_log()); // NTG 0.1..1.0 at MD 2400..2500 step 10
+
+        let zs = w.zone_stats("NTG");
+        assert_eq!(zs.len(), 2);
+        // Brent [2400,2450): 0.1..0.5 → mean 0.3, sum 1.5.
+        assert_eq!(zs[0].0, "Brent");
+        assert_relative_eq!(zs[0].1.mean, 0.3, epsilon = 1e-12);
+        assert_relative_eq!(zs[0].1.sum, 1.5, epsilon = 1e-12);
+        // Dunlin [2450,2500): 0.6..1.0 → mean 0.8, sum 4.0.
+        assert_eq!(zs[1].0, "Dunlin");
+        assert_relative_eq!(zs[1].1.mean, 0.8, epsilon = 1e-12);
+        assert_relative_eq!(zs[1].1.sum, 4.0, epsilon = 1e-12);
+        // zones() exposes both intervals in MD order.
+        let zones = w.zones();
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0].name, "Brent");
     }
 
     #[test]

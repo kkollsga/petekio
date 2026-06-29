@@ -24,6 +24,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
 - **Core data tagging** — `LogKind` (`Log` / `Core`) on `Log` (`kind()` /
   `with_kind`); `load_well` tags curves from `*core*.las` files as `Core` so
   consumers can include/exclude core in per-zone aggregation.
+- **Per-zone aggregation** — `Sidetrack`/`Well` `zones()` (every formation zone
+  as an `Interval`) and `zone_stats(mnemonic)` → per-zone `Stats` (average via
+  `mean`, `sum`, percentiles). Broadcastable across a project's wells.
 
 ### Changed
 - `canonical_mnemonic` now strips a trailing vintage tag (`PHIE_2025` → `PHIE`)

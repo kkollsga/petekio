@@ -18,6 +18,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
   wellhead XY / KB / **CRS** from the header are authoritative (`Well::crs`/
   `set_crs`; CRS recorded, never reprojected). No-`.wellpath` wells keep the
   synthesized-vertical behaviour.
+- **Petrel well-tops ingest** — `GeoData::load_well_tops(path)` reads a multi-well
+  `# Petrel well tops` export (quoted Surface/Well, `-999` nulls) and routes each
+  pick to the matching loaded well + bore (`"36/7-5 B"` → well `36/7-5`, bore `B`).
 
 ### Changed
 - `canonical_mnemonic` now strips a trailing vintage tag (`PHIE_2025` → `PHIE`)

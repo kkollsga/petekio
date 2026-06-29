@@ -227,7 +227,8 @@ impl GeoData {
     pub fn new(unit: Unit) -> GeoData;
     pub fn load_surface(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&Surface>;
     pub fn load_well(&mut self, id: &str, head: (f64,f64), kb: f64,
-                     files: impl AsRef<Path>) -> Result<&Well>;
+                     files: impl AsRef<Path>) -> Result<&Well>;  // .wellpath→bores, .las→logs, .csv→tops
+    pub fn load_well_tops(&mut self, path: impl AsRef<Path>) -> Result<usize>;  // Petrel multi-well tops → matching well+bore
     pub fn load_points(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PointSet>;
     pub fn load_polygons(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PolygonSet>;
     pub fn surface(&self, name: &str) -> Option<&Surface>;

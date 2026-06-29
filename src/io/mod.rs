@@ -4,6 +4,7 @@
 pub mod csv_points;
 pub mod irap;
 pub mod las;
+pub mod petrel_tops;
 pub mod tops;
 pub mod vector;
 pub mod wellpath;

@@ -187,6 +187,34 @@ impl GeoData {
         Ok(entry.or_insert(well))
     }
 
+    /// Load a multi-well **Petrel well-tops** file and distribute each pick to
+    /// the matching already-loaded well + bore. The record's `Well` field is
+    /// matched to a loaded well id (exact, or the id is a separator-delimited
+    /// prefix — `"36/7-5 B"` → well `36/7-5`, bore `B` if that bore exists, else
+    /// the main bore). Records for unknown wells are skipped. Returns the number
+    /// of tops assigned. (Load wells *before* their tops.)
+    pub fn load_well_tops(&mut self, path: impl AsRef<Path>) -> Result<usize> {
+        let recs = crate::io::petrel_tops::load(path.as_ref())?;
+        let ids: Vec<String> = self.wells.keys().cloned().collect();
+        let mut added = 0;
+        for r in recs {
+            let Some(id) = ids.iter().find(|id| well_name_matches(id, &r.well)) else {
+                continue;
+            };
+            let suffix = bore_suffix(id, &r.well);
+            let well = self.wells.get_mut(id).expect("id came from this map");
+            let label = if well.sidetrack(&suffix).is_some() {
+                suffix
+            } else {
+                String::new()
+            };
+            well.sidetrack_mut(&label)
+                .add_tops(vec![Top::new(r.surface, r.md)]);
+            added += 1;
+        }
+        Ok(added)
+    }
+
     /// Load a point set from `path` and store it under `name`, returning a
     /// borrow. Dispatches on extension: `.geojson` → GeoJSON; `.csv` → headered
     /// CSV with `x`/`y`/`z` columns (other numeric columns → attributes);
@@ -323,6 +351,28 @@ fn shared_underscore_prefix(stems: &[String]) -> String {
         }
     }
     prefix
+}
+
+/// Whether a Petrel tops `Well` field names the loaded well `id`: an exact match,
+/// or `id` followed by a separator (so `"36/7-5"` matches `"36/7-5 B"` but not
+/// `"36/7-50"`).
+fn well_name_matches(id: &str, record_well: &str) -> bool {
+    let rec = record_well.trim();
+    rec == id
+        || rec
+            .strip_prefix(id)
+            .is_some_and(|rest| rest.starts_with([' ', '_', '-']))
+}
+
+/// The bore label in a Petrel `Well` field after the well id (e.g.
+/// `("36/7-5", "36/7-5 B")` → `"B"`); empty for the main bore.
+fn bore_suffix(id: &str, record_well: &str) -> String {
+    record_well
+        .trim()
+        .strip_prefix(id)
+        .unwrap_or("")
+        .trim_matches([' ', '_', '-'])
+        .to_string()
 }
 
 /// The bore label whose token appears in `path`'s filename (split on `_`/`-`/`.`/

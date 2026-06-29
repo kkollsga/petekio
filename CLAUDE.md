@@ -7,14 +7,13 @@ contract). Read both before non-trivial work. The dev-docs + inbox + skills
 system below is local working state — see `dev-docs/README.md` and
 `inbox/README.md` for the canonical maps.
 
-## Data confidentiality — nothing leaves `/Volumes/EksternalHome/Data`
+## Data — test against `/Volumes/EksternalHome/Data`, never leak it into the repo
 
-You **may read and evaluate against** data under **`/Volumes/EksternalHome/Data`**
-(the external folder holding real subsurface datasets) — run it through petekIO,
-inspect it, build local eval harnesses. The hard rule is that **no information from
-it may ever *leave* the folder**: nothing derived from its *contents* may land in a
-repo, a published artifact, an inbox message, the planning graph, or any
-committed/exported output. Concretely:
+**You are allowed to test against data under `/Volumes/EksternalHome/Data`** (the
+external folder of real subsurface datasets) — read it, run it through petekIO,
+build local eval harnesses. **But never let it leak into the repo.** No information
+derived from its *contents* may land in a repo, a published artifact, an inbox
+message, the planning graph, or any committed/exported output. Concretely:
 
 - **Never commit** a file copied/derived from there, and never paste its
   **contents** (coordinates, values, well/field names, survey rows, log samples)

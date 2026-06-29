@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-29
+
 ### Added
 - `analysis::normalize::canonical_mnemonic_with` + `NameMap::get` — resolve LAS
   mnemonics against a user alias map first (for the choices the table can't guess,

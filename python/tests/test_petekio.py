@@ -325,14 +325,14 @@ def test_trajectory_from_stations_min_curvature():
         (2500, 80, 135), (3700, 80, 135), (3900, 89, 135), (4400, 89, 135),
     ]
     kb = 27.3
-    t = petekio.Trajectory.from_stations(survey, head=(558650.0, 6812460.0), kb=kb)
+    t = petekio.Trajectory.from_stations(survey, head=(1000.0, 2000.0), kb=kb)
     assert t.md_range() == (0.0, 4400.0)
-    # RKB TVD (= TVDSS + kb) reproduces the reference table at survey stations.
+    # RKB TVD (= TVDSS + kb) reproduces a hand-checked reference at the stations.
     for md, tvd_rkb in [(1200, 1200.0), (1900, 1790.116), (2500, 2062.961)]:
         assert math.isclose(t.tvd(md) + kb, tvd_rkb, abs_tol=0.05)
     # Vertical section: tvd = md - kb.
     assert math.isclose(t.tvd(600.0), 600.0 - kb, abs_tol=1e-9)
-    # Position tuple + out-of-range.
+    # Position tuple (x = head.x + easting offset) + out-of-range.
     x, y, z = t.xyz(1900.0)
-    assert math.isclose(x, 558833.778, abs_tol=0.5)
+    assert math.isclose(x, 1000.0 + 183.778, abs_tol=0.5)
     assert t.tvd(5000.0) is None

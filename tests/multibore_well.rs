@@ -8,9 +8,7 @@ mod common;
 
 #[test]
 fn multibore_well_organizes_from_wellpaths() {
-    let Some(well_dir) = common::require("wells_multibore/99_9-X") else {
-        return;
-    };
+    let well_dir = common::synth_well();
     let mut geo = GeoData::new(Unit::Metres);
     // Pass placeholder head/kb — the .wellpath header is authoritative.
     geo.load_well("99/9-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
@@ -47,10 +45,8 @@ fn multibore_well_organizes_from_wellpaths() {
 
 #[test]
 fn petrel_tops_route_to_well_and_bore() {
-    let Some(well_dir) = common::require("wells_multibore/99_9-X") else {
-        return;
-    };
-    let tops = common::require("wells_multibore/wells_tops.tops").unwrap();
+    let well_dir = common::synth_well();
+    let tops = common::synth_tops();
     let mut geo = GeoData::new(Unit::Metres);
     geo.load_well("99/9-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
     let added = geo.load_well_tops(&tops).unwrap();
@@ -72,9 +68,7 @@ fn petrel_tops_route_to_well_and_bore() {
 fn split_layout_recursion_and_id_filter() {
     // Real Petrel layout: Paths/ + Logs/ in separate subdirs, and a foreign
     // well's log that must NOT be ingested into 99/9-Y.
-    let Some(root) = common::require("wells_split") else {
-        return;
-    };
+    let root = common::synth_split();
     let mut geo = GeoData::new(Unit::Metres);
     geo.load_well("99/9-Y", (0.0, 0.0), 0.0, &root).unwrap();
     let w = geo.well("99/9-Y").unwrap();

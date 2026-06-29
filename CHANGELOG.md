@@ -36,7 +36,7 @@ All notable changes to petekIO are recorded here. The format loosely follows
   synthesized-vertical behaviour.
 - **Petrel well-tops ingest** — `GeoData::load_well_tops(path)` reads a multi-well
   `# Petrel well tops` export (quoted Surface/Well, `-999` nulls) and routes each
-  pick to the matching loaded well + bore (`"36/7-5 B"` → well `36/7-5`, bore `B`).
+  pick to the matching loaded well + bore (`"99/9-1 B"` → well `99/9-1`, bore `B`).
 - **Core data tagging** — `LogKind` (`Log` / `Core`) on `Log` (`kind()` /
   `with_kind`); `load_well` tags curves from `*core*.las` files as `Core` so
   consumers can include/exclude core in per-zone aggregation.

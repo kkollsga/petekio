@@ -400,7 +400,7 @@ w.xyz(2450)                              # interpolated position at MD
 
 # Standalone trajectory from a directional survey (no project needed):
 traj = petekio.Trajectory.from_stations(      # [(md, inc_deg, azi_deg), ...]
-    [(0, 0, 145), (1200, 0, 145), (1900, 57, 145)], head=(558650, 6812460), kb=27.3)
+    [(0, 0, 145), (1200, 0, 145), (1900, 57, 145)], head=(1000, 2000), kb=27.3)
 traj.tvd(1655.81)                        # subsea TVD (RKB = + kb); xyz / md_at_tvd / md_range too
 w.brent.ntg                             # -> Stats  (dynamic: __getattr__ top → log)
 w.brent.phie.mean

@@ -11,10 +11,8 @@ mod common;
 
 #[test]
 fn well_object_is_fully_organized() {
-    let Some(well_dir) = common::require("wells_multibore/99_9-X") else {
-        return;
-    };
-    let tops = common::require("wells_multibore/wells_tops.tops").unwrap();
+    let well_dir = common::synth_well();
+    let tops = common::synth_tops();
     let mut geo = GeoData::new(Unit::Metres);
     geo.load_well("99/9-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
     geo.load_well_tops(&tops).unwrap();

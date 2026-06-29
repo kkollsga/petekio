@@ -9,9 +9,9 @@ system below is local working state — see `dev-docs/README.md` and
 
 ## Data confidentiality — NEVER leak `/Volumes/EksternalHome/Data`
 
-Anything under **`/Volumes/EksternalHome/Data`** (the external data folder — real
-datasets like the Cerisa/Duva modelling project) is **confidential and must never
-enter any repo**. Concretely:
+Anything under **`/Volumes/EksternalHome/Data`** (the external data folder holding
+real subsurface datasets) is **confidential and must never enter any repo**.
+Concretely:
 
 - **Never commit** a file copied/derived from there, and never paste its
   **contents** (coordinates, values, well/field names, survey rows, log samples)

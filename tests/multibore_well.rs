@@ -50,7 +50,8 @@ fn petrel_tops_route_to_well_and_bore() {
     let mut geo = GeoData::new(Unit::Metres);
     geo.load_well("99/9-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
     let added = geo.load_well_tops(&tops).unwrap();
-    // 2 valid picks land (the -999-MD row + the unknown well "99/9-Z" are skipped).
+    // 2 Horizon picks land; skipped: the -999-MD row, the unknown well "99/9-Z",
+    // and the `Other`-type OWC contact (not stratigraphy).
     assert_eq!(added, 2);
     let w = geo.well("99/9-X").unwrap();
     // "Top A" picked on bore A at MD 1210, and on ST2 at MD 1510.
@@ -58,6 +59,8 @@ fn petrel_tops_route_to_well_and_bore() {
         w.sidetrack("A").unwrap().top("Top A").unwrap().top_md,
         1210.0
     );
+    // The Other-type OWC contact was NOT ingested as a top/zone.
+    assert!(w.sidetrack("A").unwrap().top("OWC").is_none());
     assert_eq!(
         w.sidetrack("ST2").unwrap().top("Top A").unwrap().top_md,
         1510.0

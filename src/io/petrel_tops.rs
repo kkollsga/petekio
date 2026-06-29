@@ -16,6 +16,10 @@ pub struct PetrelTop {
     pub well: String,
     pub surface: String,
     pub md: f64,
+    /// The pick's `Type` column — `"Horizon"` for a lithostratigraphic surface,
+    /// `"Other"` for non-strat picks (fluid contacts: OWC/GOC/FWL, …). Consumers
+    /// use only `Horizon` picks to define zones.
+    pub kind: String,
 }
 
 /// The Petrel null sentinel.
@@ -53,6 +57,7 @@ pub fn load(path: &Path) -> Result<Vec<PetrelTop>> {
             well: f[10].clone(),
             surface: f[9].clone(),
             md,
+            kind: f[8].clone(),
         });
     }
     Ok(out)
@@ -119,6 +124,7 @@ END HEADER
         assert_eq!(tops.len(), 2);
         assert_eq!(tops[0].well, "99/9-2");
         assert_eq!(tops[0].surface, "Top A");
+        assert_eq!(tops[0].kind, "Horizon"); // Type column captured
         assert!((tops[0].md - 2531.79).abs() < 1e-9);
         assert_eq!(tops[1].well, "99/9-1 B"); // quoted name with a space preserved
         assert_eq!(tops[1].surface, "Top B");

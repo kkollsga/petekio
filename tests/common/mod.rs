@@ -95,8 +95,9 @@ pub fn synth_well() -> PathBuf {
     d
 }
 
-/// A synthetic Petrel well-tops file: `Top A` picked on bores A (MD 1210) and ST2
-/// (MD 1510), one `-999`-MD row (skipped), and a foreign well (skipped).
+/// A synthetic Petrel well-tops file: `Top A` (Horizon) picked on bores A (MD
+/// 1210) and ST2 (MD 1510); an `Other`-type `OWC` contact on A (must be excluded
+/// — not stratigraphy); one `-999`-MD row and a foreign well (both skipped).
 pub fn synth_tops() -> PathBuf {
     let d = tmpdir("tops");
     let p = d.join("wells_tops.tops");
@@ -104,6 +105,7 @@ pub fn synth_tops() -> PathBuf {
         &p,
         "# Petrel well tops\nVERSION 2\nBEGIN HEADER\nX\nY\nZ\nTWT\nTWT2\nage\nMD\nPVD\nType\nSurface\nWell\nEND HEADER\n\
          1.0 2.0 -1180.0 -999 -999 -999 1210.0 -1180.0 Horizon \"Top A\" \"99/9-X A\"\n\
+         1.0 2.0 -1300.0 -999 -999 -999 1300.0 -1300.0 Other \"OWC\" \"99/9-X A\"\n\
          1.0 2.0 -1480.0 -999 -999 -999 -999 -999 Horizon \"No Pick\" \"99/9-X ST2\"\n\
          1.0 2.0 -1490.0 -999 -999 -999 1510.0 -1490.0 Horizon \"Top A\" \"99/9-X ST2\"\n\
          1.0 2.0 -2000.0 -999 -999 -999 2020.0 -2000.0 Horizon \"Base\" \"99/9-Z\"\n",

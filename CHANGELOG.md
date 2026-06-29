@@ -6,6 +6,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+- Petrel well-tops: capture the `Type` column; `GeoData::load_well_tops` now
+  ingests only `Horizon` picks and skips `Other` (fluid contacts OWC/GOC/FWL),
+  so derived zones are purely lithostratigraphic (contacts no longer split zones).
+
 ### Changed
 - `GeoData::load_well` now walks a directory **recursively** (handles a Petrel
   export tree with separate `Paths/`/`Logs/` subdirs, not just a flat folder) and,

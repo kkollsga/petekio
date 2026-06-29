@@ -207,13 +207,19 @@ impl GeoData {
     /// the matching already-loaded well + bore. The record's `Well` field is
     /// matched to a loaded well id (exact, or the id is a separator-delimited
     /// prefix — `"99/9-1 B"` → well `99/9-1`, bore `B` if that bore exists, else
-    /// the main bore). Records for unknown wells are skipped. Returns the number
-    /// of tops assigned. (Load wells *before* their tops.)
+    /// the main bore). Only `Type == Horizon` picks are taken (lithostratigraphy);
+    /// `Other` picks (fluid contacts OWC/GOC/FWL) and unknown-well records are
+    /// skipped. Returns the number of tops assigned. (Load wells *before* tops.)
     pub fn load_well_tops(&mut self, path: impl AsRef<Path>) -> Result<usize> {
         let recs = crate::io::petrel_tops::load(path.as_ref())?;
         let ids: Vec<String> = self.wells.keys().cloned().collect();
         let mut added = 0;
         for r in recs {
+            // Only lithostratigraphic picks define zones; skip `Other` (fluid
+            // contacts OWC/GOC/FWL, etc. — not stratigraphy).
+            if !r.kind.eq_ignore_ascii_case("Horizon") {
+                continue;
+            }
             let Some(id) = ids.iter().find(|id| well_name_matches(id, &r.well)) else {
                 continue;
             };

@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-29
+
 ### Added
 - **Model-ready inputs contract (GATE-0)** — `GeoData::model_inputs() -> Result<ModelInputs>`,
   the locked seam consumers (petekSim) build to. Uncertainty/provenance

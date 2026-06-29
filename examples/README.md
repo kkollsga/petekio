@@ -1,0 +1,29 @@
+# petekIO examples
+
+Runnable Jupyter notebooks demonstrating the Python API on small bundled data.
+
+| Notebook | Covers |
+|----------|--------|
+| [`01_surfaces.ipynb`](01_surfaces.ipynb) | Load an IRAP horizon; sample; resample onto another lattice; surface arithmetic + isochore thickness; stats / `area_above` / hypsometry; grid scattered points (`minimum_curvature`); optional `matplotlib` view. |
+| [`02_wells.ipynb`](02_wells.ipynb) | Load a well (LAS + tops); position MDs via the trajectory (`xyz`/`tvd`); read logs (`LogView`); tops → intervals and the fluent `well.<top>.<log>` → `Stats`; broadcast across a project with `GeoData.wells`. |
+
+## Setup
+
+```bash
+pip install petekio matplotlib        # matplotlib only for the optional plot
+# or, from a checkout of this repo:
+maturin develop --release
+```
+
+Run the notebooks **from this `examples/` folder** so the relative paths under
+`data/` resolve.
+
+## Data (`data/`)
+
+Small sample files copied from the test fixtures — enough to exercise the API,
+not real assets:
+
+- `horizon_top.irap` — a tiny IRAP-classic depth surface (one undefined node).
+- `scatter_points.csv` — scattered `x,y,depth` (+ a `poro` column) for gridding.
+- `wells/15_9-A1/` — a vertical well: `sample.las` (PHI / SUWI / NTG curves) +
+  `tops.csv` (Brent / Dunlin).

@@ -26,7 +26,7 @@ pub mod manager;
 
 // Public types are re-exported at the crate root.
 pub use analysis::{
-    HorizonInput, ModelInputs, NameMap, SpatialInputs, SummaryInputs, WellCurveInput,
+    Cutoffs, HorizonInput, ModelInputs, NameMap, SpatialInputs, SummaryInputs, WellCurveInput,
 };
 pub use core::{
     GridMethod, Interval, Log, LogView, PointSet, PolygonSet, Sidetrack, Station, Surface, Top,

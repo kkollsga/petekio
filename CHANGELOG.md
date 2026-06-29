@@ -26,6 +26,10 @@ All notable changes to petekIO are recorded here. The format loosely follows
 - `analysis::validate` — physical validity ranges per canonical mnemonic
   (`validity_range`, `in_range`) and `mask_out_of_range`, which rejects
   out-of-range samples to `NaN` (the undefined convention) and reports the count.
+- `analysis::interpret` — petrophysical interpretation (petekIO owns net_pay):
+  `Cutoffs` (φ/Sw/Vsh, defaulted 0.08/0.5/0.5), `net_flags` (per-sample
+  reservoir/pay flag), `net_pay` (Σ Voronoi thickness over net samples, TVD
+  depth), `net_to_gross`, and `leverett_j`.
 
 ## [0.2.0] - 2026-06-28
 

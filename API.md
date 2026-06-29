@@ -314,6 +314,13 @@ pub fn validity_range(canonical_mnemonic: &str) -> Option<(f64, f64)>;  // inclu
 pub fn in_range(canonical_mnemonic: &str, value: f64) -> bool;           // NaN never in range
 pub fn mask_out_of_range(canonical_mnemonic: &str, values: &mut [f64]) -> usize;  // → NaN in place, returns count rejected
 // Provenance is assigned at derivation (measured→HardData, gridded→Interpolated, default→Defaulted), not here.
+
+// analysis::interpret — petrophysics (petekIO OWNS net_pay). Pure array kernels; manager supplies per-sample TVD.
+pub struct Cutoffs { pub phi_min: f64, pub sw_max: f64, pub vsh_max: f64 }  // Default: 0.08 / 0.5 / 0.5 (flag Assumed)
+pub fn net_flags(phi: &[f64], sw: &[f64], vsh: Option<&[f64]>, cut: &Cutoffs) -> Vec<bool>;  // per-sample reservoir/pay flag
+pub fn net_pay(depth: &[f64], net: &[bool]) -> f64;        // Σ representative (Voronoi) thickness over net samples; depth = TVD
+pub fn net_to_gross(depth: &[f64], net: &[bool]) -> f64;   // net_pay / gross span
+pub fn leverett_j(pc: f64, ift: f64, perm: f64, phi: f64) -> f64;  // (Pc/ift)·√(perm/phi), consistent units; NaN if phi≤0
 ```
 
 ## Cube (Phase 3 — locked sketch)

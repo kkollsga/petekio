@@ -6,9 +6,11 @@
 //!
 //! Imports from `foundation`, `io`, `core`.
 
+pub mod interpret;
 pub mod model_inputs;
 pub mod normalize;
 pub mod validate;
 
+pub use interpret::Cutoffs;
 pub use model_inputs::{HorizonInput, ModelInputs, SpatialInputs, SummaryInputs, WellCurveInput};
 pub use normalize::NameMap;

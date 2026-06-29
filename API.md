@@ -294,6 +294,20 @@ pub struct WellCurveInput {
     pub well_id: String, pub mnemonic: String,  // canonical post-normalize, e.g. "PHIE"
     pub md: Vec<f64>, pub values: Vec<f64>, pub provenance: Provenance,
 }
+
+// analysis::normalize — canonicalisation passes (the first half of the pipeline)
+pub fn canonical_mnemonic(raw: &str) -> String;          // vendor LAS mnemonic → canonical (PHI→PHIE…); unknown passes through uppercased
+pub fn parse_length_unit(s: &str) -> Option<Unit>;        // "m"/"ft"/… → Unit
+pub fn is_percent_unit(s: &str) -> bool;
+pub fn harmonise_fraction(value: f64, unit: &str) -> f64; // percent → fraction
+pub fn harmonise_length(value: f64, from: Unit, to: Unit) -> f64;
+pub struct NameMap { /* case-insensitive alias → canonical; identity for unknowns */ }
+impl NameMap {
+    pub fn new() -> NameMap;
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (String, String)>) -> NameMap;
+    pub fn insert(&mut self, alias: impl Into<String>, canonical: impl Into<String>);
+    pub fn canonical(&self, name: &str) -> String;
+}
 ```
 
 ## Cube (Phase 3 — locked sketch)

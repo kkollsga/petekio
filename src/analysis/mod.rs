@@ -11,3 +11,4 @@ pub mod normalize;
 pub mod validate;
 
 pub use model_inputs::{HorizonInput, ModelInputs, SpatialInputs, SummaryInputs, WellCurveInput};
+pub use normalize::NameMap;

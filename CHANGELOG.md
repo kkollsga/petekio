@@ -18,6 +18,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `reservoir_area_acres`.
 - `Well::logs()`/`Well::mnemonics()` and `Sidetrack::logs()` — enumerate every
   curve on a bore (previously curves were only fetchable by mnemonic).
+- `analysis::normalize` — input canonicalisation: `canonical_mnemonic` (LAS
+  mnemonic alias table, unknowns pass through), `parse_length_unit`,
+  `is_percent_unit`, `harmonise_fraction` (percent→fraction), `harmonise_length`,
+  and `NameMap` (case-insensitive formation/well alias → canonical, identity for
+  unknowns).
 
 ## [0.2.0] - 2026-06-28
 

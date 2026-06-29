@@ -70,8 +70,11 @@ impl GeoData {
 
     /// Load a well from `files` and store it under `id`, returning a borrow.
     ///
-    /// `files` is a directory (the common case — a per-well folder) or a single
-    /// file. Each contained file is ingested by extension:
+    /// `files` is a directory or a single file. A directory is walked
+    /// **recursively** (so a Petrel export tree with separate `Paths/`/`Logs/`
+    /// subdirs works, not just a flat folder); when filenames carry the well id
+    /// (`36_7-5_A.wellpath`), only this well's files are taken (others sharing the
+    /// tree are skipped). Each file is ingested by extension:
     /// - `*.wellpath` → a **positioned** trajectory; one bore (sidetrack) per
     ///   file, labelled by its filename stem minus the shared prefix
     ///   (`36_7-5_A`/`36_7-5_ST2` → bores `A`/`ST2`). The header's wellhead XY /
@@ -91,19 +94,26 @@ impl GeoData {
     ) -> Result<&Well> {
         let root = files.as_ref();
 
-        // Gather the files to ingest: a directory's entries (sorted by name for
-        // deterministic order), or the single given file.
+        // Gather files to ingest. A directory is walked **recursively** (so a
+        // Petrel export tree with separate `Paths/`/`Logs/` subdirs works, not
+        // just a flat per-well folder); a single file is taken as-is.
         let mut paths: Vec<std::path::PathBuf> = if root.is_dir() {
-            let mut entries: Vec<_> = std::fs::read_dir(root)?
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.is_file())
-                .collect();
+            let mut entries = Vec::new();
+            collect_files(root, &mut entries)?;
             entries.sort();
             entries
         } else {
             vec![root.to_path_buf()]
         };
         paths.retain(|p| p.is_file());
+
+        // In a shared tree the files are well-id-named (`36_7-5_A.wellpath`);
+        // keep only this well's. If no filename carries the id (a flat folder
+        // with generic names like `sample.las`), every file belongs to the well.
+        let id_key = normalize_id(id);
+        if paths.iter().any(|p| file_matches_id(p, &id_key)) {
+            paths.retain(|p| file_matches_id(p, &id_key));
+        }
 
         let wellpaths: Vec<_> = paths
             .iter()
@@ -353,6 +363,37 @@ fn shared_underscore_prefix(stems: &[String]) -> String {
         }
     }
     prefix
+}
+
+/// Recursively collect every file under `dir` into `out`.
+fn collect_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_files(&path, out)?;
+        } else if path.is_file() {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Normalize a well id/filename token for matching: lower-cased, with `/`, `-`,
+/// and space folded to `_` (so id `36/7-5` ↔ filename stem `36_7-5`).
+fn normalize_id(s: &str) -> String {
+    s.trim().to_ascii_lowercase().replace(['/', '-', ' '], "_")
+}
+
+/// Whether a file's name belongs to the well `id_key` (normalized) — its
+/// normalized stem starts with the id followed by `_` or end (so `36_7-5_A`
+/// matches `36/7-5` but `36_7-50` does not).
+fn file_matches_id(path: &Path, id_key: &str) -> bool {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let norm = normalize_id(stem);
+    norm == *id_key
+        || norm
+            .strip_prefix(id_key)
+            .is_some_and(|r| r.starts_with('_'))
 }
 
 /// Load a LAS file's curves, tagging them [`LogKind::Core`] when the filename

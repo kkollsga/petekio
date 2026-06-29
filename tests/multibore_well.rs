@@ -75,3 +75,25 @@ fn petrel_tops_route_to_well_and_bore() {
         1510.0
     );
 }
+
+#[test]
+fn split_layout_recursion_and_id_filter() {
+    // Real Petrel layout: Paths/ + Logs/ in separate subdirs, and a foreign
+    // well's log that must NOT be ingested into 36/7-Y.
+    let Some(root) = common::require("wells_split") else {
+        return;
+    };
+    let mut geo = GeoData::new(Unit::Metres);
+    geo.load_well("36/7-Y", (0.0, 0.0), 0.0, &root).unwrap();
+    let w = geo.well("36/7-Y").unwrap();
+    // Two bores found across the split dirs; the foreign 36_7-OTHER log excluded.
+    let labels: Vec<&str> = w.sidetracks().map(|s| s.label.as_str()).collect();
+    assert!(
+        labels.contains(&"A") && labels.contains(&"B"),
+        "labels={labels:?}"
+    );
+    assert!(w.sidetrack("A").unwrap().log("GR").is_some());
+    // The foreign 36_7-OTHER log was filtered out, so it did NOT fall back onto
+    // the main bore (which has no wellpath/logs of its own here).
+    assert_eq!(w.sidetrack("").unwrap().logs().count(), 0);
+}

@@ -6,6 +6,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Changed
+- `GeoData::load_well` now walks a directory **recursively** (handles a Petrel
+  export tree with separate `Paths/`/`Logs/` subdirs, not just a flat folder) and,
+  when filenames carry the well id, **ingests only that well's files** (skips
+  others sharing the tree). Flat per-well folders with generic filenames are
+  unchanged.
+
 ## [0.2.2] - 2026-06-29
 
 ### Added

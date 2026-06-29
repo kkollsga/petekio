@@ -174,7 +174,9 @@ impl Interval {
     pub fn thickness_md(&self) -> f64;
 }
 
-pub struct Log { pub mnemonic: String, pub unit: String /* md, values private */ }
+pub enum LogKind { Log, Core }                            // continuous log vs core-derived
+pub struct Log { pub mnemonic: String, pub unit: String /* kind, md, values private */ }
+impl Log { pub fn kind(&self) -> LogKind; pub fn with_kind(self, kind: LogKind) -> Log; }
 pub struct LogView<'a> { /* a possibly interval-clipped / filtered view */ }
 impl<'a> LogView<'a> {
     pub fn stats(&self) -> Stats;                            // the `well.brent.ntg` result

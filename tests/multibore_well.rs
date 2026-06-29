@@ -2,7 +2,7 @@
 //! per-bore `.las`. Asserts bores, positioned trajectories (MD preserved,
 //! z = TVD − kb), per-bore log routing, and recorded header (KB/XY/CRS).
 
-use petekio::{GeoData, Unit};
+use petekio::{GeoData, LogKind, Unit};
 
 const WELL_DIR: &str = "tests/fixtures/wells_multibore/36_7-X";
 
@@ -32,6 +32,14 @@ fn multibore_well_organizes_from_wellpaths() {
     assert!(w.sidetrack("A").unwrap().log("PHIE_2025").is_some());
     assert!(w.sidetrack("ST2").unwrap().log("SW_2025").is_some());
     assert!(w.sidetrack("A").unwrap().log("SW_2025").is_none()); // not cross-routed
+
+    // Core LAS (`..._full_core.las`) ingested onto bore A and tagged Core;
+    // comp-logs stay Log. Lets a consumer include/exclude core per zone.
+    let a_bore = w.sidetrack("A").unwrap();
+    let cpor = a_bore.logs().find(|l| l.mnemonic == "CPOR").unwrap();
+    assert_eq!(cpor.kind(), LogKind::Core);
+    let phie = a_bore.logs().find(|l| l.mnemonic == "PHIE_2025").unwrap();
+    assert_eq!(phie.kind(), LogKind::Log);
 }
 
 #[test]

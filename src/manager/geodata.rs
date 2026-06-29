@@ -11,7 +11,9 @@
 //! layers already support; unknown extensions are a typed `GeoError`. See each
 //! method for the formats it accepts.
 
-use crate::core::{Log, PointSet, PolygonSet, Station, Surface, Top, TrajectoryInput, Well};
+use crate::core::{
+    Log, LogKind, PointSet, PolygonSet, Station, Surface, Top, TrajectoryInput, Well,
+};
 use crate::foundation::{GeoError, Point3, Result, Unit};
 use crate::manager::wells_view::WellsView;
 use indexmap::IndexMap;
@@ -127,7 +129,7 @@ impl GeoData {
             // trajectory spanning the logs' MD range.
             let mut logs = Vec::new();
             for p in &las {
-                logs.extend(Log::load_las_all(p)?);
+                logs.extend(load_tagged_logs(p)?);
             }
             let st = well.sidetrack_mut("");
             if let Some((lo, hi)) = log_md_span(&logs) {
@@ -172,7 +174,7 @@ impl GeoData {
             for p in &las {
                 let bore = route_bore(p, &label_list);
                 let st = well.sidetrack_mut(&bore);
-                for log in Log::load_las_all(p)? {
+                for log in load_tagged_logs(p)? {
                     st.add_log(log);
                 }
             }
@@ -351,6 +353,23 @@ fn shared_underscore_prefix(stems: &[String]) -> String {
         }
     }
     prefix
+}
+
+/// Load a LAS file's curves, tagging them [`LogKind::Core`] when the filename
+/// marks core data (contains `core`, case-insensitive), else [`LogKind::Log`].
+fn load_tagged_logs(path: &Path) -> Result<Vec<Log>> {
+    let is_core = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.to_ascii_lowercase().contains("core"));
+    let logs = Log::load_las_all(path)?;
+    Ok(if is_core {
+        logs.into_iter()
+            .map(|l| l.with_kind(LogKind::Core))
+            .collect()
+    } else {
+        logs
+    })
 }
 
 /// Whether a Petrel tops `Well` field names the loaded well `id`: an exact match,

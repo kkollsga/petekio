@@ -16,6 +16,17 @@ use ndarray::Array1;
 use std::borrow::Cow;
 use std::path::Path;
 
+/// Whether a curve is a continuous log or discrete **core** measurement — so a
+/// consumer can include or exclude core data in per-zone aggregation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogKind {
+    /// A continuous wireline / computed log (the default).
+    #[default]
+    Log,
+    /// Core-derived data (e.g. core porosity/permeability plugs).
+    Core,
+}
+
 /// One measured-depth-indexed well curve: parallel `md`/`values` with
 /// `f64::NAN` for undefined samples. `md` is ascending.
 #[derive(Debug, Clone)]
@@ -24,6 +35,8 @@ pub struct Log {
     pub mnemonic: String,
     /// Value unit string from the source (e.g. `"GAPI"`, `"v/v"`).
     pub unit: String,
+    /// Whether this is a log or core curve.
+    kind: LogKind,
     /// Measured depth of each sample, ascending. Private; reach it via a view.
     md: Array1<f64>,
     /// Sample values aligned to `md`; `NaN` = undefined. Private.
@@ -51,9 +64,22 @@ impl Log {
         Ok(Log {
             mnemonic: mnemonic.into(),
             unit: unit.into(),
+            kind: LogKind::Log,
             md: Array1::from(md),
             values: Array1::from(values),
         })
+    }
+
+    /// This curve's kind (log vs core).
+    pub fn kind(&self) -> LogKind {
+        self.kind
+    }
+
+    /// Mark this curve's kind (builder style) — used by the loader to tag core
+    /// curves.
+    pub fn with_kind(mut self, kind: LogKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     /// Load every non-index curve of a LAS file as a [`Log`], each sharing the
@@ -198,6 +224,7 @@ impl<'a> LogView<'a> {
             return Log {
                 mnemonic: String::new(),
                 unit: String::new(),
+                kind: LogKind::Log,
                 md: Array1::from(Vec::new()),
                 values: Array1::from(Vec::new()),
             };
@@ -214,6 +241,7 @@ impl<'a> LogView<'a> {
         Log {
             mnemonic: String::new(),
             unit: String::new(),
+            kind: LogKind::Log,
             md: Array1::from(md),
             values: Array1::from(values),
         }

@@ -14,7 +14,7 @@ pub mod tops; // Top → Interval — formation tops and the depth interval each
 pub mod trajectory; // well path: minimum-curvature normalization + interpolation
 pub mod well; // Well → Sidetrack → Trajectory hierarchy
 
-pub use log::{Log, LogView};
+pub use log::{Log, LogKind, LogView};
 pub use points::{GridMethod, PointSet};
 pub use polygons::PolygonSet;
 pub use surface::Surface;

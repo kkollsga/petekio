@@ -254,7 +254,20 @@ pub enum Distribution {
     LogNormal { mu: f64, sigma: f64 },
 }
 pub struct Uncertain { pub value: f64, pub distribution: Distribution, pub provenance: Provenance }
-impl Uncertain { pub fn hard(value: f64) -> Uncertain; }   // measured point datum
+impl Uncertain {
+    pub fn hard(value: f64) -> Uncertain;       // Deterministic + HardData (measured point datum)
+    pub fn defaulted(value: f64) -> Uncertain;  // Deterministic + Defaulted
+    pub fn assumed(value: f64) -> Uncertain;    // Deterministic + Assumed
+    pub fn uniform(lo: f64, hi: f64) -> Uncertain;            // midpoint estimate, Interpolated
+    pub fn triangular(lo: f64, mode: f64, hi: f64) -> Uncertain;  // mode estimate
+    pub fn normal(mean: f64, std: f64) -> Uncertain;         // mean estimate
+    pub fn lognormal(mu: f64, sigma: f64) -> Uncertain;      // exp(mu) median estimate
+    pub fn from_stats(stats: &Stats, provenance: Provenance) -> Uncertain;  // Normal, or Deterministic if <2 / no spread
+    pub fn with_provenance(self, provenance: Provenance) -> Uncertain;
+}
+
+// foundation::Unit — areal conversion backing reservoir_area_acres
+impl Unit { pub fn area_to_acres(self, area_in_unit_sq: f64) -> f64; }
 
 // analysis — the contract (consumed by GeoData::model_inputs)
 pub struct ModelInputs { pub summary: SummaryInputs, pub spatial: SpatialInputs }

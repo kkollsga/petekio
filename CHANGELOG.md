@@ -6,6 +6,17 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Model-ready inputs contract (GATE-0)** — `GeoData::model_inputs() -> Result<ModelInputs>`,
+  the locked seam consumers (petekSim) build to. Uncertainty/provenance
+  vocabulary (`Uncertain`, `Distribution`, `Provenance`) and the contract types
+  (`ModelInputs`/`SummaryInputs`/`SpatialInputs`/`HorizonInput`/`WellCurveInput`).
+- `Uncertain` constructors: `hard`/`defaulted`/`assumed` (deterministic),
+  `uniform`/`triangular`/`normal`/`lognormal` (characterised), `from_stats`, and
+  the `with_provenance` builder.
+- `Unit::area_to_acres` — planar area (m²/ft²) → acres, backing
+  `reservoir_area_acres`.
+
 ## [0.2.0] - 2026-06-28
 
 ### Added

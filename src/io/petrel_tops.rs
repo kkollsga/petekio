@@ -24,7 +24,10 @@ const NULL: f64 = -999.0;
 /// Parse a Petrel well-tops file. Rows with a null (`-999`) or non-finite MD are
 /// skipped (no depth pick). Surface/Well come from the quoted columns.
 pub fn load(path: &Path) -> Result<Vec<PetrelTop>> {
-    let text = std::fs::read_to_string(path)?;
+    // Petrel exports are often Latin-1/Windows-1252 (Norwegian names), not UTF-8;
+    // decode lossily so odd bytes in description fields don't abort the parse.
+    let bytes = std::fs::read(path)?;
+    let text = String::from_utf8_lossy(&bytes);
     let mut in_data = false;
     let mut out = Vec::new();
     for line in text.lines() {
@@ -120,5 +123,27 @@ END HEADER
         assert!((tops[0].md - 2531.79).abs() < 1e-9);
         assert_eq!(tops[1].well, "36/7-5 B"); // quoted name with a space preserved
         assert_eq!(tops[1].surface, "Cerisa Main top");
+    }
+}
+
+#[cfg(test)]
+mod latin1_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn decodes_latin1_petrel_export_lossily() {
+        // 0xF8 = 'ø' in Latin-1 (invalid UTF-8) in a quoted Surface name.
+        let mut body: Vec<u8> = b"# Petrel well tops\nVERSION 2\nBEGIN HEADER\nX\nY\nZ\nTWT\nTWT2\nage\nMD\nPVD\nType\nSurface\nWell\nEND HEADER\n".to_vec();
+        body.extend_from_slice(b"1.0 2.0 -100.0 -999 -999 -999 120.0 -100.0 Horizon \"Gj");
+        body.push(0xF8); // ø
+        body.extend_from_slice(b"a top\" \"36/7-5 B\"\n");
+        let p = std::env::temp_dir().join("petekio_latin1_tops.tops");
+        std::fs::File::create(&p).unwrap().write_all(&body).unwrap();
+        // Must not error on the non-UTF-8 byte; the pick still parses.
+        let tops = load(&p).unwrap();
+        assert_eq!(tops.len(), 1);
+        assert_eq!(tops[0].well, "36/7-5 B");
+        assert!((tops[0].md - 120.0).abs() < 1e-9);
     }
 }

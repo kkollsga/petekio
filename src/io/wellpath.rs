@@ -35,7 +35,9 @@ pub struct WellPathRow {
 
 /// Parse a `.wellpath` file.
 pub fn load(path: &Path) -> Result<WellPath> {
-    let text = std::fs::read_to_string(path)?;
+    // Petrel exports may be Latin-1 (Norwegian names), not UTF-8 — decode lossily.
+    let bytes = std::fs::read(path)?;
+    let text = String::from_utf8_lossy(&bytes);
     let (mut hx, mut hy, mut kb): (Option<f64>, Option<f64>, Option<f64>) = (None, None, None);
     let mut crs = None;
     let mut rows = Vec::new();

@@ -33,11 +33,21 @@ fn map_err(e: las_rs::LasError) -> GeoError {
 /// Read a LAS file into its index curve plus the remaining curves.
 pub fn load(path: &Path) -> Result<LasCurves> {
     let las = las_rs::read_file(path).map_err(map_err)?;
-    let index = las
-        .index()
-        .map(<[f64]>::to_vec)
-        .ok_or_else(|| GeoError::Parse("LAS: no index/depth curve".into()))?;
     let mnemonics = las.curve_mnemonics();
+    // Index = the depth curve. `las_rs` recognizes the common `DEPT`; when it
+    // doesn't (e.g. Petrel core logs name it `DEPTH`), fall back to the LAS
+    // convention that the **first** curve is the depth index.
+    let index = match las.index() {
+        Some(ix) => ix.to_vec(),
+        None => {
+            let first = mnemonics
+                .first()
+                .ok_or_else(|| GeoError::Parse("LAS: no index/depth curve".into()))?;
+            las.curve_data(first)
+                .map(<[f64]>::to_vec)
+                .ok_or_else(|| GeoError::Parse("LAS: no index/depth curve".into()))?
+        }
+    };
     let mut curves = Vec::with_capacity(mnemonics.len().saturating_sub(1));
     for m in mnemonics.iter().skip(1) {
         let values = las.curve_data(m).map(<[f64]>::to_vec).unwrap_or_default();
@@ -52,4 +62,42 @@ pub fn load(path: &Path) -> Result<LasCurves> {
         });
     }
     Ok(LasCurves { index, curves })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn falls_back_to_depth_index_when_not_dept() {
+        // Petrel core logs name the index `DEPTH`, not the LAS-standard `DEPT`.
+        let body = "\
+~Version
+ VERS. 2.0 :
+ WRAP. NO :
+~Well
+ STRT.M 100.0 :
+ STOP.M 120.0 :
+ STEP.M 10.0 :
+ NULL. -999.25 :
+~Curve
+ DEPTH.M : Depth
+ CPOR.pu : core porosity
+~ASCII
+100.0 19.0
+110.0 21.0
+120.0 18.0
+";
+        let p = std::env::temp_dir().join("petekio_depth_index.las");
+        std::fs::File::create(&p)
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        let c = load(&p).unwrap();
+        assert_eq!(c.index, vec![100.0, 110.0, 120.0]);
+        assert_eq!(c.curves.len(), 1);
+        assert_eq!(c.curves[0].mnemonic, "CPOR");
+        assert_eq!(c.curves[0].values, vec![19.0, 21.0, 18.0]);
+    }
 }

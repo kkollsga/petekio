@@ -11,7 +11,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
   export tree with separate `Paths/`/`Logs/` subdirs, not just a flat folder) and,
   when filenames carry the well id, **ingests only that well's files** (skips
   others sharing the tree). Flat per-well folders with generic filenames are
-  unchanged.
+  unchanged. A LAS that fails to parse is now **skipped, not fatal**.
+
+### Fixed
+- LAS reader: fall back to the **first curve as the depth index** when the index
+  mnemonic isn't the standard `DEPT` (e.g. Petrel core logs name it `DEPTH`).
+- LAS/Petrel readers (`wellpath`, `petrel_tops`): **decode Latin-1/Windows-1252**
+  exports lossily instead of erroring on non-UTF-8 bytes (Norwegian names).
 
 ## [0.2.2] - 2026-06-29
 

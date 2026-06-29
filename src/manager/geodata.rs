@@ -80,7 +80,8 @@ impl GeoData {
     ///   (`36_7-5_A`/`36_7-5_ST2` → bores `A`/`ST2`). The header's wellhead XY /
     ///   KB / CRS are taken as authoritative.
     /// - `*.las` → every non-index curve becomes a [`Log`], routed to the bore
-    ///   whose label appears in the filename (else the main bore).
+    ///   whose label appears in the filename (else the main bore). A LAS that
+    ///   fails to parse (an unsupported variant) is skipped, not fatal.
     /// - `*.csv` → formation tops (columns `name`, `md`) on the main bore.
     ///
     /// With **no** `.wellpath`, a single main bore is built with a vertical
@@ -139,7 +140,9 @@ impl GeoData {
             // trajectory spanning the logs' MD range.
             let mut logs = Vec::new();
             for p in &las {
-                logs.extend(load_tagged_logs(p)?);
+                // Skip a LAS that fails to parse (e.g. an unsupported variant)
+                // rather than aborting the whole well.
+                logs.extend(load_tagged_logs(p).ok().into_iter().flatten());
             }
             let st = well.sidetrack_mut("");
             if let Some((lo, hi)) = log_md_span(&logs) {
@@ -184,7 +187,8 @@ impl GeoData {
             for p in &las {
                 let bore = route_bore(p, &label_list);
                 let st = well.sidetrack_mut(&bore);
-                for log in load_tagged_logs(p)? {
+                // Skip a LAS that fails to parse rather than aborting the well.
+                for log in load_tagged_logs(p).ok().into_iter().flatten() {
                     st.add_log(log);
                 }
             }

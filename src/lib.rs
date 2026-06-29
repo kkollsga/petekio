@@ -25,9 +25,12 @@ pub mod analysis;
 pub mod manager;
 
 // Public types are re-exported at the crate root.
+pub use analysis::{HorizonInput, ModelInputs, SpatialInputs, SummaryInputs, WellCurveInput};
 pub use core::{
     GridMethod, Interval, Log, LogView, PointSet, PolygonSet, Sidetrack, Station, Surface, Top,
     Trajectory, TrajectoryInput, Well,
 };
-pub use foundation::{BBox, GeoError, GridGeometry, Point3, Result, Stats, Unit};
+pub use foundation::{
+    BBox, Distribution, GeoError, GridGeometry, Point3, Provenance, Result, Stats, Uncertain, Unit,
+};
 pub use manager::{GeoData, WellsView};

@@ -1,6 +1,13 @@
-//! `analysis` — resample, minimum-curvature, statistics, filters, arithmetic
-//! that operate across the core objects. Imports from `foundation`, `io`,
-//! `core`.
+//! `analysis` — operations across the core objects (resample, minimum-curvature,
+//! statistics, filters, arithmetic; much lives as methods on the core types per
+//! the design constitution) **and** the model-ready-inputs assembly: the
+//! normalize → validate → interpret → characterise pipeline that turns loaded
+//! data into the [`ModelInputs`] contract consumers receive.
 //!
-//! Populated as the relevant operations land (much lives as methods on the core
-//! types per the design constitution).
+//! Imports from `foundation`, `io`, `core`.
+
+pub mod model_inputs;
+pub mod normalize;
+pub mod validate;
+
+pub use model_inputs::{HorizonInput, ModelInputs, SpatialInputs, SummaryInputs, WellCurveInput};

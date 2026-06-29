@@ -223,12 +223,60 @@ impl GeoData {
     pub fn polygons(&self, name: &str) -> Option<&PolygonSet>;
     pub fn surfaces(&self) -> impl Iterator<Item = &Surface>;
     pub fn wells(&self) -> WellsView;
+
+    /// Model-ready inputs — the consumer contract (see below).
+    pub fn model_inputs(&self) -> Result<ModelInputs>;
 }
 pub struct WellsView<'a> { /* broadcastable, filterable */ }
 impl<'a> WellsView<'a> {
     pub fn filter(&self, pred: impl Fn(&Well) -> bool) -> WellsView<'a>;
     pub fn iter(&self) -> impl Iterator<Item = &Well>;
     pub fn tops(&self, name: &str) -> WellsView<'a>;         // narrow to wells with that top
+}
+```
+
+## Model-ready inputs — the consumer contract
+
+> The seam petekSim (and other consumers) build to. `GeoData::model_inputs()`
+> returns inputs already **normalized → validated → interpreted → uncertainty-
+> characterised**, in canonical units and provenance-flagged — consumers map them
+> into their domain and derive nothing. Assembly stages live in
+> `analysis::{normalize, validate, model_inputs}`; GATE-0 locks this surface.
+
+```rust
+// foundation — uncertainty & provenance vocabulary
+pub enum Provenance { HardData, Interpolated, Defaulted, Assumed }
+pub enum Distribution {
+    Deterministic,
+    Uniform { lo: f64, hi: f64 },
+    Triangular { lo: f64, mode: f64, hi: f64 },
+    Normal { mean: f64, std: f64 },
+    LogNormal { mu: f64, sigma: f64 },
+}
+pub struct Uncertain { pub value: f64, pub distribution: Distribution, pub provenance: Provenance }
+impl Uncertain { pub fn hard(value: f64) -> Uncertain; }   // measured point datum
+
+// analysis — the contract (consumed by GeoData::model_inputs)
+pub struct ModelInputs { pub summary: SummaryInputs, pub spatial: SpatialInputs }
+
+pub struct SummaryInputs {              // scalars in canonical units, each Uncertain
+    pub reservoir_area_acres: Uncertain,
+    pub net_pay_ft: Uncertain,
+    pub porosity_frac: Uncertain,
+    pub water_saturation_frac: Uncertain,
+    pub net_to_gross_frac: Uncertain,
+    pub owc_ft: Option<Uncertain>,      // fluid contacts
+    pub goc_ft: Option<Uncertain>,
+}
+pub struct SpatialInputs {              // for the 3D grid build + upscaling
+    pub boundary: Option<PolygonSet>,
+    pub horizons: Vec<HorizonInput>,    // surface.resample(&GridGeometry) onto the consumer lattice
+    pub well_curves: Vec<WellCurveInput>,
+}
+pub struct HorizonInput { pub name: String, pub surface: Surface, pub provenance: Provenance }
+pub struct WellCurveInput {
+    pub well_id: String, pub mnemonic: String,  // canonical post-normalize, e.g. "PHIE"
+    pub md: Vec<f64>, pub values: Vec<f64>, pub provenance: Provenance,
 }
 ```
 

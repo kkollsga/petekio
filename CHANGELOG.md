@@ -38,6 +38,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `PointSet::regrid_min_curvature` (warm-started incremental min-curvature
   re-grid on a prior surface's lattice, honouring control points as hard
   constraints).
+- **`GeoData::model_inputs()` implemented** — assembles the full
+  normalize→validate→interpret→characterise pipeline across a project into the
+  `ModelInputs` contract (summary scalars as `Uncertain`, horizons, canonical
+  well curves, boundary). `GeoData::surfaces_named`/`polygons_named` accessors;
+  `Surface` and `PolygonSet` are now `Clone`.
 
 ## [0.2.0] - 2026-06-28
 

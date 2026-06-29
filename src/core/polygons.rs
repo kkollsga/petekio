@@ -13,6 +13,7 @@ use std::path::Path;
 /// A set of simple polygons (exterior rings, no holes). Z, if present in the
 /// source, is dropped — all operations are areal. Undefined extents on an empty
 /// set are `NaN`.
+#[derive(Clone)]
 pub struct PolygonSet {
     polys: Vec<Polygon<f64>>,
 }

@@ -230,9 +230,13 @@ impl GeoData {
     pub fn points(&self, name: &str) -> Option<&PointSet>;
     pub fn polygons(&self, name: &str) -> Option<&PolygonSet>;
     pub fn surfaces(&self) -> impl Iterator<Item = &Surface>;
+    pub fn surfaces_named(&self) -> impl Iterator<Item = (&str, &Surface)>;
+    pub fn polygons_named(&self) -> impl Iterator<Item = (&str, &PolygonSet)>;
     pub fn wells(&self) -> WellsView;
 
-    /// Model-ready inputs — the consumer contract (see below).
+    /// Model-ready inputs — the consumer contract (see below). Assembles
+    /// normalize→validate→interpret→characterise across the project.
+    /// Surface and PolygonSet are Clone (horizons/boundary are cloned out).
     pub fn model_inputs(&self) -> Result<ModelInputs>;
 }
 pub struct WellsView<'a> { /* broadcastable, filterable */ }

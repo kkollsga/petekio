@@ -197,6 +197,16 @@ impl GeoData {
         self.surfaces.values()
     }
 
+    /// All surfaces with their names, in insertion order.
+    pub fn surfaces_named(&self) -> impl Iterator<Item = (&str, &Surface)> {
+        self.surfaces.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /// All polygon sets with their names, in insertion order.
+    pub fn polygons_named(&self) -> impl Iterator<Item = (&str, &PolygonSet)> {
+        self.polygons.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
     /// A broadcastable, filterable view over all wells (insertion order).
     pub fn wells(&self) -> WellsView<'_> {
         WellsView::new(self.wells.values().collect())

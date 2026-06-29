@@ -68,6 +68,17 @@ impl PolygonSet {
         self.polys.iter().map(|p| p.unsigned_area()).sum()
     }
 
+    /// The exterior ring vertices of each polygon, as `[x, y, z]` with `z = 0.0`
+    /// (Z is not retained — these sets are areal). The ring is closed (first
+    /// vertex repeated last), in insertion order. Lets a consumer read the
+    /// outline geometry, not just `area`/`bbox`/`contains`.
+    pub fn rings(&self) -> Vec<Vec<[f64; 3]>> {
+        self.polys
+            .iter()
+            .map(|p| p.exterior().coords().map(|c| [c.x, c.y, 0.0]).collect())
+            .collect()
+    }
+
     /// Axis-aligned bounding box over all polygons. Empty set → a box of `NaN`s.
     pub fn bbox(&self) -> BBox {
         let mut b = BBox {
@@ -134,6 +145,21 @@ mod tests {
     #[test]
     fn area_of_unit_square_is_one() {
         approx::assert_relative_eq!(unit_square().area(), 1.0);
+    }
+
+    #[test]
+    fn rings_returns_exterior_vertices() {
+        let rings = unit_square().rings();
+        assert_eq!(rings.len(), 1);
+        // Closed ring (first vertex repeated); all z = 0.
+        assert_eq!(rings[0].first(), rings[0].last());
+        assert!(rings[0].iter().all(|c| c[2] == 0.0));
+        // The four corners are present.
+        for corner in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]] {
+            assert!(rings[0]
+                .iter()
+                .any(|c| c[0] == corner[0] && c[1] == corner[1]));
+        }
     }
 
     #[test]

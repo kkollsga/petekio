@@ -13,6 +13,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
   head=(x, y), kb=…)` plus `xyz` / `tvd` / `md_at_tvd` / `md_range` — directional
   surveys can now be built and queried directly from Python.
 
+### Added
+- `PolygonSet::rings()` — exterior ring vertices per polygon (`[x, y, z]`, z=0,
+  closed) + Python binding, so consumers can read the boundary outline geometry
+  (not just `area`/`bbox`/`contains`).
+
 ### Changed
 - New **`algorithms/`** layer: pure, type-light numeric kernels grouped by
   discipline (`algorithms::wells` — minimum-curvature survey: `tangent`,

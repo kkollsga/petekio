@@ -206,6 +206,12 @@ impl PolygonSet {
         self.with(py, |p| Ok(BBox::new(p.bbox())))
     }
 
+    /// Exterior ring vertices of each polygon as `[x, y, z]` (z = 0); the
+    /// outline geometry, not just area/bbox.
+    fn rings(&self, py: Python<'_>) -> PyResult<Vec<Vec<[f64; 3]>>> {
+        self.with(py, |p| Ok(p.rings()))
+    }
+
     /// A copy of `surface` with every node outside all polygons masked to `NaN`.
     fn clip(&self, py: Python<'_>, surface: &Surface) -> PyResult<Surface> {
         self.with(py, |p| Ok(Surface::wrap(p.clip(&surface.inner))))

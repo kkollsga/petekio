@@ -211,6 +211,7 @@ impl PolygonSet {
     pub fn contains(&self, x: f64, y: f64) -> bool;
     pub fn area(&self) -> f64;
     pub fn bbox(&self) -> BBox;
+    pub fn rings(&self) -> Vec<Vec<[f64; 3]>>;              // exterior outline vertices per polygon (z=0, closed)
     pub fn clip(&self, surface: &Surface) -> Surface;       // mask outside → NaN
 }
 ```

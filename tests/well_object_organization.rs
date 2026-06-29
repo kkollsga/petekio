@@ -7,14 +7,17 @@
 use petekio::analysis::normalize::canonical_mnemonic;
 use petekio::{GeoData, LogKind, Unit};
 
-const WELL_DIR: &str = "tests/fixtures/wells_multibore/36_7-X";
-const TOPS: &str = "tests/fixtures/wells_multibore/CerisaTops_like.tops";
+mod common;
 
 #[test]
 fn well_object_is_fully_organized() {
+    let Some(well_dir) = common::require("wells_multibore/36_7-X") else {
+        return;
+    };
+    let tops = common::require("wells_multibore/CerisaTops_like.tops").unwrap();
     let mut geo = GeoData::new(Unit::Metres);
-    geo.load_well("36/7-X", (0.0, 0.0), 0.0, WELL_DIR).unwrap();
-    geo.load_well_tops(TOPS).unwrap();
+    geo.load_well("36/7-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
+    geo.load_well_tops(&tops).unwrap();
     let w = geo.well("36/7-X").unwrap();
 
     // Header captured from the .wellpath (authoritative), incl. CRS.

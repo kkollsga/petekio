@@ -4,13 +4,16 @@
 
 use petekio::{GeoData, LogKind, Unit};
 
-const WELL_DIR: &str = "tests/fixtures/wells_multibore/36_7-X";
+mod common;
 
 #[test]
 fn multibore_well_organizes_from_wellpaths() {
+    let Some(well_dir) = common::require("wells_multibore/36_7-X") else {
+        return;
+    };
     let mut geo = GeoData::new(Unit::Metres);
     // Pass placeholder head/kb — the .wellpath header is authoritative.
-    geo.load_well("36/7-X", (0.0, 0.0), 0.0, WELL_DIR).unwrap();
+    geo.load_well("36/7-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
     let w = geo.well("36/7-X").unwrap();
 
     // Header taken from the wellpath, not the placeholder call args.
@@ -44,11 +47,13 @@ fn multibore_well_organizes_from_wellpaths() {
 
 #[test]
 fn petrel_tops_route_to_well_and_bore() {
+    let Some(well_dir) = common::require("wells_multibore/36_7-X") else {
+        return;
+    };
+    let tops = common::require("wells_multibore/CerisaTops_like.tops").unwrap();
     let mut geo = GeoData::new(Unit::Metres);
-    geo.load_well("36/7-X", (0.0, 0.0), 0.0, WELL_DIR).unwrap();
-    let added = geo
-        .load_well_tops("tests/fixtures/wells_multibore/CerisaTops_like.tops")
-        .unwrap();
+    geo.load_well("36/7-X", (0.0, 0.0), 0.0, &well_dir).unwrap();
+    let added = geo.load_well_tops(&tops).unwrap();
     // 2 valid picks land (the -999-MD row + the unknown well "36/7-Z" are skipped).
     assert_eq!(added, 2);
     let w = geo.well("36/7-X").unwrap();

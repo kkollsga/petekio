@@ -23,7 +23,13 @@ keywords = ["subsurface", "geoscience", "geology", "seismic", "irap"]
 categories = ["science", "parsing"]
 # Keep the published crate lean — the Python wheel sources + CI live in the repo
 # but aren't part of the Rust library. (Workspace member `py/` is auto-excluded.)
-exclude = ["/python", "/pyproject.toml", "/.github", "/.cargo", "/dist", "/.claude", "/CLAUDE.md"]
+# Keep the published crate lean and ship NO test/example data: tests/ (golden
+# fixtures) and examples/ (notebooks + sample data) aren't part of the library a
+# downstream user consumes. (benches/ stays — a declared [[bench]] target.)
+exclude = [
+    "/python", "/pyproject.toml", "/.github", "/.cargo", "/dist", "/.claude",
+    "/CLAUDE.md", "/tests", "/examples",
+]
 
 [dependencies]
 thiserror = "2"

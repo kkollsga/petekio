@@ -18,12 +18,17 @@ maturin develop --release
 Run the notebooks **from this `examples/` folder** so the relative paths under
 `data/` resolve.
 
-## Data (`data/`)
+## Data — external (not in the repo)
 
-Small sample files copied from the test fixtures — enough to exercise the API,
-not real assets:
+The sample data lives in the **external data folder**, not the repo. The
+notebooks resolve it via the `PETEKIO_TEST_DATA` environment variable (default
+`/Volumes/EksternalHome/Data/modellingProject/petekio-fixtures`), reading
+`$PETEKIO_TEST_DATA/examples-data/`:
 
-- `horizon_top.irap` — a tiny IRAP-classic depth surface (one undefined node).
-- `scatter_points.csv` — scattered `x,y,depth` (+ a `poro` column) for gridding.
-- `wells/15_9-A1/` — a vertical well: `sample.las` (PHI / SUWI / NTG curves) +
-  `tops.csv` (Brent / Dunlin).
+```bash
+export PETEKIO_TEST_DATA=/path/to/your/data/folder   # contains examples-data/
+```
+
+`examples-data/` holds: `horizon_top.irap` (tiny IRAP surface), `scatter_points.csv`
+(scattered `x,y,depth` + `poro`), and `wells/15_9-A1/` (a small well: `sample.las`
++ `tops.csv`). Point `DATA` at your own files to run on real data.

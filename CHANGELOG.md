@@ -6,6 +6,22 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **`zone_table` views, aggregation, and thickness-weighting** (Python, `Well` +
+  `GeoData.wells`):
+  - `pivot=True` → wide: `zone` index × `bore` columns (single stat flat; several
+    → MultiIndex `(stat, bore)`); `zone` keeps lithostratigraphic order.
+  - `aggregate=True` → grouped by zone with a pooled **all** row first, then the
+    per-bore rows, indexed by `(zone, bore)`. Mutually exclusive with `pivot`.
+  - `weighted=True` (**default**) thickness-weights every average — per-bore and
+    the pooled aggregate — by each sample's MD span, so a finely-sampled log no
+    longer outweighs a coarse one over the same interval. Uniform sampling is a
+    no-op; `weighted=False` restores the plain sample mean. (`sum` then becomes
+    `Σ(dz·value)` — the thickness-integrated quantity, e.g. Σφ·dz.)
+  - `stats=` also accepts **`samples`** (sample count) and **`gross`** (zone MD
+    thickness; its aggregate is the mean across bores).
+  - `decimals=N` rounds the stat values. Default `pivot=False` is the tidy frame.
+
 ## [0.2.7] - 2026-06-30
 
 ### Added

@@ -70,15 +70,23 @@ For a per-`zone × bore` table, `zone_table` returns a ready
 [pandas](https://pandas.pydata.org/) DataFrame — no manual loop/pivot/reorder:
 
 ```python
-t = w.zone_table("PHIE", stats=("mean", "p50", "p90"))   # columns: zone, bore, mean, p50, p90
-t.pivot(index="zone", columns="bore", values="mean")     # zone keeps lithostratigraphic order
-geo.wells.zone_table("PHIE")                              # multi-well; bore = "<well> <sidetrack>"
+t = w.zone_table("PHIE", stats=("mean", "p50", "p90"))   # tidy: zone, bore, mean, p50, p90
+w.zone_table("PHIE", pivot=True, decimals=3)             # wide: zone index × bore columns, rounded
+w.zone_table("PHIE", aggregate=True)                     # grouped: pooled "all" row first, then per bore
+geo.wells.zone_table("PHIE")                             # multi-well; bore = "<well> <sidetrack>"
 ```
 
-`stats` are `Stats` attribute names (default `["mean"]`). `zone` is an ordered
+`stats` are `Stats` attribute names (default `["mean"]`), plus **`samples`**
+(sample count) and **`gross`** (the zone's MD thickness). `zone` is an ordered
 Categorical in lithostratigraphic order, so it survives `pivot`/`groupby`;
-zero-thickness / no-sample cells drop out unless `include_empty=True`. Needs
-pandas — `pip install petekio[pandas]`.
+zero-thickness / no-sample cells drop out unless `include_empty=True`.
+
+Averages are **thickness-weighted by default** — each sample is weighted by the
+MD span it represents, so a finely-sampled log doesn't outweigh a coarse one over
+the same interval (uniform sampling is a no-op). Pass `weighted=False` for the
+plain sample mean. `aggregate=True` adds a pooled **all** row per zone (the
+thickness-weighted average across bores). Needs pandas —
+`pip install petekio[pandas]`.
 
 ## Lithostratigraphic ordering
 

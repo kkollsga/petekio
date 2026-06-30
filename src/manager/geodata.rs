@@ -33,6 +33,10 @@ pub struct GeoData {
     /// [`load_well_tops`](GeoData::load_well_tops) runs; pushed down into every
     /// well so `zones()`/`zone_stats()` present in this order.
     strat_order: Vec<String>,
+    /// User-supplied soft ordering hints `(above, below)` as raw name tokens
+    /// (possibly partial). Applied during `load_well_tops` — resolved to actual
+    /// top names, then honoured only where the data leaves the pair unordered.
+    strat_hints: Vec<(String, String)>,
 }
 
 /// Lower-cased file extension of `path`, or `""` when it has none.
@@ -53,6 +57,7 @@ impl GeoData {
             points: IndexMap::new(),
             polygons: IndexMap::new(),
             strat_order: Vec::new(),
+            strat_hints: Vec::new(),
         }
     }
 
@@ -61,6 +66,38 @@ impl GeoData {
     /// that file. Empty before any tops are loaded.
     pub fn strat_order(&self) -> &[String] {
         &self.strat_order
+    }
+
+    /// Add a soft lithostratigraphic hint: place `above` shallower than `below`.
+    /// `above`/`below` may be partial top names (resolved at `load_well_tops`).
+    /// A hint is honoured only where the *data* leaves the pair unordered — it
+    /// never overrides a strict MD relationship. Add hints **before**
+    /// `load_well_tops`. See [`strat_hint`](GeoData::strat_hint) for shorthand.
+    pub fn add_strat_hint(&mut self, above: &str, below: &str) {
+        self.strat_hints
+            .push((above.to_string(), below.to_string()));
+    }
+
+    /// Shorthand for [`add_strat_hint`](GeoData::add_strat_hint): `"A < B"` reads
+    /// "A above B"; `"A > B"` reads "A below B". Sides may be partial names.
+    /// `Err` if the spec carries neither `<` nor `>` or has an empty side.
+    pub fn strat_hint(&mut self, spec: &str) -> Result<()> {
+        let (above, below) = if let Some((l, r)) = spec.split_once('<') {
+            (l.trim(), r.trim())
+        } else if let Some((l, r)) = spec.split_once('>') {
+            (r.trim(), l.trim())
+        } else {
+            return Err(GeoError::Parse(format!(
+                "strat hint '{spec}' must contain '<' (above) or '>' (below)"
+            )));
+        };
+        if above.is_empty() || below.is_empty() {
+            return Err(GeoError::Parse(format!(
+                "strat hint '{spec}' has an empty side"
+            )));
+        }
+        self.add_strat_hint(above, below);
+        Ok(())
     }
 
     /// Load a surface from `path` and store it under `name`. Reads the IRAP
@@ -238,16 +275,31 @@ impl GeoData {
         // Built before the loaded-well filter below.
         let order = {
             let mut by_well: IndexMap<&str, Vec<(f64, &str)>> = IndexMap::new();
+            let mut names: Vec<&str> = Vec::new();
             for r in &recs {
                 if r.kind.eq_ignore_ascii_case("Horizon") {
                     by_well
                         .entry(r.well.as_str())
                         .or_default()
                         .push((r.md, r.surface.as_str()));
+                    if !names.contains(&r.surface.as_str()) {
+                        names.push(r.surface.as_str());
+                    }
                 }
             }
+            // Resolve each (partial) hint token to an actual top name; a bad
+            // token errors here rather than silently doing nothing.
+            let resolved: Vec<(String, String)> = self
+                .strat_hints
+                .iter()
+                .map(|(a, b)| Ok((resolve_top_name(a, &names)?, resolve_top_name(b, &names)?)))
+                .collect::<Result<_>>()?;
+            let hints: Vec<(&str, &str)> = resolved
+                .iter()
+                .map(|(a, b)| (a.as_str(), b.as_str()))
+                .collect();
             let seqs: Vec<Vec<(f64, &str)>> = by_well.into_values().collect();
-            crate::algorithms::wells::merge_strat_order(&seqs, &[])
+            crate::algorithms::wells::merge_strat_order(&seqs, &hints)
         };
 
         // Distribute each Horizon pick to the matching loaded well + bore.
@@ -418,6 +470,37 @@ fn shared_underscore_prefix(stems: &[String]) -> String {
         }
     }
     prefix
+}
+
+/// Resolve a (possibly partial) hint token to an actual top name from `names`,
+/// case-insensitively: exact → `token + " top"` exact → unique substring. A token
+/// matching several names (and no `… top`) is an error listing the candidates;
+/// an unmatched token errors too — so a typo'd hint fails loudly, not silently.
+fn resolve_top_name(token: &str, names: &[&str]) -> Result<String> {
+    let t = token.trim();
+    if let Some(n) = names.iter().find(|n| n.eq_ignore_ascii_case(t)) {
+        return Ok(n.to_string());
+    }
+    let with_top = format!("{t} top");
+    if let Some(n) = names.iter().find(|n| n.eq_ignore_ascii_case(&with_top)) {
+        return Ok(n.to_string());
+    }
+    let lc = t.to_ascii_lowercase();
+    let hits: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|n| n.to_ascii_lowercase().contains(&lc))
+        .collect();
+    match hits.as_slice() {
+        [one] => Ok(one.to_string()),
+        [] => Err(GeoError::Parse(format!(
+            "strat hint: no top matches '{token}'"
+        ))),
+        many => Err(GeoError::Parse(format!(
+            "strat hint: '{token}' is ambiguous — matches {}",
+            many.join(", ")
+        ))),
+    }
 }
 
 /// Recursively collect every file under `dir` into `out`.

@@ -27,9 +27,28 @@ fn loaded_well_zones_follow_the_global_column() {
     geo.load_well_tops(&tops).unwrap();
 
     let w = geo.well("FIELD-1").unwrap();
-    let names: Vec<_> = w.zones().iter().map(|z| z.name.clone()).collect();
+    let bore = w
+        .sidetrack("A")
+        .expect("bore A carries the trajectory + picks");
+    let zones: Vec<_> = bore
+        .zones()
+        .iter()
+        .map(|z| (z.name.clone(), z.top_md, z.base_md))
+        .collect();
+    let names: Vec<_> = zones.iter().map(|(n, _, _)| n.clone()).collect();
     // FIELD-1 has Top, Mid, Sand with Mid/Sand coincident and Sand added last,
     // so by MD/insertion alone this would be [Top, Mid, Sand]. The cross-well
     // column lifts Sand above Mid (FIELD-3 develops Sand ≺ Mid).
     assert_eq!(names, ["Top", "Sand", "Mid"]);
+    // Tie-break base assignment: in the {Mid, Sand} coincident cluster, Mid is
+    // the deeper (Sand ≺ Mid), so Mid owns the interval down to TD and Sand
+    // pinches to zero — not the arbitrary insertion-order pick.
+    let geom = |name: &str| {
+        zones
+            .iter()
+            .find(|(n, _, _)| n == name)
+            .map(|(_, t, b)| (*t, *b))
+    };
+    assert_eq!(geom("Sand"), Some((120.0, 120.0))); // shallower coincident → zero
+    assert!(geom("Mid").unwrap().1 > 120.0); // deeper owns the interval to TD
 }

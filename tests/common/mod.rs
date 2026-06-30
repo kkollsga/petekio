@@ -127,24 +127,29 @@ pub fn synth_tops() -> PathBuf {
 /// Returns `(field-1 well folder, tops path)`.
 pub fn synth_field() -> (PathBuf, PathBuf) {
     let d = tmpdir("field");
+    // FIELD-1 as a two-bore well (A carries the picks, B is a second bore) so
+    // the shared-prefix `FIELD-1_` strips to clean labels A/B — mirroring a real
+    // Petrel tree, where tops route to a labelled bore that owns a trajectory.
     let well = d.join("FIELD-1");
-    write(
-        &well.join("FIELD-1.wellpath"),
-        &wp("0 1000 2000 0 0 0 0 145 0 0 145\n\
-             200 1000 2000 -200 200 0 0 145 0 0 145\n"),
-    );
+    for bore in ["A", "B"] {
+        write(
+            &well.join(format!("FIELD-1_{bore}.wellpath")),
+            &wp("0 1000 2000 0 0 0 0 145 0 0 145\n\
+                 200 1000 2000 -200 200 0 0 145 0 0 145\n"),
+        );
+    }
     let tops = d.join("field.tops");
     write(
         &tops,
         "# Petrel well tops\nVERSION 2\nBEGIN HEADER\nX\nY\nZ\nTWT\nTWT2\nage\nMD\nPVD\nType\nSurface\nWell\nEND HEADER\n\
-         1 2 -1 -999 -999 -999 100.0 -1 Horizon \"Top\" \"FIELD-1\"\n\
+         1 2 -1 -999 -999 -999 100.0 -1 Horizon \"Top\" \"FIELD-1 A\"\n\
          1 2 -1 -999 -999 -999 100.0 -1 Horizon \"Top\" \"FIELD-2\"\n\
          1 2 -1 -999 -999 -999 100.0 -1 Horizon \"Top\" \"FIELD-3\"\n\
-         1 2 -1 -999 -999 -999 120.0 -1 Horizon \"Mid\" \"FIELD-1\"\n\
+         1 2 -1 -999 -999 -999 120.0 -1 Horizon \"Mid\" \"FIELD-1 A\"\n\
          1 2 -1 -999 -999 -999 120.0 -1 Horizon \"Mid\" \"FIELD-2\"\n\
          1 2 -1 -999 -999 -999 120.0 -1 Horizon \"Mid\" \"FIELD-3\"\n\
          1 2 -1 -999 -999 -999 130.0 -1 Horizon \"Lower\" \"FIELD-2\"\n\
-         1 2 -1 -999 -999 -999 120.0 -1 Horizon \"Sand\" \"FIELD-1\"\n\
+         1 2 -1 -999 -999 -999 120.0 -1 Horizon \"Sand\" \"FIELD-1 A\"\n\
          1 2 -1 -999 -999 -999 110.0 -1 Horizon \"Sand\" \"FIELD-3\"\n",
     );
     (well, tops)

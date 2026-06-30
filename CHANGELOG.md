@@ -6,6 +6,18 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Changed
+- **Coincident-tops interval assignment follows lithostratigraphy.** When
+  several tops share a measured depth (a zero-thickness cluster — e.g. a
+  formation top stacked with sand members), the interval down to the next
+  distinct-MD pick is now assigned to the cluster's **stratigraphically lowest**
+  member (per the loaded `strat_order`), instead of the arbitrary
+  insertion-order pick. So the marker immediately above the developed interval
+  carries it — e.g. a `Cerisa West top` coincident with the Duva group correctly
+  owns the reservoir interval beneath it. Geometry for distinct-MD tops is
+  unchanged; only zero-thickness ties are affected, and only when a column is
+  loaded.
+
 ## [0.2.4] - 2026-06-30
 
 ### Added

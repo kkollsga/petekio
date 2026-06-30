@@ -245,17 +245,43 @@ impl Sidetrack {
     /// top resolves an interval base).
     pub fn add_tops(&mut self, tops: Vec<Top>) {
         self.tops.extend(tops);
-        self.tops.sort_by(|a, b| a.md.total_cmp(&b.md));
+        self.sort_tops();
     }
 
     /// Set the project-wide lithostratigraphic order (top names, shallow→deep).
     /// Pushed down from the manager once a tops file is loaded; [`zones`] then
-    /// presents zones in this order. Top geometry is untouched — only the
-    /// returned sequence follows the column.
+    /// presents zones in this order, and a coincident-MD (zero-thickness)
+    /// cluster's downward interval is assigned to its stratigraphically *lowest*
+    /// member (see [`sort_tops`](Sidetrack::sort_tops)).
     ///
     /// [`zones`]: Sidetrack::zones
     pub fn set_strat_order(&mut self, order: &[String]) {
         self.strat_order = order.to_vec();
+        self.sort_tops();
+    }
+
+    /// Keep `tops` ordered ascending by MD (so the next top resolves a base).
+    /// When a lithostratigraphic column is set, equal-MD ties — zero-thickness
+    /// pinch-outs where several picks share a depth — break by **strat rank**, so
+    /// the *deepest* member of the cluster sorts last and therefore owns the
+    /// interval down to the next distinct-MD pick (`zones`/`top` compute base =
+    /// the next top's MD). Without a column, or for names absent from it, ties
+    /// keep insertion order (stable sort). Geometry for distinct MDs is
+    /// unaffected — rank only ever orders within an exact MD tie.
+    fn sort_tops(&mut self) {
+        if self.strat_order.is_empty() {
+            self.tops.sort_by(|a, b| a.md.total_cmp(&b.md));
+            return;
+        }
+        let rank: HashMap<&str, usize> = self
+            .strat_order
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.as_str(), i))
+            .collect();
+        let rank_of = |t: &Top| rank.get(t.name.as_str()).copied().unwrap_or(usize::MAX);
+        self.tops
+            .sort_by(|a, b| a.md.total_cmp(&b.md).then(rank_of(a).cmp(&rank_of(b))));
     }
 
     /// The interval named by top `name` (case-insensitive): `[top.md, base)`,
@@ -463,42 +489,43 @@ mod tests {
     }
 
     #[test]
-    fn zones_follow_strat_order_without_moving_geometry() {
+    fn strat_order_assigns_coincident_interval_to_deepest_member() {
         let mut w = Well::new("w", (0.0, 0.0), 0.0);
         let st = w.sidetrack_mut("");
         st.add_trajectory(vertical(0.0, 2500.0)).unwrap(); // TD 2500
-                                                           // File lists the sand last; "B" and "Sand" are coincident (zero
-                                                           // thickness) so the stable MD sort leaves B before Sand.
+                                                           // "B" and "Sand" are coincident at 2420 (zero thickness); Sand is
+                                                           // added last. The interval below them runs to TD (2500).
         st.add_tops(vec![
             Top::new("A", 2400.0),
             Top::new("B", 2420.0),
             Top::new("Sand", 2420.0),
         ]);
 
-        // No column set → plain MD order, the sand trails.
+        let base = |w: &Well, name: &str| {
+            w.zones()
+                .into_iter()
+                .find(|z| z.name == name)
+                .map(|z| (z.top_md, z.base_md))
+        };
+
+        // No column → MD order; the tie falls to insertion order, so Sand
+        // (added last) sorts last in the cluster and owns the interval to TD.
         let md_order: Vec<_> = w.zones().iter().map(|z| z.name.clone()).collect();
         assert_eq!(md_order, ["A", "B", "Sand"]);
+        assert_eq!(base(&w, "Sand"), Some((2420.0, 2500.0)));
+        assert_eq!(base(&w, "B"), Some((2420.0, 2420.0))); // zero thickness
 
-        // Geometry keyed by name, for the invariance check.
-        let geom = |w: &Well| -> Vec<(String, f64, f64)> {
-            let mut g: Vec<_> = w
-                .zones()
-                .iter()
-                .map(|z| (z.name.clone(), z.top_md, z.base_md))
-                .collect();
-            g.sort_by(|a, b| a.0.cmp(&b.0));
-            g
-        };
-        let before = geom(&w);
-
-        // A column that lifts the sand above B reorders the sequence...
+        // A column placing B *below* Sand makes B the deepest of the {B, Sand}
+        // cluster, so B now owns the interval to TD; Sand pinches to zero. The
+        // sequence is also presented in strat order.
         w.set_strat_order(&["A".to_string(), "Sand".to_string(), "B".to_string()]);
         let strat: Vec<_> = w.zones().iter().map(|z| z.name.clone()).collect();
         assert_eq!(strat, ["A", "Sand", "B"]);
-        // ...but every interval's [top_md, base) is unchanged.
-        assert_eq!(geom(&w), before);
+        assert_eq!(base(&w, "B"), Some((2420.0, 2500.0))); // deepest owns the interval
+        assert_eq!(base(&w, "Sand"), Some((2420.0, 2420.0))); // shallower → zero
+        assert_eq!(base(&w, "A"), Some((2400.0, 2420.0))); // distinct MD: unaffected
 
-        // A name absent from the column keeps MD order (sorts to the end).
+        // A name absent from the column keeps insertion order within the tie.
         w.set_strat_order(&["Sand".to_string(), "A".to_string()]);
         let mixed: Vec<_> = w.zones().iter().map(|z| z.name.clone()).collect();
         assert_eq!(mixed, ["Sand", "A", "B"]);

@@ -29,6 +29,7 @@ categories = ["science", "parsing"]
 exclude = [
     "/python", "/pyproject.toml", "/.github", "/.cargo", "/dist", "/.claude",
     "/CLAUDE.md", "/tests", "/examples",
+    "/docs", "/mkdocs.yml", "/.readthedocs.yaml", "/site",
 ]
 
 [dependencies]

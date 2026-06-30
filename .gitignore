@@ -30,3 +30,6 @@ __pycache__/
 # Python build artifacts
 /dist/
 *.whl
+
+# MkDocs build output
+/site/

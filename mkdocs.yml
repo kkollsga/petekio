@@ -1,0 +1,44 @@
+site_name: petekIO
+site_description: The subsurface data layer — surfaces, wells, points, polygons.
+repo_url: https://github.com/kkollsga/petekio
+repo_name: kkollsga/petekio
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue grey
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue grey
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Guides:
+      - GeoData project: guide/geodata.md
+      - Wells: guide/wells.md
+      - Surfaces, points & polygons: guide/surfaces.md
+  - API reference: api/reference.md

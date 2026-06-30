@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-06-30
+
 ### Added
 - **`zone_table()`** (Python) — a first-class tidy per-`zone × bore` table for a
   curve, on `Well` and `GeoData.wells` (`WellsView`). Returns a `pandas.DataFrame`

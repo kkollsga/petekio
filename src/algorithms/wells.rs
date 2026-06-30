@@ -128,7 +128,14 @@ pub fn survey_positions(
 /// — including wells not loaded into the project — so the returned column
 /// reflects the whole field, not one borehole. Names are returned once each, in
 /// global lithostratigraphic order.
-pub fn merge_strat_order(wells: &[Vec<(f64, &str)>]) -> Vec<String> {
+///
+/// `hints` are user-supplied soft precedence edges `(above, below)` — "place
+/// `above` shallower than `below`". A hint is applied **only where the data
+/// leaves the pair unordered**: if some well's MD already orders them the *other*
+/// way, the hint is dropped (real positions always win). Hints thus break
+/// stalemates — pairs coincident in every well — without ever overriding
+/// geology. Names not present in any well are ignored.
+pub fn merge_strat_order(wells: &[Vec<(f64, &str)>], hints: &[(&str, &str)]) -> Vec<String> {
     // First-appearance index doubles as the tiebreak key (file order, as passed).
     let mut appearance: Vec<&str> = Vec::new();
     let mut index: HashMap<&str, usize> = HashMap::new();
@@ -159,6 +166,42 @@ pub fn merge_strat_order(wells: &[Vec<(f64, &str)>]) -> Vec<String> {
                 } else if md_b < md_a {
                     edges.insert((ib, ia));
                 } // equal MD → no constraint
+            }
+        }
+    }
+
+    // Apply hints, but only where the *data* doesn't already order the pair the
+    // other way. Reachability is computed over data edges only, so a hint can
+    // never reverse a strict MD relationship — it just fills a stalemate.
+    if !hints.is_empty() {
+        let mut data_succ: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for &(from, to) in &edges {
+            data_succ[from].push(to);
+        }
+        let reaches = |from: usize, to: usize| -> bool {
+            let mut seen = vec![false; n];
+            let mut stack = vec![from];
+            seen[from] = true;
+            while let Some(u) = stack.pop() {
+                for &v in &data_succ[u] {
+                    if v == to {
+                        return true;
+                    }
+                    if !seen[v] {
+                        seen[v] = true;
+                        stack.push(v);
+                    }
+                }
+            }
+            false
+        };
+        for &(above, below) in hints {
+            let (Some(&ia), Some(&ib)) = (index.get(above), index.get(below)) else {
+                continue; // a name not present in any well — nothing to order
+            };
+            // Drop the hint if data already puts `below` shallower than `above`.
+            if ia != ib && !reaches(ib, ia) {
+                edges.insert((ia, ib));
             }
         }
     }
@@ -256,15 +299,15 @@ mod tests {
 
     #[test]
     fn strat_empty_is_empty() {
-        assert!(merge_strat_order(&[]).is_empty());
-        assert!(merge_strat_order(&[vec![]]).is_empty());
+        assert!(merge_strat_order(&[], &[]).is_empty());
+        assert!(merge_strat_order(&[vec![]], &[]).is_empty());
     }
 
     #[test]
     fn strat_single_well_recovers_md_order_from_any_file_order() {
         // File order scrambled; MD order is A<B<C. Edges come from MD, not file.
         let w = vec![(30.0, "C"), (10.0, "A"), (20.0, "B")];
-        assert_eq!(merge_strat_order(&[w]), ["A", "B", "C"]);
+        assert_eq!(merge_strat_order(&[w], &[]), ["A", "B", "C"]);
     }
 
     #[test]
@@ -273,17 +316,17 @@ mod tests {
         // The merge must take the order well 2 supplies.
         let w1 = vec![(10.0, "A"), (20.0, "B"), (20.0, "C")];
         let w2 = vec![(10.0, "A"), (20.0, "B"), (30.0, "C")];
-        assert_eq!(merge_strat_order(&[w1, w2]), ["A", "B", "C"]);
+        assert_eq!(merge_strat_order(&[w1, w2], &[]), ["A", "B", "C"]);
     }
 
     #[test]
     fn strat_tie_everywhere_breaks_by_first_appearance() {
         // X,Y coincident in every well → no edge. First appearance decides.
         let xy = vec![vec![(10.0, "X"), (10.0, "Y")], vec![(5.0, "X"), (5.0, "Y")]];
-        assert_eq!(merge_strat_order(&xy), ["X", "Y"]);
+        assert_eq!(merge_strat_order(&xy, &[]), ["X", "Y"]);
         // Reverse first appearance → reversed result (the tiebreak, not MD).
         let yx = vec![vec![(10.0, "Y"), (10.0, "X")], vec![(5.0, "Y"), (5.0, "X")]];
-        assert_eq!(merge_strat_order(&yx), ["Y", "X"]);
+        assert_eq!(merge_strat_order(&yx, &[]), ["Y", "X"]);
     }
 
     #[test]
@@ -292,7 +335,7 @@ mod tests {
         // in first-appearance order (P seen first), without panicking.
         let w1 = vec![(10.0, "P"), (20.0, "Q")];
         let w2 = vec![(10.0, "Q"), (20.0, "P")];
-        assert_eq!(merge_strat_order(&[w1, w2]), ["P", "Q"]);
+        assert_eq!(merge_strat_order(&[w1, w2], &[]), ["P", "Q"]);
     }
 
     #[test]
@@ -304,7 +347,42 @@ mod tests {
         let dev = vec![(100.0, "Top"), (120.0, "Mid"), (130.0, "Lower")];
         let sand = vec![(100.0, "Top"), (110.0, "Sand"), (120.0, "Mid")];
         // "Sand" appears last across the inputs but its MD places it above Mid.
-        let order = merge_strat_order(&[absent, dev, sand]);
+        let order = merge_strat_order(&[absent, dev, sand], &[]);
         assert_eq!(order, ["Top", "Sand", "Mid", "Lower"]);
+    }
+
+    #[test]
+    fn hint_breaks_a_stalemate() {
+        // X,Y coincident in every well → no data edge. First appearance puts X
+        // first; a hint "Y above X" overrides only this stalemate.
+        let wells = vec![vec![(10.0, "X"), (10.0, "Y")], vec![(5.0, "X"), (5.0, "Y")]];
+        assert_eq!(merge_strat_order(&wells, &[]), ["X", "Y"]); // tiebreak default
+        assert_eq!(merge_strat_order(&wells, &[("Y", "X")]), ["Y", "X"]); // hint wins
+    }
+
+    #[test]
+    fn hint_contradicting_data_is_ignored() {
+        // Data: A strictly above B (developed in the well). A hint trying to put
+        // B above A must be dropped — real positions win.
+        let well = vec![(100.0, "A"), (120.0, "B")];
+        let one = std::slice::from_ref(&well);
+        assert_eq!(merge_strat_order(one, &[]), ["A", "B"]);
+        assert_eq!(merge_strat_order(one, &[("B", "A")]), ["A", "B"]); // ignored
+    }
+
+    #[test]
+    fn hint_propagates_transitively() {
+        // Z is coincident with Y in every well (stalemate), and data gives X≺Y.
+        // A hint "W above X" with W coincident-everywhere drags W (and nothing
+        // below it) above the whole X/Y/Z block.
+        let w1 = vec![(10.0, "X"), (20.0, "Y"), (20.0, "Z")];
+        let w2 = vec![(10.0, "X"), (10.0, "W"), (20.0, "Y")];
+        // Without a hint W floats by first appearance (after X). Hint: W above X.
+        let order = merge_strat_order(&[w1, w2], &[("W", "X")]);
+        assert_eq!(order.first().map(String::as_str), Some("W"));
+        assert!(
+            order.iter().position(|s| s == "W").unwrap()
+                < order.iter().position(|s| s == "X").unwrap()
+        );
     }
 }

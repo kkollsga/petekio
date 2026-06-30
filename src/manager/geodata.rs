@@ -247,7 +247,7 @@ impl GeoData {
                 }
             }
             let seqs: Vec<Vec<(f64, &str)>> = by_well.into_values().collect();
-            crate::algorithms::wells::merge_strat_order(&seqs)
+            crate::algorithms::wells::merge_strat_order(&seqs, &[])
         };
 
         // Distribute each Horizon pick to the matching loaded well + bore.

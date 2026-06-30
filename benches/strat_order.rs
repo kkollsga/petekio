@@ -32,7 +32,7 @@ fn bench(c: &mut Criterion) {
     let names: Vec<String> = (0..15).map(|i| format!("Horizon {i}")).collect();
     let wells = field(40, &names);
     c.bench_function("merge_strat_order_40w_15h", |b| {
-        b.iter(|| merge_strat_order(black_box(&wells)))
+        b.iter(|| merge_strat_order(black_box(&wells), &[]))
     });
 }
 

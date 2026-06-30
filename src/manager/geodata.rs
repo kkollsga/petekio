@@ -28,6 +28,11 @@ pub struct GeoData {
     wells: IndexMap<String, Well>,
     points: IndexMap<String, PointSet>,
     polygons: IndexMap<String, PolygonSet>,
+    /// Global lithostratigraphic column (top names, shallow→deep) derived from
+    /// the last loaded well-tops file across *all* its wells. Empty until
+    /// [`load_well_tops`](GeoData::load_well_tops) runs; pushed down into every
+    /// well so `zones()`/`zone_stats()` present in this order.
+    strat_order: Vec<String>,
 }
 
 /// Lower-cased file extension of `path`, or `""` when it has none.
@@ -47,7 +52,15 @@ impl GeoData {
             wells: IndexMap::new(),
             points: IndexMap::new(),
             polygons: IndexMap::new(),
+            strat_order: Vec::new(),
         }
+    }
+
+    /// The global lithostratigraphic column (top names, shallow→deep) derived by
+    /// the last [`load_well_tops`](GeoData::load_well_tops) across every well in
+    /// that file. Empty before any tops are loaded.
+    pub fn strat_order(&self) -> &[String] {
+        &self.strat_order
     }
 
     /// Load a surface from `path` and store it under `name`. Reads the IRAP
@@ -210,8 +223,34 @@ impl GeoData {
     /// the main bore). Only `Type == Horizon` picks are taken (lithostratigraphy);
     /// `Other` picks (fluid contacts OWC/GOC/FWL) and unknown-well records are
     /// skipped. Returns the number of tops assigned. (Load wells *before* tops.)
+    ///
+    /// Side effect: derives the project's **global lithostratigraphic column**
+    /// ([`strat_order`](GeoData::strat_order)) from *every* well's Horizon picks
+    /// in the file — including wells not loaded into the project — and pushes it
+    /// into each loaded well, so `zones()`/`zone_stats()` then present zones in
+    /// that order. A well that develops a marker thus resolves an order a well
+    /// where it pinches out (zero thickness) cannot.
     pub fn load_well_tops(&mut self, path: impl AsRef<Path>) -> Result<usize> {
         let recs = crate::io::petrel_tops::load(path.as_ref())?;
+
+        // Pre-pass over ALL Horizon picks (every well in the file, loaded or
+        // not) → one (md, name) sequence per well → the merged global column.
+        // Built before the loaded-well filter below.
+        let order = {
+            let mut by_well: IndexMap<&str, Vec<(f64, &str)>> = IndexMap::new();
+            for r in &recs {
+                if r.kind.eq_ignore_ascii_case("Horizon") {
+                    by_well
+                        .entry(r.well.as_str())
+                        .or_default()
+                        .push((r.md, r.surface.as_str()));
+                }
+            }
+            let seqs: Vec<Vec<(f64, &str)>> = by_well.into_values().collect();
+            crate::algorithms::wells::merge_strat_order(&seqs)
+        };
+
+        // Distribute each Horizon pick to the matching loaded well + bore.
         let ids: Vec<String> = self.wells.keys().cloned().collect();
         let mut added = 0;
         for r in recs {
@@ -234,6 +273,12 @@ impl GeoData {
                 .add_tops(vec![Top::new(r.surface, r.md)]);
             added += 1;
         }
+
+        // Push the column into every loaded well, then record it on the project.
+        for well in self.wells.values_mut() {
+            well.set_strat_order(&order);
+        }
+        self.strat_order = order;
         Ok(added)
     }
 

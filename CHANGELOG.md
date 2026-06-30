@@ -6,6 +6,15 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Global lithostratigraphic ordering.** `GeoData::load_well_tops` now derives a
+  field-wide stratigraphic column across *every* well in the tops file (not just
+  loaded ones): a marker that pinches out (zero thickness) in one well is ordered
+  by a well that develops it. `zones()` / `zone_stats()` return zones in this
+  order (zone geometry unchanged — only presentation order follows the column);
+  `GeoData::strat_order()` exposes it. New pure kernel
+  `algorithms::wells::merge_strat_order`.
+
 ### Changed
 - Python `GeoData.load_well`: `head`/`kb` are now **optional**
   (`load_well(id, files=...)`). With a `.wellpath` present its header is

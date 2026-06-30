@@ -113,6 +113,43 @@ pub fn synth_tops() -> PathBuf {
     p
 }
 
+/// A synthetic multi-well field demonstrating the cross-well lithostratigraphic
+/// merge. Three wells share `Top`/`Mid`; the order of the rest is *unresolvable
+/// within a single well* but determined across the field:
+/// - **FIELD-1** (loaded here): `Mid` and `Sand` are coincident (zero thickness),
+///   and the `Sand` pick is listed **last** in the file (as Petrel appends sand
+///   members) — so by MD/insertion alone its `zones()` would read `Top, Mid, Sand`.
+/// - **FIELD-2**: develops `Lower` strictly below `Mid` (`Mid ≺ Lower`).
+/// - **FIELD-3**: develops `Sand` strictly above `Mid` (`Sand ≺ Mid`).
+///
+/// The merged column must be `Top, Sand, Mid, Lower`, and FIELD-1's `zones()`
+/// must follow it (`Top, Sand, Mid`) — the field resolves what the borehole can't.
+/// Returns `(field-1 well folder, tops path)`.
+pub fn synth_field() -> (PathBuf, PathBuf) {
+    let d = tmpdir("field");
+    let well = d.join("FIELD-1");
+    write(
+        &well.join("FIELD-1.wellpath"),
+        &wp("0 1000 2000 0 0 0 0 145 0 0 145\n\
+             200 1000 2000 -200 200 0 0 145 0 0 145\n"),
+    );
+    let tops = d.join("field.tops");
+    write(
+        &tops,
+        "# Petrel well tops\nVERSION 2\nBEGIN HEADER\nX\nY\nZ\nTWT\nTWT2\nage\nMD\nPVD\nType\nSurface\nWell\nEND HEADER\n\
+         1 2 -1 -999 -999 -999 100.0 -1 Horizon \"Top\" \"FIELD-1\"\n\
+         1 2 -1 -999 -999 -999 100.0 -1 Horizon \"Top\" \"FIELD-2\"\n\
+         1 2 -1 -999 -999 -999 100.0 -1 Horizon \"Top\" \"FIELD-3\"\n\
+         1 2 -1 -999 -999 -999 120.0 -1 Horizon \"Mid\" \"FIELD-1\"\n\
+         1 2 -1 -999 -999 -999 120.0 -1 Horizon \"Mid\" \"FIELD-2\"\n\
+         1 2 -1 -999 -999 -999 120.0 -1 Horizon \"Mid\" \"FIELD-3\"\n\
+         1 2 -1 -999 -999 -999 130.0 -1 Horizon \"Lower\" \"FIELD-2\"\n\
+         1 2 -1 -999 -999 -999 120.0 -1 Horizon \"Sand\" \"FIELD-1\"\n\
+         1 2 -1 -999 -999 -999 110.0 -1 Horizon \"Sand\" \"FIELD-3\"\n",
+    );
+    (well, tops)
+}
+
 /// A synthetic Petrel-style split tree: `Paths/` + `Logs/` in separate subdirs,
 /// plus a foreign well's log (`99_9-OTHER`) that the id-filter must exclude.
 pub fn synth_split() -> PathBuf {

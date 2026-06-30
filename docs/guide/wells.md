@@ -64,6 +64,22 @@ bore.zone_stats("PHIE", "Top A").mean # one zone's Stats directly (None if absen
 `Stats` carries the average (`mean`), `sum`, count, and percentiles; zones where
 the curve has no samples are omitted from `zone_stats`.
 
+### A tidy table across bores — `zone_table`
+
+For a per-`zone × bore` table, `zone_table` returns a ready
+[pandas](https://pandas.pydata.org/) DataFrame — no manual loop/pivot/reorder:
+
+```python
+t = w.zone_table("PHIE", stats=("mean", "p50", "p90"))   # columns: zone, bore, mean, p50, p90
+t.pivot(index="zone", columns="bore", values="mean")     # zone keeps lithostratigraphic order
+geo.wells.zone_table("PHIE")                              # multi-well; bore = "<well> <sidetrack>"
+```
+
+`stats` are `Stats` attribute names (default `["mean"]`). `zone` is an ordered
+Categorical in lithostratigraphic order, so it survives `pivot`/`groupby`;
+zero-thickness / no-sample cells drop out unless `include_empty=True`. Needs
+pandas — `pip install petekio[pandas]`.
+
 ## Lithostratigraphic ordering
 
 Zones are returned in **true stratigraphic order**, not merely measured-depth

@@ -6,6 +6,17 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **`zone_table()`** (Python) — a first-class tidy per-`zone × bore` table for a
+  curve, on `Well` and `GeoData.wells` (`WellsView`). Returns a `pandas.DataFrame`
+  with columns `zone`, `bore`, then one per requested stat (`stats=` are `Stats`
+  attribute names — mean/sum/count/min/max/std/p10/p50/p90; default `["mean"]`).
+  `zone` is an ordered Categorical in lithostratigraphic order, so it survives
+  `pivot`/`groupby` with no manual reindex; zero-thickness / no-sample cells are
+  dropped unless `include_empty=True`. At the well-set level `bore` identifies
+  well + sidetrack. pandas is an **optional** extra (`pip install petekio[pandas]`),
+  imported lazily — the base wheel stays dependency-free.
+
 ## [0.2.6] - 2026-06-30
 
 ### Added

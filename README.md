@@ -76,6 +76,9 @@ bore.log_stats("PHIE").mean                # whole-bore curve stats
 bore.zone_stats("PHIE")                    # [(zone, Stats), ...]
 bore.zone_stats("PHIE", "Top A").mean      # one zone directly (None if absent)
 geo.strat_order                            # the field's lithostratigraphic column
+
+# A tidy per-zone×bore table (pandas; pip install petekio[pandas]):
+w.zone_table("PHIE", stats=("mean", "p50"))  # DataFrame, zone in lithostrat order
 ```
 
 ### Lithostratigraphic ordering

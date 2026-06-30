@@ -415,6 +415,10 @@ bore.zones()                             # [(name, top_md, base_md), ...] in lit
 bore.zone_stats("PHIE")                  # [(name, Stats), ...] in lithostrat order
 bore.zone_stats("PHIE", "Top A").mean    # one zone's Stats directly (None if absent)
 
+# Tidy per-zone×bore table (needs pandas: pip install petekio[pandas]):
+w.zone_table("PHIE", stats=("mean","p50"))   # DataFrame [zone, bore, mean, p50]; zone = ordered Categorical
+geo.wells.zone_table("PHIE")                  # multi-well; bore = "<well> <sidetrack>"
+
 # Standalone trajectory from a directional survey (no project needed):
 traj = petekio.Trajectory.from_stations(      # [(md, inc_deg, azi_deg), ...]
     [(0, 0, 145), (1200, 0, 145), (1900, 57, 145)], head=(1000, 2000), kb=27.3)

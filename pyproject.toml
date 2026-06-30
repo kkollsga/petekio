@@ -22,6 +22,11 @@ classifiers = [
 ]
 dynamic = ["version"]
 
+# pandas is needed only for `zone_table()` (returns a DataFrame); imported
+# lazily, so the base wheel stays dependency-free. `pip install petekio[pandas]`.
+[project.optional-dependencies]
+pandas = ["pandas"]
+
 [project.urls]
 Repository = "https://github.com/kkollsga/petekio"
 Issues = "https://github.com/kkollsga/petekio/issues"

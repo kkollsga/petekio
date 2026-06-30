@@ -423,3 +423,45 @@ def test_strat_order_global_column(tmp_path):
     )
     geo.load_well_tops(str(tops))
     assert geo.strat_order == ["Top", "Sand", "Mid", "Lower"]
+
+
+def test_strat_hint(tmp_path):
+    header = "# Petrel well tops\nVERSION 2\nBEGIN HEADER\nX\nY\nZ\nTWT\nTWT2\nage\nMD\nPVD\nType\nSurface\nWell\nEND HEADER\n"
+    body = (
+        '1 2 -1 -999 -999 -999 100.0 -1 Horizon "Top" "W1"\n'
+        '1 2 -1 -999 -999 -999 120.0 -1 Horizon "Alpha top" "W1"\n'
+        '1 2 -1 -999 -999 -999 120.0 -1 Horizon "Beta top" "W1"\n'  # coincident → stalemate
+        '1 2 -1 -999 -999 -999 200.0 -1 Horizon "Deep" "W1"\n'
+    )
+    tops = tmp_path / "w.tops"
+    tops.write_text(header + body)
+
+    # Default tiebreak: Alpha before Beta.
+    g = petekio.GeoData(unit="m")
+    g.load_well_tops(str(tops))
+    assert g.strat_order == ["Top", "Alpha top", "Beta top", "Deep"]
+
+    # Shorthand + partial names: "Beta above Alpha".
+    g = petekio.GeoData(unit="m")
+    g.strat_hint("Beta < Alpha")
+    g.load_well_tops(str(tops))
+    assert g.strat_order == ["Top", "Beta top", "Alpha top", "Deep"]
+
+    # Explicit kwargs form is equivalent.
+    g = petekio.GeoData(unit="m")
+    g.strat_hint(above="Beta top", below="Alpha top")
+    g.load_well_tops(str(tops))
+    assert g.strat_order == ["Top", "Beta top", "Alpha top", "Deep"]
+
+    # Data wins: a hint contradicting a strict MD relationship is ignored.
+    g = petekio.GeoData(unit="m")
+    g.strat_hint("Deep < Top")  # "Deep above Top" — but data has Top above Deep
+    g.load_well_tops(str(tops))
+    assert g.strat_order.index("Top") < g.strat_order.index("Deep")
+
+    # Errors: no operator, and mixing both forms.
+    g = petekio.GeoData(unit="m")
+    with pytest.raises(ValueError):
+        g.strat_hint("no operator")
+    with pytest.raises(ValueError):
+        g.strat_hint("Beta < Alpha", above="x", below="y")

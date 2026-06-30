@@ -138,6 +138,35 @@ impl GeoData {
         self.inner.strat_order().to_vec()
     }
 
+    /// Add a soft lithostratigraphic ordering hint, honoured by the *next*
+    /// `load_well_tops` only where the data leaves the pair unordered (real MD
+    /// positions always win). Two forms:
+    ///
+    /// - shorthand: `geo.strat_hint("Basal < Cerisa West")` — `A < B` is "A
+    ///   above B", `A > B` is "A below B"; sides may be partial names.
+    /// - explicit: `geo.strat_hint(above="Basal Shale top", below="Cerisa West top")`.
+    #[pyo3(signature = (spec=None, *, above=None, below=None))]
+    fn strat_hint(
+        &mut self,
+        spec: Option<&str>,
+        above: Option<&str>,
+        below: Option<&str>,
+    ) -> PyResult<()> {
+        match (spec, above, below) {
+            (Some(s), None, None) => self.inner.strat_hint(s).map_err(to_pyerr),
+            (None, Some(a), Some(b)) => {
+                self.inner.add_strat_hint(a, b);
+                Ok(())
+            }
+            (None, None, None) => Err(PyValueError::new_err(
+                "strat_hint: pass a shorthand string (e.g. \"A < B\") or above=/below=",
+            )),
+            _ => Err(PyValueError::new_err(
+                "strat_hint: use EITHER a shorthand string OR above=/below=, not both",
+            )),
+        }
+    }
+
     /// The well stored under `id` (view), or `None`.
     fn well(slf: Bound<'_, Self>, id: &str) -> Option<Well> {
         slf.borrow()

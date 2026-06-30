@@ -6,6 +6,16 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Manual lithostratigraphic hints.** `GeoData::add_strat_hint(above, below)` and
+  the shorthand `strat_hint("A < B")` (`A < B` = A above B, `A > B` = A below B;
+  Python `geo.strat_hint("A < B")` or `geo.strat_hint(above=, below=)`) let you
+  resolve orderings the data can't — pairs coincident in *every* well. A hint is
+  applied **only where the data leaves the pair unordered**; any strict MD
+  relationship always wins, so a hint can never override geology. Tokens may be
+  partial names (resolved at `load_well_tops`: exact → `… top` → unique
+  substring; ambiguous/unmatched errors).
+
 ## [0.2.5] - 2026-06-30
 
 ### Changed

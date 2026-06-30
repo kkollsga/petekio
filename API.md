@@ -238,6 +238,8 @@ impl GeoData {
                      files: impl AsRef<Path>) -> Result<&Well>;  // .wellpath→bores, .las→logs, .csv→tops
     pub fn load_well_tops(&mut self, path: impl AsRef<Path>) -> Result<usize>;  // Petrel multi-well tops → matching well+bore; derives strat_order across the file
     pub fn strat_order(&self) -> &[String];   // global lithostrat column from the last load_well_tops
+    pub fn add_strat_hint(&mut self, above: &str, below: &str);  // soft hint; fills stalemates, data wins
+    pub fn strat_hint(&mut self, spec: &str) -> Result<()>;      // shorthand: "A < B" (A above) / "A > B"
     pub fn load_points(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PointSet>;
     pub fn load_polygons(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PolygonSet>;
     pub fn surface(&self, name: &str) -> Option<&Surface>;
@@ -403,6 +405,7 @@ w.xyz(2450)                              # interpolated position at MD
 
 # Multi-bore wells (a Petrel export tree → one bore per .wellpath) + tops + zone stats:
 geo.load_well("15/9-A1", files="wells/")  # head/kb optional — the .wellpath header fills them
+geo.strat_hint("Basal < Cerisa West")    # soft order hint (A<B = A above B); or above=/below=
 geo.load_well_tops("WellTops.tops")      # Horizon picks → well+bore; derives the strat column
 geo.strat_order                          # ["Top A", "Sand A", "Top B", ...] global lithostrat column
 w.crs; w.bores()                         # CRS label; e.g. ["", "A", "B", "ST2"]

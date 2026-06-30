@@ -54,3 +54,7 @@ criterion = "0.5"
 [[bench]]
 name = "gridding"
 harness = false
+
+[[bench]]
+name = "strat_order"
+harness = false

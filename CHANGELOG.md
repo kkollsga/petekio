@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-06-30
+
 ### Added
 - **Python multi-bore well surface** — `GeoData.load_well_tops(path)`; `Well.crs`
   / `Well.bores()` / `Well.sidetrack(label)` / `Well.sidetracks()`; and a

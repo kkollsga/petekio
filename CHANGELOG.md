@@ -14,6 +14,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
   order (zone geometry unchanged — only presentation order follows the column);
   `GeoData::strat_order()` exposes it. New pure kernel
   `algorithms::wells::merge_strat_order`.
+- Python: `geo.strat_order` (the lithostratigraphic column) and a single-zone
+  `bore.zone_stats(mnemonic, zone)` → one `Stats` (or `None`) instead of needing
+  `dict(...)[name]`. The no-`zone` form is unchanged (returns the list).
 
 ### Changed
 - Python `GeoData.load_well`: `head`/`kb` are now **optional**

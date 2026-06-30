@@ -122,9 +122,20 @@ impl GeoData {
     }
 
     /// Load a multi-well Petrel well-tops file; route each `Horizon` pick to the
-    /// matching loaded well + bore. Returns the number of tops assigned.
+    /// matching loaded well + bore. Returns the number of tops assigned. Also
+    /// derives the project's global lithostratigraphic column (see
+    /// `strat_order`) across every well in the file and pushes it into each
+    /// loaded well, so `zones()`/`zone_stats()` present in that order.
     fn load_well_tops(&mut self, path: &str) -> PyResult<usize> {
         self.inner.load_well_tops(path).map_err(to_pyerr)
+    }
+
+    /// The global lithostratigraphic column (top names, shallow→deep) derived by
+    /// the last `load_well_tops` across every well in that file. Empty list
+    /// before any tops are loaded.
+    #[getter]
+    fn strat_order(&self) -> Vec<String> {
+        self.inner.strat_order().to_vec()
     }
 
     /// The well stored under `id` (view), or `None`.

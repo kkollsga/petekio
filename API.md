@@ -133,8 +133,9 @@ impl Well {
     pub fn log(&self, mnemonic: &str) -> Option<LogView>;
     pub fn logs(&self) -> impl Iterator<Item = &Log>;   // all main-bore logs, insertion order
     pub fn mnemonics(&self) -> Vec<&str>;
-    pub fn zones(&self) -> Vec<Interval>;                          // every formation zone (consecutive tops)
+    pub fn zones(&self) -> Vec<Interval>;            // formation zones, in strat order if set, else MD
     pub fn zone_stats(&self, mnemonic: &str) -> Vec<(String, Stats)>;  // per-zone average(mean)+sum
+    pub fn set_strat_order(&mut self, order: &[String]);  // push lithostrat column into every bore
 }
 
 pub struct Sidetrack { pub label: String /* trajectories, logs, tops private */ }
@@ -145,11 +146,12 @@ impl Sidetrack {
     pub fn trajectories(&self) -> &[Trajectory];
     pub fn add_log(&mut self, log: Log);
     pub fn add_tops(&mut self, tops: Vec<Top>);
+    pub fn set_strat_order(&mut self, order: &[String]);  // present zones in this order (geometry kept)
     pub fn xyz(&self, md: f64) -> Option<Point3>;
     pub fn top(&self, name: &str) -> Option<Interval>;
     pub fn log(&self, mnemonic: &str) -> Option<LogView>;
     pub fn logs(&self) -> impl Iterator<Item = &Log>;   // all logs on this bore, insertion order
-    pub fn zones(&self) -> Vec<Interval>;
+    pub fn zones(&self) -> Vec<Interval>;               // strat order when set (see set_strat_order), else MD
     pub fn zone_stats(&self, mnemonic: &str) -> Vec<(String, Stats)>;
 }
 
@@ -234,7 +236,8 @@ impl GeoData {
     pub fn load_surface(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&Surface>;
     pub fn load_well(&mut self, id: &str, head: (f64,f64), kb: f64,
                      files: impl AsRef<Path>) -> Result<&Well>;  // .wellpath→bores, .las→logs, .csv→tops
-    pub fn load_well_tops(&mut self, path: impl AsRef<Path>) -> Result<usize>;  // Petrel multi-well tops → matching well+bore
+    pub fn load_well_tops(&mut self, path: impl AsRef<Path>) -> Result<usize>;  // Petrel multi-well tops → matching well+bore; derives strat_order across the file
+    pub fn strat_order(&self) -> &[String];   // global lithostrat column from the last load_well_tops
     pub fn load_points(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PointSet>;
     pub fn load_polygons(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PolygonSet>;
     pub fn surface(&self, name: &str) -> Option<&Surface>;
@@ -400,12 +403,14 @@ w.xyz(2450)                              # interpolated position at MD
 
 # Multi-bore wells (a Petrel export tree → one bore per .wellpath) + tops + zone stats:
 geo.load_well("15/9-A1", files="wells/")  # head/kb optional — the .wellpath header fills them
-geo.load_well_tops("WellTops.tops")      # Horizon picks → matching well + bore
+geo.load_well_tops("WellTops.tops")      # Horizon picks → well+bore; derives the strat column
+geo.strat_order                          # ["Top A", "Sand A", "Top B", ...] global lithostrat column
 w.crs; w.bores()                         # CRS label; e.g. ["", "A", "B", "ST2"]
 bore = w.sidetrack("A")
 bore.mnemonics(); bore.log_stats("PHIE").mean      # whole-bore curve + stats
-bore.zones()                             # [(name, top_md, base_md), ...]
-dict(bore.zone_stats("PHIE"))["Top A"].mean        # per-zone average
+bore.zones()                             # [(name, top_md, base_md), ...] in lithostrat order
+bore.zone_stats("PHIE")                  # [(name, Stats), ...] in lithostrat order
+bore.zone_stats("PHIE", "Top A").mean    # one zone's Stats directly (None if absent)
 
 # Standalone trajectory from a directional survey (no project needed):
 traj = petekio.Trajectory.from_stations(      # [(md, inc_deg, azi_deg), ...]

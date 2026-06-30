@@ -388,3 +388,38 @@ def test_load_well_optional_head_kb_from_wellpath(tmp_path):
     # `files` is still required
     with pytest.raises(ValueError):
         geo.load_well("x")
+
+
+def test_zone_stats_single_zone():
+    # zone_stats(mnemonic, zone) returns one Stats (or None) — no dict() needed.
+    geo = petekio.GeoData(unit="m")
+    geo.load_well("15/9-A1", head=(0.0, 0.0), kb=0.0, files=WELL_DIR)
+    st = geo.well("15/9-A1").sidetrack("")
+    full = dict(st.zone_stats("NTG"))
+    assert "Brent" in full
+    one = st.zone_stats("NTG", "Brent")
+    assert one is not None and math.isclose(one.mean, full["Brent"].mean)
+    assert st.zone_stats("NTG", "brent") is not None  # case-insensitive
+    assert st.zone_stats("NTG", "Nope") is None  # absent zone → None
+    assert isinstance(st.zone_stats("NTG"), list)  # no zone arg → list (compat)
+
+
+def test_strat_order_global_column(tmp_path):
+    # The lithostratigraphic column merges across every well in the tops file:
+    # FIELD-3 develops Sand above Mid, FIELD-2 develops Lower below Mid, so a
+    # Sand listed last in the file still sorts to its true depth.
+    geo = petekio.GeoData(unit="m")
+    assert geo.strat_order == []  # empty before any tops are loaded
+    tops = tmp_path / "field.tops"
+    tops.write_text(
+        "# Petrel well tops\nVERSION 2\nBEGIN HEADER\nX\nY\nZ\nTWT\nTWT2\nage\nMD\nPVD\nType\nSurface\nWell\nEND HEADER\n"
+        '1 2 -1 -999 -999 -999 100.0 -1 Horizon "Top" "FIELD-1"\n'
+        '1 2 -1 -999 -999 -999 120.0 -1 Horizon "Mid" "FIELD-1"\n'
+        '1 2 -1 -999 -999 -999 120.0 -1 Horizon "Mid" "FIELD-2"\n'
+        '1 2 -1 -999 -999 -999 130.0 -1 Horizon "Lower" "FIELD-2"\n'
+        '1 2 -1 -999 -999 -999 110.0 -1 Horizon "Sand" "FIELD-3"\n'
+        '1 2 -1 -999 -999 -999 120.0 -1 Horizon "Mid" "FIELD-3"\n'
+        '1 2 -1 -999 -999 -999 120.0 -1 Horizon "Sand" "FIELD-1"\n'
+    )
+    geo.load_well_tops(str(tops))
+    assert geo.strat_order == ["Top", "Sand", "Mid", "Lower"]

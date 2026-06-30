@@ -230,13 +230,31 @@ impl Sidetrack {
         })
     }
 
-    /// Per-zone stats of curve `mnemonic`: a list of `(zone_name, Stats)`.
-    fn zone_stats(&self, py: Python<'_>, mnemonic: &str) -> PyResult<Vec<(String, Stats)>> {
+    /// Per-zone stats of curve `mnemonic`. With no `zone`, returns the list of
+    /// `(zone_name, Stats)` in lithostratigraphic order. With a `zone` name
+    /// (case-insensitive), returns just that zone's `Stats`, or `None` if the
+    /// zone has no samples / doesn't exist — a direct
+    /// `st.zone_stats("PHIE", "Top A")` instead of `dict(...)["Top A"]`.
+    #[pyo3(signature = (mnemonic, zone=None))]
+    fn zone_stats(
+        &self,
+        py: Python<'_>,
+        mnemonic: &str,
+        zone: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
         self.resolve(py, |s| {
-            Ok(s.zone_stats(mnemonic)
-                .into_iter()
-                .map(|(n, st)| (n, Stats::new(st)))
-                .collect())
+            let all = s.zone_stats(mnemonic);
+            match zone {
+                Some(z) => match all.into_iter().find(|(n, _)| n.eq_ignore_ascii_case(z)) {
+                    Some((_, st)) => Ok(Stats::new(st).into_pyobject(py)?.into_any().unbind()),
+                    None => Ok(py.None()),
+                },
+                None => {
+                    let list: Vec<(String, Stats)> =
+                        all.into_iter().map(|(n, st)| (n, Stats::new(st))).collect();
+                    Ok(list.into_pyobject(py)?.into_any().unbind())
+                }
+            }
         })
     }
 

@@ -11,8 +11,99 @@
 use crate::geodata::GeoData;
 use crate::stats::Stats;
 use petekio::Well as RsWell;
-use pyo3::exceptions::{PyAttributeError, PyValueError};
+use pyo3::exceptions::{PyAttributeError, PyImportError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
+
+/// The `Stats` attribute names a `zone_table` `stats=` may request.
+pub(crate) const STAT_ATTRS: &[&str] = &[
+    "mean", "sum", "count", "min", "max", "std", "p10", "p50", "p90",
+];
+
+fn stat_value(s: &petekio::Stats, name: &str) -> f64 {
+    match name {
+        "mean" => s.mean,
+        "sum" => s.sum,
+        "count" => s.count as f64,
+        "min" => s.min,
+        "max" => s.max,
+        "std" => s.std,
+        "p10" => s.p10,
+        "p50" => s.p50,
+        "p90" => s.p90,
+        _ => f64::NAN,
+    }
+}
+
+/// Build a **tidy** per-`zone × bore` table for `curve` over `bores` (each a
+/// display label + its sidetrack) and return it as a `pandas.DataFrame`: columns
+/// `zone`, `bore`, then one per requested stat. Bores without a trajectory are
+/// skipped. Zones come from each bore's `zones()` (already in lithostratigraphic
+/// order), so `zone` is set as an **ordered Categorical** in that order — it
+/// survives `pivot`/`groupby`. `count == 0` (zero-thickness / no samples)
+/// zone×bore cells are dropped unless `include_empty`. pandas is imported lazily.
+pub(crate) fn build_zone_table(
+    py: Python<'_>,
+    bores: &[(String, &petekio::Sidetrack)],
+    curve: &str,
+    stats: &[String],
+    include_empty: bool,
+) -> PyResult<Py<PyAny>> {
+    for s in stats {
+        if !STAT_ATTRS.contains(&s.as_str()) {
+            return Err(PyValueError::new_err(format!(
+                "zone_table: unknown stat '{s}' (expected one of: {})",
+                STAT_ATTRS.join(", ")
+            )));
+        }
+    }
+    let mut zone_col: Vec<String> = Vec::new();
+    let mut bore_col: Vec<String> = Vec::new();
+    let mut stat_cols: Vec<Vec<f64>> = vec![Vec::new(); stats.len()];
+    let mut order: Vec<String> = Vec::new(); // category order (first appearance)
+    for (label, st) in bores {
+        if st.trajectories().is_empty() {
+            continue; // no md_range — nothing positioned
+        }
+        for iv in st.zones() {
+            if !order.contains(&iv.name) {
+                order.push(iv.name.clone());
+            }
+            let s = iv.log(curve).map(|lv| lv.stats());
+            let count = s.as_ref().map(|x| x.count).unwrap_or(0);
+            if count == 0 && !include_empty {
+                continue;
+            }
+            zone_col.push(iv.name.clone());
+            bore_col.push(label.clone());
+            for (k, name) in stats.iter().enumerate() {
+                stat_cols[k].push(s.as_ref().map(|s| stat_value(s, name)).unwrap_or(f64::NAN));
+            }
+        }
+    }
+    let pd = py
+        .import("pandas")
+        .map_err(|_| PyImportError::new_err("zone_table requires pandas — `pip install pandas`"))?;
+    // category order = loaded order, restricted to zones actually emitted. Build
+    // the ordered Categorical column directly (no post-hoc reassignment, which
+    // would trip pandas' copy-on-write chained-assignment warning).
+    let present: std::collections::HashSet<&str> = zone_col.iter().map(String::as_str).collect();
+    let cats: Vec<String> = order
+        .into_iter()
+        .filter(|z| present.contains(z.as_str()))
+        .collect();
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("categories", cats)?;
+    kwargs.set_item("ordered", true)?;
+    let zone_cat = pd.call_method("Categorical", (zone_col,), Some(&kwargs))?;
+    let data = PyDict::new(py);
+    data.set_item("zone", zone_cat)?;
+    data.set_item("bore", bore_col)?;
+    for (k, name) in stats.iter().enumerate() {
+        data.set_item(name.as_str(), stat_cols[k].clone())?;
+    }
+    Ok(pd.call_method1("DataFrame", (data,))?.unbind())
+}
 
 /// A well: a view into a `GeoData` project's well collection.
 #[pyclass(name = "Well")]
@@ -119,6 +210,29 @@ impl Well {
             well: slf.clone().unbind(),
             label: label.to_string(),
         }))
+    }
+
+    /// A tidy per-`zone × bore` table of `curve` across this well's bores, as a
+    /// `pandas.DataFrame` (columns `zone`, `bore`, then each requested stat).
+    /// `stats` are `Stats` attribute names (default `["mean"]`; any of
+    /// mean/sum/count/min/max/std/p10/p50/p90). `zone` is an ordered Categorical
+    /// in lithostratigraphic order, so it survives `pivot`/`groupby`. Empty
+    /// (zero-thickness / no-sample) cells are dropped unless `include_empty`.
+    /// Requires pandas.
+    #[pyo3(signature = (curve, stats=None, include_empty=false))]
+    fn zone_table(
+        &self,
+        py: Python<'_>,
+        curve: &str,
+        stats: Option<Vec<String>>,
+        include_empty: bool,
+    ) -> PyResult<Py<PyAny>> {
+        let stats = stats.unwrap_or_else(|| vec!["mean".to_string()]);
+        self.with_well(py, |w| {
+            let bores: Vec<(String, &petekio::Sidetrack)> =
+                w.sidetracks().map(|s| (s.label.clone(), s)).collect();
+            crate::well::build_zone_table(py, &bores, curve, &stats, include_empty)
+        })
     }
 
     /// All bores (sidetracks), in order.

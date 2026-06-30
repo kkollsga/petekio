@@ -244,6 +244,37 @@ impl WellsView {
             .collect()
     }
 
+    /// A tidy per-`zone × bore` table of `curve` across **every** well in this
+    /// view, as a `pandas.DataFrame`. Like `Well.zone_table`, but `bore`
+    /// identifies well + sidetrack (e.g. `"15/9-A1 B"`). `stats` default
+    /// `["mean"]`; `zone` is an ordered Categorical in lithostratigraphic order;
+    /// empty cells dropped unless `include_empty`. Requires pandas.
+    #[pyo3(signature = (curve, stats=None, include_empty=false))]
+    fn zone_table(
+        &self,
+        py: Python<'_>,
+        curve: &str,
+        stats: Option<Vec<String>>,
+        include_empty: bool,
+    ) -> PyResult<Py<PyAny>> {
+        let stats = stats.unwrap_or_else(|| vec!["mean".to_string()]);
+        let g = self.geo.borrow(py);
+        let mut bores: Vec<(String, &petekio::Sidetrack)> = Vec::new();
+        for id in &self.ids {
+            if let Some(w) = g.inner.well(id) {
+                for s in w.sidetracks() {
+                    let label = if s.label.is_empty() {
+                        id.clone()
+                    } else {
+                        format!("{id} {}", s.label)
+                    };
+                    bores.push((label, s));
+                }
+            }
+        }
+        crate::well::build_zone_table(py, &bores, curve, &stats, include_empty)
+    }
+
     /// A new view keeping only wells for which `pred(well)` is truthy.
     fn filter(&self, py: Python<'_>, pred: &Bound<'_, PyAny>) -> PyResult<WellsView> {
         let mut kept = Vec::new();

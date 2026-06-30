@@ -465,3 +465,29 @@ def test_strat_hint(tmp_path):
         g.strat_hint("no operator")
     with pytest.raises(ValueError):
         g.strat_hint("Beta < Alpha", above="x", below="y")
+
+
+def test_zone_table():
+    pd = pytest.importorskip("pandas")
+    geo = petekio.GeoData(unit="m")
+    geo.load_well("15/9-A1", head=(0.0, 0.0), kb=0.0, files=WELL_DIR)
+    w = geo.well("15/9-A1")
+
+    t = w.zone_table("NTG", stats=["mean", "p50"])
+    assert list(t.columns) == ["zone", "bore", "mean", "p50"]
+    assert str(t["zone"].dtype) == "category" and t["zone"].cat.ordered
+    assert (t["mean"] == 0).sum() == 0  # drop-empty default: no zero-count rows
+    # pivots cleanly (the boilerplate the request removes)
+    piv = t.pivot(index="zone", columns="bore", values="mean")
+    assert "Brent" in list(piv.index)
+
+    # default stat is mean
+    assert list(w.zone_table("NTG").columns) == ["zone", "bore", "mean"]
+    # unknown stat → ValueError
+    with pytest.raises(ValueError):
+        w.zone_table("NTG", stats=["bogus"])
+
+    # WellsView level: bore identifies well + sidetrack
+    tv = geo.wells.zone_table("NTG")
+    assert set(["zone", "bore", "mean"]).issubset(tv.columns)
+    assert all(b == "15/9-A1" or b.startswith("15/9-A1 ") for b in tv["bore"].unique())

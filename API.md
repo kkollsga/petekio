@@ -420,6 +420,7 @@ w.zone_table("PHIE", stats=("mean","p50"))            # tidy [zone, bore, mean, 
 w.zone_table("PHIE", pivot=True, decimals=3)          # wide: zone index × bore cols, rounded
 w.zone_table("PHIE", aggregate=True)                  # grouped (zone,bore); pooled "all" row first per zone
 w.zone_table("PHIE", stats=("mean","gross","samples")) # also: gross (zone MD thickness), samples (count)
+w.zone_table("PHIE", zones=("Top A","Top B"))         # keep only these zones (case-insensitive)
 # averages are thickness-weighted by default (weighted=False for plain sample mean)
 geo.wells.zone_table("PHIE")                          # multi-well; bore = "<well> <sidetrack>"
 

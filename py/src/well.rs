@@ -82,6 +82,7 @@ pub(crate) fn build_zone_table(
     bores: &[(String, &petekio::Sidetrack)],
     curve: &str,
     stats: &[String],
+    zones: Option<&[String]>,
     include_empty: bool,
     pivot: bool,
     aggregate: bool,
@@ -109,6 +110,9 @@ pub(crate) fn build_zone_table(
             petekio::Stats::of(vals)
         }
     };
+    // Optional zone filter: keep only these names (case-insensitive, exact).
+    let keep: Option<std::collections::HashSet<String>> =
+        zones.map(|z| z.iter().map(|s| s.to_ascii_lowercase()).collect());
 
     // One pass: per-bore rows (bore-outer, non-empty unless include_empty), the
     // zone first-appearance order, and the pooled (value, weight) pairs per zone.
@@ -121,6 +125,11 @@ pub(crate) fn build_zone_table(
             continue; // no md_range — nothing positioned
         }
         for iv in st.zones() {
+            if let Some(k) = &keep {
+                if !k.contains(&iv.name.to_ascii_lowercase()) {
+                    continue; // not in the requested zone subset
+                }
+            }
             if !order.contains(&iv.name) {
                 order.push(iv.name.clone());
             }
@@ -370,15 +379,18 @@ impl Well {
     /// → flat; several → MultiIndex `(stat, bore)`). `aggregate=True` groups by
     /// zone with a pooled "all" row first (sample-weighted across bores), indexed
     /// by `(zone, bore)`; mutually exclusive with `pivot`. `decimals` rounds the
-    /// stat values. `weighted` (default True) thickness-weights the averages by
-    /// each sample's MD span (so mixed sampling rates don't bias); `stats` may
-    /// also be `samples`/`gross`. Requires pandas.
-    #[pyo3(signature = (curve, stats=None, include_empty=false, pivot=false, aggregate=false, weighted=true, decimals=None))]
+    /// stat values. `zones` keeps only those zone names (case-insensitive).
+    /// `weighted` (default True) thickness-weights the averages by each sample's
+    /// MD span (so mixed sampling rates don't bias); `stats` may also be
+    /// `samples`/`gross`. Requires pandas.
+    #[pyo3(signature = (curve, stats=None, zones=None, include_empty=false, pivot=false, aggregate=false, weighted=true, decimals=None))]
+    #[allow(clippy::too_many_arguments)]
     fn zone_table(
         &self,
         py: Python<'_>,
         curve: &str,
         stats: Option<Vec<String>>,
+        zones: Option<Vec<String>>,
         include_empty: bool,
         pivot: bool,
         aggregate: bool,
@@ -394,6 +406,7 @@ impl Well {
                 &bores,
                 curve,
                 &stats,
+                zones.as_deref(),
                 include_empty,
                 pivot,
                 aggregate,

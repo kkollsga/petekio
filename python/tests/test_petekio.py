@@ -520,6 +520,15 @@ def test_zone_table():
     with pytest.raises(ValueError):
         w.zone_table("NTG", pivot=True, aggregate=True)
 
+    # zones= keeps only the requested zones (case-insensitive), order preserved
+    one = w.zone_table("NTG", zones=["Brent"])
+    assert set(one["zone"]) == {"Brent"}
+    assert set(w.zone_table("NTG", zones=["brent"])["zone"]) == {"Brent"}  # case-insensitive
+    assert w.zone_table("NTG", zones=["does not exist"]).empty  # unknown → no rows
+    # composes with aggregate
+    agg = w.zone_table("NTG", zones=["Brent"], aggregate=True)
+    assert set(agg.index.get_level_values("zone")) == {"Brent"}
+
 
 def test_zone_table_thickness_weighting(tmp_path):
     pytest.importorskip("pandas")

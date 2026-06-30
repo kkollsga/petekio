@@ -252,14 +252,17 @@ impl WellsView {
     /// index × `bore` columns; multi-stat → MultiIndex `(stat, bore)`).
     /// `aggregate=True` → grouped by zone with a pooled "all" row first
     /// (sample-weighted across wells), indexed by `(zone, bore)`; mutually
-    /// exclusive with `pivot`. `weighted` (default True) thickness-weights the
+    /// exclusive with `pivot`. `zones` keeps only those zone names
+    /// (case-insensitive). `weighted` (default True) thickness-weights the
     /// averages; `stats` may also be `samples`/`gross`. `decimals` rounds. pandas.
-    #[pyo3(signature = (curve, stats=None, include_empty=false, pivot=false, aggregate=false, weighted=true, decimals=None))]
+    #[pyo3(signature = (curve, stats=None, zones=None, include_empty=false, pivot=false, aggregate=false, weighted=true, decimals=None))]
+    #[allow(clippy::too_many_arguments)]
     fn zone_table(
         &self,
         py: Python<'_>,
         curve: &str,
         stats: Option<Vec<String>>,
+        zones: Option<Vec<String>>,
         include_empty: bool,
         pivot: bool,
         aggregate: bool,
@@ -286,6 +289,7 @@ impl WellsView {
             &bores,
             curve,
             &stats,
+            zones.as_deref(),
             include_empty,
             pivot,
             aggregate,

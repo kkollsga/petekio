@@ -20,6 +20,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
     `Σ(dz·value)` — the thickness-integrated quantity, e.g. Σφ·dz.)
   - `stats=` also accepts **`samples`** (sample count) and **`gross`** (zone MD
     thickness; its aggregate is the mean across bores).
+  - `zones=[...]` keeps only the named zones (case-insensitive, lithostrat order
+    preserved); unknown names contribute no rows.
   - `decimals=N` rounds the stat values. Default `pivot=False` is the tidy frame.
 
 ## [0.2.7] - 2026-06-30

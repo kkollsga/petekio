@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-06-30
+
 ### Added
 - **Global lithostratigraphic ordering.** `GeoData::load_well_tops` now derives a
   field-wide stratigraphic column across *every* well in the tops file (not just

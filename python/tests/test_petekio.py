@@ -491,3 +491,70 @@ def test_zone_table():
     tv = geo.wells.zone_table("NTG")
     assert set(["zone", "bore", "mean"]).issubset(tv.columns)
     assert all(b == "15/9-A1" or b.startswith("15/9-A1 ") for b in tv["bore"].unique())
+
+    # pivot=True → zone is the index, bore the columns (single stat → flat)
+    p = w.zone_table("NTG", pivot=True)
+    assert p.index.name == "zone" and "Brent" in list(p.index)
+    assert "bore" not in p.columns  # bore became the column axis
+    # several stats → MultiIndex (stat, bore)
+    pm = w.zone_table("NTG", stats=["mean", "p50"], pivot=True)
+    assert pm.index.name == "zone" and pm.columns.nlevels == 2
+    assert {s for s, _ in pm.columns} == {"mean", "p50"}  # top level = the stats
+
+    # decimals=N rounds the stat values
+    d = w.zone_table("NTG", decimals=2)
+    assert (d["mean"].dropna().round(2) == d["mean"].dropna()).all()
+
+    # aggregate=True → grouped (zone, bore); pooled "all" row first per zone.
+    # (weighted=False so sum stays Σvalue and the pooled-mean identity holds;
+    #  thickness-weighting is exercised in test_zone_table_thickness_weighting.)
+    a = w.zone_table("NTG", stats=["mean", "sum", "count"], aggregate=True, weighted=False)
+    assert list(a.index.names) == ["zone", "bore"]
+    brent = a.xs("Brent", level="zone")
+    assert "all" in brent.index
+    # pooled mean is sample-weighted: Σsum / Σcount over the per-bore rows
+    bores_only = brent.drop("all")
+    pooled = bores_only["sum"].sum() / bores_only["count"].sum()
+    assert math.isclose(brent.loc["all", "mean"], pooled, rel_tol=1e-9)
+    # pivot and aggregate are mutually exclusive
+    with pytest.raises(ValueError):
+        w.zone_table("NTG", pivot=True, aggregate=True)
+
+
+def test_zone_table_thickness_weighting(tmp_path):
+    pytest.importorskip("pandas")
+    # One log, irregular spacing in zone A: three dense low-phi samples then one
+    # sparse high-phi sample. Plain mean = 0.15; thickness-weighted lifts it
+    # because the sparse 0.30 sample represents a much thicker interval.
+    wd = tmp_path / "TESTW"
+    wd.mkdir()
+    (wd / "TESTW.las").write_text(
+        "~Version\n VERS. 2.0 :\n WRAP. NO :\n~Well\n STRT.M 1000 :\n STOP.M 1010 :\n"
+        " STEP.M 1 :\n NULL. -999.25 :\n~Curve\n DEPT.M :\n PHIE.m3/m3 :\n~ASCII\n"
+        "1000 0.10\n1001 0.10\n1002 0.10\n1010 0.30\n"
+    )
+    tops = tmp_path / "t.tops"
+    tops.write_text(
+        "# Petrel well tops\nVERSION 2\nBEGIN HEADER\nX\nY\nZ\nTWT\nTWT2\nage\nMD\nPVD\nType\nSurface\nWell\nEND HEADER\n"
+        '1 2 -1 -999 -999 -999 1000.0 -1 Horizon "A" "TESTW"\n'
+        '1 2 -1 -999 -999 -999 1015.0 -1 Horizon "B" "TESTW"\n'
+    )
+    geo = petekio.GeoData(unit="m")
+    geo.load_well("TESTW", files=str(wd))
+    geo.load_well_tops(str(tops))
+    w = geo.well("TESTW")
+
+    def amean(weighted):
+        return w.zone_table("PHIE", aggregate=True, weighted=weighted).xs("A", level="zone").loc[
+            "all", "mean"
+        ]
+
+    assert math.isclose(amean(False), 0.15, rel_tol=1e-9)  # plain mean of [.1,.1,.1,.3]
+    # dz (midpoint) = [1, 1, 4.5, 8] → (.1+.1+.45+2.4)/14.5
+    assert math.isclose(amean(True), 3.05 / 14.5, rel_tol=1e-6)
+    assert amean(True) > amean(False)  # sparse high-phi sample no longer under-weighted
+
+    # samples / gross stats
+    t = w.zone_table("PHIE", stats=["samples", "gross"], aggregate=True)
+    a = t.xs("A", level="zone").loc["all"]
+    assert a["samples"] == 4 and a["gross"] > 0

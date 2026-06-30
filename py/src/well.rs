@@ -20,11 +20,15 @@ pub(crate) const STAT_ATTRS: &[&str] = &[
     "mean", "sum", "count", "min", "max", "std", "p10", "p50", "p90",
 ];
 
+/// Extra `stats=` options not on `Stats`: `samples` (= sample count) and `gross`
+/// (the zone's MD thickness — geometry, not from the curve).
+pub(crate) const EXTRA_STATS: &[&str] = &["samples", "gross"];
+
 fn stat_value(s: &petekio::Stats, name: &str) -> f64 {
     match name {
         "mean" => s.mean,
         "sum" => s.sum,
-        "count" => s.count as f64,
+        "count" | "samples" => s.count as f64,
         "min" => s.min,
         "max" => s.max,
         "std" => s.std,
@@ -35,6 +39,29 @@ fn stat_value(s: &petekio::Stats, name: &str) -> f64 {
     }
 }
 
+/// Per-sample depth weights for thickness-weighting: each sample carries the MD
+/// span it represents (midpoint rule — half-gap to each neighbour, full step at
+/// the ends). Uniform sampling → all weights equal → identical to the plain
+/// mean, so it only changes irregular / mixed-rate logs.
+fn dz_weights(md: &[f64]) -> Vec<f64> {
+    let n = md.len();
+    match n {
+        0 => Vec::new(),
+        1 => vec![1.0],
+        _ => (0..n)
+            .map(|i| {
+                if i == 0 {
+                    md[1] - md[0]
+                } else if i == n - 1 {
+                    md[n - 1] - md[n - 2]
+                } else {
+                    (md[i + 1] - md[i - 1]) / 2.0
+                }
+            })
+            .collect(),
+    }
+}
+
 /// Build a **tidy** per-`zone × bore` table for `curve` over `bores` (each a
 /// display label + its sidetrack) and return it as a `pandas.DataFrame`: columns
 /// `zone`, `bore`, then one per requested stat. Bores without a trajectory are
@@ -42,25 +69,53 @@ fn stat_value(s: &petekio::Stats, name: &str) -> f64 {
 /// order), so `zone` is set as an **ordered Categorical** in that order — it
 /// survives `pivot`/`groupby`. `count == 0` (zero-thickness / no samples)
 /// zone×bore cells are dropped unless `include_empty`. pandas is imported lazily.
+///
+/// `pivot` → wide (`zone` index × `bore` columns). `aggregate` → grouped by zone
+/// with a pooled "all" row first. `pivot` and `aggregate` are mutually exclusive.
+/// `weighted` (default true) thickness-weights every average (per-bore and
+/// aggregate) by each sample's MD span, so a finely-sampled log doesn't outweigh
+/// a coarse one; `false` falls back to the plain sample mean. `decimals` rounds.
+/// `stats` may also be `samples` (sample count) or `gross` (zone MD thickness).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_zone_table(
     py: Python<'_>,
     bores: &[(String, &petekio::Sidetrack)],
     curve: &str,
     stats: &[String],
     include_empty: bool,
+    pivot: bool,
+    aggregate: bool,
+    weighted: bool,
+    decimals: Option<i64>,
 ) -> PyResult<Py<PyAny>> {
     for s in stats {
-        if !STAT_ATTRS.contains(&s.as_str()) {
+        if !STAT_ATTRS.contains(&s.as_str()) && !EXTRA_STATS.contains(&s.as_str()) {
             return Err(PyValueError::new_err(format!(
-                "zone_table: unknown stat '{s}' (expected one of: {})",
-                STAT_ATTRS.join(", ")
+                "zone_table: unknown stat '{s}' (expected one of: {}, {})",
+                STAT_ATTRS.join(", "),
+                EXTRA_STATS.join(", ")
             )));
         }
     }
-    let mut zone_col: Vec<String> = Vec::new();
-    let mut bore_col: Vec<String> = Vec::new();
-    let mut stat_cols: Vec<Vec<f64>> = vec![Vec::new(); stats.len()];
-    let mut order: Vec<String> = Vec::new(); // category order (first appearance)
+    if pivot && aggregate {
+        return Err(PyValueError::new_err(
+            "zone_table: use either pivot=True or aggregate=True, not both",
+        ));
+    }
+    let zone_stats = |vals: &[f64], w: &[f64]| {
+        if weighted {
+            petekio::Stats::weighted(vals, w)
+        } else {
+            petekio::Stats::of(vals)
+        }
+    };
+
+    // One pass: per-bore rows (bore-outer, non-empty unless include_empty), the
+    // zone first-appearance order, and the pooled (value, weight) pairs per zone.
+    let mut order: Vec<String> = Vec::new();
+    let mut rows: Vec<(String, String, Vec<f64>)> = Vec::new(); // (zone, bore, stat values)
+    let mut pooled: std::collections::HashMap<String, (Vec<f64>, Vec<f64>)> =
+        std::collections::HashMap::new();
     for (label, st) in bores {
         if st.trajectories().is_empty() {
             continue; // no md_range — nothing positioned
@@ -69,24 +124,102 @@ pub(crate) fn build_zone_table(
             if !order.contains(&iv.name) {
                 order.push(iv.name.clone());
             }
-            let s = iv.log(curve).map(|lv| lv.stats());
+            let gross = iv.thickness_md();
+            let s = iv.log(curve).map(|l| {
+                let w = dz_weights(l.md());
+                let st = zone_stats(l.values(), &w);
+                let e = pooled.entry(iv.name.clone()).or_default();
+                e.0.extend_from_slice(l.values());
+                e.1.extend_from_slice(&w);
+                st
+            });
             let count = s.as_ref().map(|x| x.count).unwrap_or(0);
             if count == 0 && !include_empty {
                 continue;
             }
-            zone_col.push(iv.name.clone());
-            bore_col.push(label.clone());
-            for (k, name) in stats.iter().enumerate() {
-                stat_cols[k].push(s.as_ref().map(|s| stat_value(s, name)).unwrap_or(f64::NAN));
-            }
+            let vals = stats
+                .iter()
+                .map(|n| match n.as_str() {
+                    "gross" => gross,
+                    _ => s.as_ref().map(|s| stat_value(s, n)).unwrap_or(f64::NAN),
+                })
+                .collect();
+            rows.push((iv.name.clone(), label.clone(), vals));
         }
     }
     let pd = py
         .import("pandas")
         .map_err(|_| PyImportError::new_err("zone_table requires pandas — `pip install pandas`"))?;
-    // category order = loaded order, restricted to zones actually emitted. Build
-    // the ordered Categorical column directly (no post-hoc reassignment, which
-    // would trip pandas' copy-on-write chained-assignment warning).
+
+    // aggregate=True → grouped: per zone a pooled "all" row first (sample-weighted
+    // across bores, computed on the re-pooled raw samples so std/percentiles are
+    // exact), then the per-bore rows; indexed by (zone, bore).
+    if aggregate {
+        let mut zone_col: Vec<String> = Vec::new();
+        let mut bore_col: Vec<String> = Vec::new();
+        let mut stat_cols: Vec<Vec<f64>> = vec![Vec::new(); stats.len()];
+        for zone in &order {
+            let (pv, pw) = match pooled.get(zone) {
+                Some((v, w)) => (v.as_slice(), w.as_slice()),
+                None => (&[][..], &[][..]),
+            };
+            let ps = zone_stats(pv, pw);
+            let zrows: Vec<&(String, String, Vec<f64>)> =
+                rows.iter().filter(|(z, _, _)| z == zone).collect();
+            if ps.count == 0 && zrows.is_empty() && !include_empty {
+                continue;
+            }
+            zone_col.push(zone.clone());
+            bore_col.push("all".to_string());
+            for (k, name) in stats.iter().enumerate() {
+                // `gross` isn't a sample stat — its pooled value is the mean zone
+                // thickness across the bores shown.
+                let v = if name.as_str() == "gross" {
+                    let g: Vec<f64> = zrows.iter().map(|(_, _, vals)| vals[k]).collect();
+                    if g.is_empty() {
+                        f64::NAN
+                    } else {
+                        g.iter().sum::<f64>() / g.len() as f64
+                    }
+                } else {
+                    stat_value(&ps, name)
+                };
+                stat_cols[k].push(v);
+            }
+            for (_, b, vals) in zrows {
+                zone_col.push(zone.clone());
+                bore_col.push(b.clone());
+                for (k, v) in vals.iter().enumerate() {
+                    stat_cols[k].push(*v);
+                }
+            }
+        }
+        let data = PyDict::new(py);
+        data.set_item("zone", zone_col)?;
+        data.set_item("bore", bore_col)?;
+        for (k, name) in stats.iter().enumerate() {
+            data.set_item(name.as_str(), stat_cols[k].clone())?;
+        }
+        let mut df = pd.call_method1("DataFrame", (data,))?;
+        df = df.call_method1("set_index", (vec!["zone", "bore"],))?;
+        if let Some(d) = decimals {
+            df = df.call_method1("round", (d,))?;
+        }
+        return Ok(df.unbind());
+    }
+
+    // Flat tidy / pivot. `zone` is an ordered Categorical (built directly as the
+    // column, not reassigned — that would trip pandas' copy-on-write warning).
+    let mut zone_col: Vec<String> = Vec::with_capacity(rows.len());
+    let mut bore_col: Vec<String> = Vec::with_capacity(rows.len());
+    let mut stat_cols: Vec<Vec<f64>> = vec![Vec::new(); stats.len()];
+    for (z, b, vals) in &rows {
+        zone_col.push(z.clone());
+        bore_col.push(b.clone());
+        for (k, v) in vals.iter().enumerate() {
+            stat_cols[k].push(*v);
+        }
+    }
     let present: std::collections::HashSet<&str> = zone_col.iter().map(String::as_str).collect();
     let cats: Vec<String> = order
         .into_iter()
@@ -102,7 +235,22 @@ pub(crate) fn build_zone_table(
     for (k, name) in stats.iter().enumerate() {
         data.set_item(name.as_str(), stat_cols[k].clone())?;
     }
-    Ok(pd.call_method1("DataFrame", (data,))?.unbind())
+    let mut df = pd.call_method1("DataFrame", (data,))?;
+    if pivot {
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("index", "zone")?;
+        kwargs.set_item("columns", "bore")?;
+        if stats.len() == 1 {
+            kwargs.set_item("values", stats[0].as_str())?;
+        } else {
+            kwargs.set_item("values", stats.to_vec())?;
+        }
+        df = df.call_method("pivot", (), Some(&kwargs))?;
+    }
+    if let Some(d) = decimals {
+        df = df.call_method1("round", (d,))?;
+    }
+    Ok(df.unbind())
 }
 
 /// A well: a view into a `GeoData` project's well collection.
@@ -218,20 +366,40 @@ impl Well {
     /// mean/sum/count/min/max/std/p10/p50/p90). `zone` is an ordered Categorical
     /// in lithostratigraphic order, so it survives `pivot`/`groupby`. Empty
     /// (zero-thickness / no-sample) cells are dropped unless `include_empty`.
-    /// Requires pandas.
-    #[pyo3(signature = (curve, stats=None, include_empty=false))]
+    /// `pivot=True` returns wide instead: `zone` index × `bore` columns (one stat
+    /// → flat; several → MultiIndex `(stat, bore)`). `aggregate=True` groups by
+    /// zone with a pooled "all" row first (sample-weighted across bores), indexed
+    /// by `(zone, bore)`; mutually exclusive with `pivot`. `decimals` rounds the
+    /// stat values. `weighted` (default True) thickness-weights the averages by
+    /// each sample's MD span (so mixed sampling rates don't bias); `stats` may
+    /// also be `samples`/`gross`. Requires pandas.
+    #[pyo3(signature = (curve, stats=None, include_empty=false, pivot=false, aggregate=false, weighted=true, decimals=None))]
     fn zone_table(
         &self,
         py: Python<'_>,
         curve: &str,
         stats: Option<Vec<String>>,
         include_empty: bool,
+        pivot: bool,
+        aggregate: bool,
+        weighted: bool,
+        decimals: Option<i64>,
     ) -> PyResult<Py<PyAny>> {
         let stats = stats.unwrap_or_else(|| vec!["mean".to_string()]);
         self.with_well(py, |w| {
             let bores: Vec<(String, &petekio::Sidetrack)> =
                 w.sidetracks().map(|s| (s.label.clone(), s)).collect();
-            crate::well::build_zone_table(py, &bores, curve, &stats, include_empty)
+            crate::well::build_zone_table(
+                py,
+                &bores,
+                curve,
+                &stats,
+                include_empty,
+                pivot,
+                aggregate,
+                weighted,
+                decimals,
+            )
         })
     }
 

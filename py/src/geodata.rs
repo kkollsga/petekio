@@ -248,14 +248,23 @@ impl WellsView {
     /// view, as a `pandas.DataFrame`. Like `Well.zone_table`, but `bore`
     /// identifies well + sidetrack (e.g. `"15/9-A1 B"`). `stats` default
     /// `["mean"]`; `zone` is an ordered Categorical in lithostratigraphic order;
-    /// empty cells dropped unless `include_empty`. Requires pandas.
-    #[pyo3(signature = (curve, stats=None, include_empty=false))]
+    /// empty cells dropped unless `include_empty`. `pivot=True` → wide (`zone`
+    /// index × `bore` columns; multi-stat → MultiIndex `(stat, bore)`).
+    /// `aggregate=True` → grouped by zone with a pooled "all" row first
+    /// (sample-weighted across wells), indexed by `(zone, bore)`; mutually
+    /// exclusive with `pivot`. `weighted` (default True) thickness-weights the
+    /// averages; `stats` may also be `samples`/`gross`. `decimals` rounds. pandas.
+    #[pyo3(signature = (curve, stats=None, include_empty=false, pivot=false, aggregate=false, weighted=true, decimals=None))]
     fn zone_table(
         &self,
         py: Python<'_>,
         curve: &str,
         stats: Option<Vec<String>>,
         include_empty: bool,
+        pivot: bool,
+        aggregate: bool,
+        weighted: bool,
+        decimals: Option<i64>,
     ) -> PyResult<Py<PyAny>> {
         let stats = stats.unwrap_or_else(|| vec!["mean".to_string()]);
         let g = self.geo.borrow(py);
@@ -272,7 +281,17 @@ impl WellsView {
                 }
             }
         }
-        crate::well::build_zone_table(py, &bores, curve, &stats, include_empty)
+        crate::well::build_zone_table(
+            py,
+            &bores,
+            curve,
+            &stats,
+            include_empty,
+            pivot,
+            aggregate,
+            weighted,
+            decimals,
+        )
     }
 
     /// A new view keeping only wells for which `pred(well)` is truthy.

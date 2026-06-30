@@ -96,6 +96,46 @@ impl Well {
         }))
     }
 
+    /// The coordinate reference system label, or `None`.
+    #[getter]
+    fn crs(&self, py: Python<'_>) -> PyResult<Option<String>> {
+        self.with_well(py, |w| Ok(w.crs().map(|s| s.to_string())))
+    }
+
+    /// The bore (sidetrack) labels, in order (`""` is the main bore).
+    fn bores(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.with_well(py, |w| {
+            Ok(w.sidetracks().map(|s| s.label.clone()).collect())
+        })
+    }
+
+    /// The bore with `label`, or `None`.
+    fn sidetrack(slf: Bound<'_, Self>, label: &str) -> PyResult<Option<Sidetrack>> {
+        let py = slf.py();
+        let exists = slf
+            .borrow()
+            .with_well(py, |w| Ok(w.sidetrack(label).is_some()))?;
+        Ok(exists.then(|| Sidetrack {
+            well: slf.clone().unbind(),
+            label: label.to_string(),
+        }))
+    }
+
+    /// All bores (sidetracks), in order.
+    fn sidetracks(slf: Bound<'_, Self>) -> PyResult<Vec<Sidetrack>> {
+        let py = slf.py();
+        let labels = slf.borrow().with_well(py, |w| {
+            Ok(w.sidetracks().map(|s| s.label.clone()).collect::<Vec<_>>())
+        })?;
+        Ok(labels
+            .into_iter()
+            .map(|label| Sidetrack {
+                well: slf.clone().unbind(),
+                label,
+            })
+            .collect())
+    }
+
     /// Dynamic top access: `w.brent` → the `Brent` `Interval`. Falls back to a
     /// normal `AttributeError` for unknown names.
     fn __getattr__(slf: Bound<'_, Self>, name: String) -> PyResult<Interval> {
@@ -118,6 +158,90 @@ impl Well {
 
     fn __repr__(&self) -> String {
         format!("Well(id={:?})", self.id)
+    }
+}
+
+/// A bore (sidetrack): a view resolving `well.sidetrack(label)`. Exposes
+/// per-bore logs, zones, and aggregates (the real data lives on the named bores
+/// A/B/C/ST2, not the main bore).
+#[pyclass(name = "Sidetrack")]
+pub struct Sidetrack {
+    well: Py<Well>,
+    label: String,
+}
+
+impl Sidetrack {
+    fn resolve<R>(
+        &self,
+        py: Python<'_>,
+        f: impl FnOnce(&petekio::Sidetrack) -> PyResult<R>,
+    ) -> PyResult<R> {
+        let w = self.well.borrow(py);
+        w.with_well(py, |rw| {
+            let st = rw
+                .sidetrack(&self.label)
+                .ok_or_else(|| PyValueError::new_err(format!("no bore '{}'", self.label)))?;
+            f(st)
+        })
+    }
+}
+
+#[pymethods]
+impl Sidetrack {
+    #[getter]
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// The mnemonics of every curve on this bore, in insertion order.
+    fn mnemonics(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.resolve(py, |s| Ok(s.logs().map(|l| l.mnemonic.clone()).collect()))
+    }
+
+    /// TVD at measured depth `md` on this bore, or `None`.
+    fn tvd(&self, py: Python<'_>, md: f64) -> PyResult<Option<f64>> {
+        self.resolve(py, |s| Ok(s.tvd(md)))
+    }
+
+    /// Interpolated position `(x, y, z)` at `md`, or `None`.
+    fn xyz(&self, py: Python<'_>, md: f64) -> PyResult<Option<(f64, f64, f64)>> {
+        self.resolve(py, |s| Ok(s.xyz(md).map(|p| (p.x, p.y, p.z))))
+    }
+
+    /// The `(min, max)` measured-depth span of the active trajectory, or `None`.
+    fn md_range(&self, py: Python<'_>) -> PyResult<Option<(f64, f64)>> {
+        self.resolve(py, |s| {
+            Ok((!s.trajectories().is_empty()).then(|| s.active().md_range()))
+        })
+    }
+
+    /// Full-curve NaN-skipping `Stats` for `mnemonic` (case-insensitive), or `None`.
+    fn log_stats(&self, py: Python<'_>, mnemonic: &str) -> PyResult<Option<Stats>> {
+        self.resolve(py, |s| Ok(s.log(mnemonic).map(|lv| Stats::new(lv.stats()))))
+    }
+
+    /// Each formation zone as `(name, top_md, base_md)`, in MD order.
+    fn zones(&self, py: Python<'_>) -> PyResult<Vec<(String, f64, f64)>> {
+        self.resolve(py, |s| {
+            Ok(s.zones()
+                .into_iter()
+                .map(|z| (z.name.clone(), z.top_md, z.base_md))
+                .collect())
+        })
+    }
+
+    /// Per-zone stats of curve `mnemonic`: a list of `(zone_name, Stats)`.
+    fn zone_stats(&self, py: Python<'_>, mnemonic: &str) -> PyResult<Vec<(String, Stats)>> {
+        self.resolve(py, |s| {
+            Ok(s.zone_stats(mnemonic)
+                .into_iter()
+                .map(|(n, st)| (n, Stats::new(st)))
+                .collect())
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Sidetrack(label={:?})", self.label)
     }
 }
 

@@ -114,6 +114,12 @@ impl GeoData {
         Ok(Well::view(slf.clone().unbind(), id.to_string()))
     }
 
+    /// Load a multi-well Petrel well-tops file; route each `Horizon` pick to the
+    /// matching loaded well + bore. Returns the number of tops assigned.
+    fn load_well_tops(&mut self, path: &str) -> PyResult<usize> {
+        self.inner.load_well_tops(path).map_err(to_pyerr)
+    }
+
     /// The well stored under `id` (view), or `None`.
     fn well(slf: Bound<'_, Self>, id: &str) -> Option<Well> {
         slf.borrow()

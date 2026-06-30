@@ -398,6 +398,14 @@ geo.load_well("15/9-A1", wellhead=(1200, 1500), kb=82, files="wells/A1/")
 w = geo.well("15/9-A1")
 w.xyz(2450)                              # interpolated position at MD
 
+# Multi-bore wells (a Petrel export tree → one bore per .wellpath) + tops + zone stats:
+geo.load_well_tops("WellTops.tops")      # Horizon picks → matching well + bore
+w.crs; w.bores()                         # CRS label; e.g. ["", "A", "B", "ST2"]
+bore = w.sidetrack("A")
+bore.mnemonics(); bore.log_stats("PHIE").mean      # whole-bore curve + stats
+bore.zones()                             # [(name, top_md, base_md), ...]
+dict(bore.zone_stats("PHIE"))["Top A"].mean        # per-zone average
+
 # Standalone trajectory from a directional survey (no project needed):
 traj = petekio.Trajectory.from_stations(      # [(md, inc_deg, azi_deg), ...]
     [(0, 0, 145), (1200, 0, 145), (1900, 57, 145)], head=(1000, 2000), kb=27.3)

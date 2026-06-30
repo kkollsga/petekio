@@ -336,3 +336,30 @@ def test_trajectory_from_stations_min_curvature():
     x, y, z = t.xyz(1900.0)
     assert math.isclose(x, 1000.0 + 183.778, abs_tol=0.5)
     assert t.tvd(5000.0) is None
+
+
+def test_sidetrack_zones_and_stats(tmp_path):
+    # Single-bore well (no .wellpath) → main bore ""; GR/NTG logs + Brent/Dunlin tops.
+    geo = petekio.GeoData(unit="m")
+    geo.load_well("15/9-A1", head=(0.0, 0.0), kb=0.0, files=WELL_DIR)
+    w = geo.well("15/9-A1")
+    assert w.bores() == [""]
+    st = w.sidetrack("")
+    assert st is not None
+    assert "NTG" in st.mnemonics()
+    # whole-bore stats
+    assert st.log_stats("NTG").count > 0
+    # per-zone stats: Brent zone exists with an NTG mean
+    zs = dict(st.zone_stats("NTG"))
+    assert "Brent" in zs and zs["Brent"].count > 0
+    assert any(name == "Brent" for name, _, _ in st.zones())
+
+    # Petrel well-tops routing via load_well_tops (synthetic file in tmp).
+    tops = tmp_path / "wt.tops"
+    tops.write_text(
+        "# Petrel well tops\nVERSION 2\nBEGIN HEADER\nX\nY\nZ\nTWT\nTWT2\nage\nMD\nPVD\nType\nSurface\nWell\nEND HEADER\n"
+        '1 2 -3 -999 -999 -999 2425.0 -3 Horizon "Synthetic top" "15/9-A1"\n'
+        '1 2 -3 -999 -999 -999 2440.0 -3 Other "OWC" "15/9-A1"\n'
+    )
+    added = geo.load_well_tops(str(tops))
+    assert added == 1  # Horizon kept, Other (OWC) skipped

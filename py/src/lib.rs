@@ -74,6 +74,7 @@ fn _petekio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<points::PolygonSet>()?;
     m.add_class::<trajectory::Trajectory>()?;
     m.add_class::<well::Well>()?;
+    m.add_class::<well::Sidetrack>()?;
     m.add_class::<well::Interval>()?;
     m.add_class::<well::LogView>()?;
     m.add_class::<geodata::GeoData>()?;

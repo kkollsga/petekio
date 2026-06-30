@@ -73,13 +73,25 @@ For a per-`zone × bore` table, `zone_table` returns a ready
 t = w.zone_table("PHIE", stats=("mean", "p50", "p90"))   # tidy: zone, bore, mean, p50, p90
 w.zone_table("PHIE", pivot=True, decimals=3)             # wide: zone index × bore columns, rounded
 w.zone_table("PHIE", aggregate=True)                     # grouped: pooled "all" row first, then per bore
+w.zone_table("PHIE", zones=["Upper Sand", "Mid Sand"])  # keep only these zones
 geo.wells.zone_table("PHIE")                             # multi-well; bore = "<well> <sidetrack>"
 ```
 
 `stats` are `Stats` attribute names (default `["mean"]`), plus **`samples`**
-(sample count) and **`gross`** (the zone's MD thickness). `zone` is an ordered
+(sample count) and **`gross`** (the zone's MD thickness). `zones=` keeps only the
+named zones (case-insensitive); `decimals=N` rounds. `zone` is an ordered
 Categorical in lithostratigraphic order, so it survives `pivot`/`groupby`;
 zero-thickness / no-sample cells drop out unless `include_empty=True`.
+
+| Argument | Effect |
+| --- | --- |
+| `stats=(...)` | which `Stats` attrs (+ `samples`, `gross`) become columns |
+| `zones=[...]` | keep only these zones |
+| `pivot=True` | wide: `zone` index × `bore` columns (multi-stat → MultiIndex) |
+| `aggregate=True` | grouped by zone, pooled **all** row first; `(zone, bore)` index |
+| `weighted=False` | plain sample mean instead of thickness-weighted |
+| `decimals=N` | round the stat values |
+| `include_empty=True` | keep zero-thickness / no-sample cells |
 
 Averages are **thickness-weighted by default** — each sample is weighted by the
 MD span it represents, so a finely-sampled log doesn't outweigh a coarse one over
@@ -113,6 +125,33 @@ The merge changes only the *order* zones are presented in — each zone's
     in another can't be ordered from the pinched-out well alone — its MD ties the
     marker above it. Reading the whole field lets the well that develops the sand
     supply the order the others lack.
+
+### Manual ordering hints
+
+Some markers are coincident in **every** well — two stacked lobes, say — so no
+depth data can order them. A **hint** resolves the stalemate. It is honoured
+*only* where the data leaves the pair unordered: any real MD relationship always
+wins, so a hint can never override geology.
+
+```python
+geo = petekio.GeoData(unit="m")
+geo.strat_hint("Upper Sand < Lower Sand")          # "A < B" = A above B
+geo.strat_hint(above="Upper Sand", below="Lower Sand")  # the explicit form
+geo.load_well_tops("WellTops.tops")                # hints apply at load time
+```
+
+`A < B` reads "A above B", `A > B` reads "A below B". Names may be partial
+(resolved at load: exact → `… top` → unique substring; an ambiguous or unmatched
+token raises). When two coincident tops are *stacked* — one sits in the interval
+the other bounds — the stratigraphically **lowest** of the cluster owns the
+interval its samples fall in, so per-zone stats stay correct after a re-order.
+
+## A worked example
+
+The [`well_example.ipynb`](https://github.com/kkollsga/petekio/blob/main/examples/well_example.ipynb)
+notebook runs this whole path end-to-end on a small synthetic field — load →
+`strat_order` → `zone_table` (tidy / pivot / aggregate / thickness-weighted) →
+`strat_hint` — and is generated with the bundled `synthgen` helper.
 
 See the [API reference](../api/reference.md#well) for the full `Well` /
 `Sidetrack` surface.

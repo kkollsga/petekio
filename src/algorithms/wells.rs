@@ -1,14 +1,20 @@
-//! `algorithms::wells` — well-path numerics. The **minimum-curvature** method:
-//! turn a directional survey (MD / inclination / azimuth) into positions, and
-//! interpolate position anywhere along the arc between two stations.
+//! `algorithms::wells` — well-path numerics. Two kernel families:
 //!
-//! Pure, type-light kernel (primitives + [`Point3`] in/out — no `Well`/`Station`
-//! or IO coupling) so it is trivial to QC in isolation and cheap to lift into the
-//! external **petekAlgorithms** library. One formula, one home: a full
+//! - **Minimum-curvature** trajectory: turn a directional survey (MD /
+//!   inclination / azimuth) into positions, and interpolate position anywhere
+//!   along the arc between two stations.
+//! - **Stratigraphic-order merge** ([`merge_strat_order`]): fuse the per-well
+//!   top sequences from a multi-well tops file into one global
+//!   lithostratigraphic column.
+//!
+//! Pure, type-light kernels (primitives + [`Point3`] in/out — no `Well`/`Station`
+//! or IO coupling) so they are trivial to QC in isolation and cheap to lift into
+//! the external **petekAlgorithms** library. One formula, one home: a full
 //! station-to-station step is just [`arc_point`] at `f = 1`, so [`survey_positions`]
 //! and mid-station interpolation share the exact same math.
 
 use crate::foundation::{GeoError, Point3, Result};
+use std::collections::{BTreeSet, HashMap};
 
 /// Below this dogleg (radians) the ratio factor is taken from its Taylor
 /// expansion `RF ≈ 1 + β²/12` to avoid the `0/0` in `(2/β)·tan(β/2)`.
@@ -105,6 +111,90 @@ pub fn survey_positions(
     Ok(out)
 }
 
+/// Merge per-well top sequences into one global lithostratigraphic order.
+///
+/// Each entry of `wells` is one well's picks as `(md, name)` in **file order**.
+/// A name `A` precedes `B` whenever `A` is *strictly shallower* than `B` in
+/// **some** well; equal MD — a zero-thickness pinch-out — yields no constraint.
+/// These strict constraints are merged by a topological sort, so a well that
+/// develops a marker resolves an order that a well where it pinches out cannot.
+/// Ties the data leaves unresolved (picks coincident in *every* well) break by
+/// **first appearance** across `wells` (formation tops typically precede their
+/// appended members), then by insertion. Contradictory constraints (a cycle)
+/// neither hang nor panic: once no zero-in-degree node remains, the rest are
+/// emitted in first-appearance order.
+///
+/// The caller (manager) gathers *every* well's Horizon picks from the tops file
+/// — including wells not loaded into the project — so the returned column
+/// reflects the whole field, not one borehole. Names are returned once each, in
+/// global lithostratigraphic order.
+pub fn merge_strat_order(wells: &[Vec<(f64, &str)>]) -> Vec<String> {
+    // First-appearance index doubles as the tiebreak key (file order, as passed).
+    let mut appearance: Vec<&str> = Vec::new();
+    let mut index: HashMap<&str, usize> = HashMap::new();
+    for well in wells {
+        for &(_, name) in well {
+            index.entry(name).or_insert_with(|| {
+                appearance.push(name);
+                appearance.len() - 1
+            });
+        }
+    }
+    let n = appearance.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    // Strict precedence edges: A≺B if A strictly shallower than B in some well.
+    let mut edges: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for well in wells {
+        for (i, &(md_a, a)) in well.iter().enumerate() {
+            for &(md_b, b) in &well[i + 1..] {
+                if a == b {
+                    continue;
+                }
+                let (ia, ib) = (index[a], index[b]);
+                if md_a < md_b {
+                    edges.insert((ia, ib));
+                } else if md_b < md_a {
+                    edges.insert((ib, ia));
+                } // equal MD → no constraint
+            }
+        }
+    }
+
+    let mut indeg = vec![0usize; n];
+    let mut succ: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(from, to) in &edges {
+        succ[from].push(to);
+        indeg[to] += 1;
+    }
+
+    // Kahn topo-sort. Node id == first-appearance index, so scanning `0..n` for
+    // the first eligible node is exactly the first-appearance tiebreak. When no
+    // zero-in-degree node remains (a cycle), fall back to the lowest unplaced
+    // node — deterministic, never blocks.
+    let mut placed = vec![false; n];
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    while order.len() < n {
+        let k = (0..n)
+            .find(|&k| !placed[k] && indeg[k] == 0)
+            .or_else(|| (0..n).find(|&k| !placed[k]))
+            .expect("an unplaced node exists while order.len() < n");
+        placed[k] = true;
+        order.push(k);
+        for &m in &succ[k] {
+            if !placed[m] && indeg[m] > 0 {
+                indeg[m] -= 1;
+            }
+        }
+    }
+    order
+        .into_iter()
+        .map(|k| appearance[k].to_string())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +250,61 @@ mod tests {
             survey_positions(&[(100.0, 0.0, 0.0), (100.0, 5.0, 0.0)], (0.0, 0.0), 0.0).is_err()
         );
         assert!(survey_positions(&[], (0.0, 0.0), 0.0).is_err());
+    }
+
+    // ---- merge_strat_order -------------------------------------------------
+
+    #[test]
+    fn strat_empty_is_empty() {
+        assert!(merge_strat_order(&[]).is_empty());
+        assert!(merge_strat_order(&[vec![]]).is_empty());
+    }
+
+    #[test]
+    fn strat_single_well_recovers_md_order_from_any_file_order() {
+        // File order scrambled; MD order is A<B<C. Edges come from MD, not file.
+        let w = vec![(30.0, "C"), (10.0, "A"), (20.0, "B")];
+        assert_eq!(merge_strat_order(&[w]), ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn strat_separation_resolves_a_coincident_tie() {
+        // Well 1 leaves B,C coincident (zero thickness); well 2 develops B<C.
+        // The merge must take the order well 2 supplies.
+        let w1 = vec![(10.0, "A"), (20.0, "B"), (20.0, "C")];
+        let w2 = vec![(10.0, "A"), (20.0, "B"), (30.0, "C")];
+        assert_eq!(merge_strat_order(&[w1, w2]), ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn strat_tie_everywhere_breaks_by_first_appearance() {
+        // X,Y coincident in every well → no edge. First appearance decides.
+        let xy = vec![vec![(10.0, "X"), (10.0, "Y")], vec![(5.0, "X"), (5.0, "Y")]];
+        assert_eq!(merge_strat_order(&xy), ["X", "Y"]);
+        // Reverse first appearance → reversed result (the tiebreak, not MD).
+        let yx = vec![vec![(10.0, "Y"), (10.0, "X")], vec![(5.0, "Y"), (5.0, "X")]];
+        assert_eq!(merge_strat_order(&yx), ["Y", "X"]);
+    }
+
+    #[test]
+    fn strat_contradiction_is_deterministic_and_never_hangs() {
+        // Well 1: P<Q; well 2: Q<P. A cycle — must return both, deterministically,
+        // in first-appearance order (P seen first), without panicking.
+        let w1 = vec![(10.0, "P"), (20.0, "Q")];
+        let w2 = vec![(10.0, "Q"), (20.0, "P")];
+        assert_eq!(merge_strat_order(&[w1, w2]), ["P", "Q"]);
+    }
+
+    #[test]
+    fn strat_field_shape_duva_cerisa_west() {
+        // Mirrors the real shape (synthetic names): one well leaves the Mid/Lower
+        // pair coincident, another develops Mid<Lower; a sand listed last in the
+        // file sits at its resolved depth, not at the end.
+        let absent = vec![(100.0, "Top"), (120.0, "Mid"), (120.0, "Lower")];
+        let dev = vec![(100.0, "Top"), (120.0, "Mid"), (130.0, "Lower")];
+        let sand = vec![(100.0, "Top"), (110.0, "Sand"), (120.0, "Mid")];
+        // "Sand" appears last across the inputs but its MD places it above Mid.
+        let order = merge_strat_order(&[absent, dev, sand]);
+        assert_eq!(order, ["Top", "Sand", "Mid", "Lower"]);
     }
 }

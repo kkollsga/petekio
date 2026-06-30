@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-06-30
+
 ### Changed
 - **Coincident-tops interval assignment follows lithostratigraphy.** When
   several tops share a measured depth (a zero-thickness cluster — e.g. a

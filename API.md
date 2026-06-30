@@ -146,7 +146,7 @@ impl Sidetrack {
     pub fn trajectories(&self) -> &[Trajectory];
     pub fn add_log(&mut self, log: Log);
     pub fn add_tops(&mut self, tops: Vec<Top>);
-    pub fn set_strat_order(&mut self, order: &[String]);  // present zones in this order (geometry kept)
+    pub fn set_strat_order(&mut self, order: &[String]);  // strat order; coincident-MD tie interval → deepest member
     pub fn xyz(&self, md: f64) -> Option<Point3>;
     pub fn top(&self, name: &str) -> Option<Interval>;
     pub fn log(&self, mnemonic: &str) -> Option<LogView>;

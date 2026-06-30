@@ -17,6 +17,7 @@ use crate::core::tops::{Interval, Top};
 use crate::core::trajectory::{Trajectory, TrajectoryInput};
 use crate::foundation::{GeoError, Point3, Result, Stats};
 use indexmap::IndexMap;
+use std::collections::HashMap;
 
 /// The label of the main bore.
 const MAIN: &str = "";
@@ -132,6 +133,15 @@ impl Well {
     pub fn zone_stats(&self, mnemonic: &str) -> Vec<(String, Stats)> {
         self.main().zone_stats(mnemonic)
     }
+
+    /// Push the project lithostratigraphic order into every bore, so `zones()` /
+    /// `zone_stats()` (on the well and each sidetrack) present zones in it.
+    /// Called by the manager after loading a tops file.
+    pub fn set_strat_order(&mut self, order: &[String]) {
+        for st in self.sidetracks.values_mut() {
+            st.set_strat_order(order);
+        }
+    }
 }
 
 /// A single bore: an ordered set of trajectories with one active. Carries the
@@ -147,6 +157,13 @@ pub struct Sidetrack {
     /// Formation tops, kept sorted ascending by MD so the next top resolves a
     /// base. Invariant maintained by [`add_tops`](Sidetrack::add_tops).
     tops: Vec<Top>,
+    /// Project-wide lithostratigraphic order (top names, shallow→deep), pushed
+    /// down from the manager at tops-load time via [`set_strat_order`]. Empty
+    /// until set; when non-empty, [`zones`](Sidetrack::zones) returns zones in
+    /// this order instead of plain MD order.
+    ///
+    /// [`set_strat_order`]: Sidetrack::set_strat_order
+    strat_order: Vec<String>,
 }
 
 impl Sidetrack {
@@ -160,6 +177,7 @@ impl Sidetrack {
             active: 0,
             logs: Vec::new(),
             tops: Vec::new(),
+            strat_order: Vec::new(),
         }
     }
 
@@ -230,6 +248,16 @@ impl Sidetrack {
         self.tops.sort_by(|a, b| a.md.total_cmp(&b.md));
     }
 
+    /// Set the project-wide lithostratigraphic order (top names, shallow→deep).
+    /// Pushed down from the manager once a tops file is loaded; [`zones`] then
+    /// presents zones in this order. Top geometry is untouched — only the
+    /// returned sequence follows the column.
+    ///
+    /// [`zones`]: Sidetrack::zones
+    pub fn set_strat_order(&mut self, order: &[String]) {
+        self.strat_order = order.to_vec();
+    }
+
     /// The interval named by top `name` (case-insensitive): `[top.md, base)`,
     /// where `base` is the next top's MD by sorted MD, or — for the deepest top
     /// — total depth (the active trajectory's `md_range().1`). `None` if no top
@@ -264,12 +292,21 @@ impl Sidetrack {
         self.logs.iter()
     }
 
-    /// Every formation zone as an [`Interval`] `[top.md, base)`, in MD order
-    /// (each top's base is the next top's MD, or total depth for the deepest).
-    /// The basis for per-zone aggregation.
+    /// Every formation zone as an [`Interval`] `[top.md, base)` — each top's
+    /// base is the next top's MD, or total depth for the deepest.
+    ///
+    /// Returned in the project **lithostratigraphic order** when one has been
+    /// set ([`set_strat_order`], from a loaded tops file), else in MD order. The
+    /// reorder is stable and the column is MD-consistent for every separated
+    /// pair, so it only ever permutes equal-MD (zero-thickness) groups — each
+    /// zone's geometry `[top_md, base)` is unchanged. The basis for per-zone
+    /// aggregation.
+    ///
+    /// [`set_strat_order`]: Sidetrack::set_strat_order
     pub fn zones(&self) -> Vec<Interval<'_>> {
         let td = self.trajectories.get(self.active).map(|t| t.md_range().1);
-        self.tops
+        let mut zones: Vec<Interval<'_>> = self
+            .tops
             .iter()
             .enumerate()
             .map(|(i, top)| {
@@ -281,7 +318,18 @@ impl Sidetrack {
                     .unwrap_or(f64::NAN);
                 Interval::new(top.name.clone(), top.md, base, &self.logs)
             })
-            .collect()
+            .collect();
+        if !self.strat_order.is_empty() {
+            let rank: HashMap<&str, usize> = self
+                .strat_order
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.as_str(), i))
+                .collect();
+            // Stable: names absent from the column (rank MAX) keep MD order.
+            zones.sort_by_key(|z| rank.get(z.name.as_str()).copied().unwrap_or(usize::MAX));
+        }
+        zones
     }
 
     /// Per-zone statistics of curve `mnemonic` (case-insensitive): one
@@ -412,6 +460,48 @@ mod tests {
         let zones = w.zones();
         assert_eq!(zones.len(), 2);
         assert_eq!(zones[0].name, "Brent");
+    }
+
+    #[test]
+    fn zones_follow_strat_order_without_moving_geometry() {
+        let mut w = Well::new("w", (0.0, 0.0), 0.0);
+        let st = w.sidetrack_mut("");
+        st.add_trajectory(vertical(0.0, 2500.0)).unwrap(); // TD 2500
+                                                           // File lists the sand last; "B" and "Sand" are coincident (zero
+                                                           // thickness) so the stable MD sort leaves B before Sand.
+        st.add_tops(vec![
+            Top::new("A", 2400.0),
+            Top::new("B", 2420.0),
+            Top::new("Sand", 2420.0),
+        ]);
+
+        // No column set → plain MD order, the sand trails.
+        let md_order: Vec<_> = w.zones().iter().map(|z| z.name.clone()).collect();
+        assert_eq!(md_order, ["A", "B", "Sand"]);
+
+        // Geometry keyed by name, for the invariance check.
+        let geom = |w: &Well| -> Vec<(String, f64, f64)> {
+            let mut g: Vec<_> = w
+                .zones()
+                .iter()
+                .map(|z| (z.name.clone(), z.top_md, z.base_md))
+                .collect();
+            g.sort_by(|a, b| a.0.cmp(&b.0));
+            g
+        };
+        let before = geom(&w);
+
+        // A column that lifts the sand above B reorders the sequence...
+        w.set_strat_order(&["A".to_string(), "Sand".to_string(), "B".to_string()]);
+        let strat: Vec<_> = w.zones().iter().map(|z| z.name.clone()).collect();
+        assert_eq!(strat, ["A", "Sand", "B"]);
+        // ...but every interval's [top_md, base) is unchanged.
+        assert_eq!(geom(&w), before);
+
+        // A name absent from the column keeps MD order (sorts to the end).
+        w.set_strat_order(&["Sand".to_string(), "A".to_string()]);
+        let mixed: Vec<_> = w.zones().iter().map(|z| z.name.clone()).collect();
+        assert_eq!(mixed, ["Sand", "A", "B"]);
     }
 
     #[test]

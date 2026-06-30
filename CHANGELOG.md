@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-06-30
+
 ### Added
 - **Manual lithostratigraphic hints.** `GeoData::add_strat_hint(above, below)` and
   the shorthand `strat_hint("A < B")` (`A < B` = A above B, `A > B` = A below B;

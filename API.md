@@ -399,6 +399,7 @@ w = geo.well("15/9-A1")
 w.xyz(2450)                              # interpolated position at MD
 
 # Multi-bore wells (a Petrel export tree → one bore per .wellpath) + tops + zone stats:
+geo.load_well("15/9-A1", files="wells/")  # head/kb optional — the .wellpath header fills them
 geo.load_well_tops("WellTops.tops")      # Horizon picks → matching well + bore
 w.crs; w.bores()                         # CRS label; e.g. ["", "A", "B", "ST2"]
 bore = w.sidetrack("A")

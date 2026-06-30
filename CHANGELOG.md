@@ -6,6 +6,12 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Changed
+- Python `GeoData.load_well`: `head`/`kb` are now **optional**
+  (`load_well(id, files=...)`). With a `.wellpath` present its header is
+  authoritative and fills them; without one they default to `(0, 0)` / `0`.
+  Backward-compatible (existing positional/keyword calls unchanged).
+
 ## [0.2.3] - 2026-06-30
 
 ### Added

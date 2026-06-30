@@ -12,7 +12,7 @@ use crate::surface::{clone_surface, Surface};
 use crate::well::Well;
 use crate::{parse_unit, to_pyerr};
 use petekio::GeoData as RsGeoData;
-use pyo3::exceptions::PyAttributeError;
+use pyo3::exceptions::{PyAttributeError, PyValueError};
 use pyo3::prelude::*;
 
 /// A load-once subsurface project under one declared length unit.
@@ -98,18 +98,25 @@ impl GeoData {
     }
 
     /// Load a well from `files` (a per-well directory or single file) under
-    /// `id`, returning a view. `head` is the wellhead `(x, y)`; `kb` the datum.
-    #[pyo3(signature = (id, head, kb, files))]
+    /// `id`, returning a view. `head` (wellhead `(x, y)`) and `kb` (datum) are
+    /// **optional** — when a `.wellpath` is present its header is authoritative
+    /// and overrides them, so for a positioned well you can omit both:
+    /// `geo.load_well("15/9-A1", files="wells/")`. Without a `.wellpath` they
+    /// default to `(0, 0)` / `0`.
+    #[pyo3(signature = (id, head=None, kb=None, files=None))]
     fn load_well(
         slf: Bound<'_, Self>,
         id: &str,
-        head: (f64, f64),
-        kb: f64,
-        files: &str,
+        head: Option<(f64, f64)>,
+        kb: Option<f64>,
+        files: Option<&str>,
     ) -> PyResult<Well> {
+        let files = files.ok_or_else(|| {
+            PyValueError::new_err("load_well: `files` (a well directory or file) is required")
+        })?;
         slf.borrow_mut()
             .inner
-            .load_well(id, head, kb, files)
+            .load_well(id, head.unwrap_or((0.0, 0.0)), kb.unwrap_or(0.0), files)
             .map_err(to_pyerr)?;
         Ok(Well::view(slf.clone().unbind(), id.to_string()))
     }

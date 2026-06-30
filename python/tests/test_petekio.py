@@ -363,3 +363,28 @@ def test_sidetrack_zones_and_stats(tmp_path):
     )
     added = geo.load_well_tops(str(tops))
     assert added == 1  # Horizon kept, Other (OWC) skipped
+
+
+def test_load_well_optional_head_kb_from_wellpath(tmp_path):
+    # A .wellpath supplies head/kb, so they can be omitted from load_well.
+    wd = tmp_path / "W"
+    wd.mkdir()
+    (wd / "99_9-1_A.wellpath").write_text(
+        "# WELL TRACE FROM PETREL\n"
+        "# WELL HEAD X-COORDINATE: 1234.0 (m)\n"
+        "# WELL HEAD Y-COORDINATE: 5678.0 (m)\n"
+        "# WELL DATUM (KB, Kelly bushing, from MSL): 30.0 (m)\n"
+        "# CRS: ED50 / UTM zone 31N\n=====\n"
+        "MD X Y Z TVD DX DY AZIM_TN INCL DLS AZIM_GN\n"
+        "0 1234.0 5678.0 0 0 0 0 145 0 0 145\n"
+        "1000 1234.0 5678.0 -1000 1000 0 0 145 0 0 145\n"
+    )
+    geo = petekio.GeoData(unit="m")
+    geo.load_well("99/9-1", files=str(wd))          # head/kb omitted
+    w = geo.well("99/9-1")
+    assert w.head == (1234.0, 5678.0)
+    assert math.isclose(w.kb, 30.0)
+    assert len(w.bores()) == 2  # main "" + the one wellpath bore
+    # `files` is still required
+    with pytest.raises(ValueError):
+        geo.load_well("x")

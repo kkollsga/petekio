@@ -148,6 +148,7 @@ impl GeoData {
     /// skipped so a newer sidecar still loads in an older petekIO.
     pub fn open(path: impl AsRef<Path>) -> Result<GeoData> {
         let mut r = container::open(path.as_ref())?;
+        migrate_gate(r.data_version())?;
         let app = r.app().clone();
         let unit: Unit = app
             .get("unit")
@@ -243,9 +244,54 @@ impl GeoData {
     }
 }
 
+/// The element-schema (`data_version`) compatibility gate. A file newer than
+/// this build is refused with a clear message; an older one is routed through a
+/// migration (none needed at v1 — the hook is here so a future bump lands a
+/// `data_version < N` decoder instead of a hard break).
+fn migrate_gate(file_version: u32) -> Result<()> {
+    if file_version > DATA_VERSION {
+        return Err(GeoError::Parse(format!(
+            ".pproj element schema v{file_version} is newer than this petekIO (reads ≤ v{DATA_VERSION}) — upgrade petekIO"
+        )));
+    }
+    // file_version < DATA_VERSION → migrate here (per-version decoders). At v1
+    // there is nothing older, so current-version files pass straight through.
+    Ok(())
+}
+
 fn from_json<T: serde::de::DeserializeOwned + Default>(app: &Value, key: &str) -> T {
     app.get(key)
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::foundation::Unit;
+    use serde_json::json;
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("pio_ver_{tag}_{}.pproj", std::process::id()))
+    }
+
+    #[test]
+    fn rejects_newer_element_schema() {
+        let p = tmp("newer");
+        container::write(&p, &json!({"unit": "Metres"}), DATA_VERSION + 1, &[]).unwrap();
+        let err = GeoData::open(&p)
+            .err()
+            .expect("newer schema must be rejected");
+        assert!(format!("{err}").contains("newer than this petekIO"));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn current_version_opens_and_restores_unit() {
+        let p = tmp("cur");
+        container::write(&p, &json!({"unit": "Feet"}), DATA_VERSION, &[]).unwrap();
+        assert_eq!(GeoData::open(&p).unwrap().unit, Unit::Feet);
+        std::fs::remove_file(&p).ok();
+    }
 }

@@ -6,6 +6,7 @@
 //! behind the broadcast ergonomic. Realizes `API.md` §"GeoData".
 
 mod geodata; // GeoData — the load-once project + named/collection access
+mod loaders; // GeoData::load_* — extension-dispatched ingest + well routing
 mod model_inputs; // GeoData::model_inputs — the model-ready inputs contract
 mod project; // GeoData::save/open/inspect — whole-project .pproj persistence
 mod wells_view; // WellsView — broadcastable, filterable borrow over wells

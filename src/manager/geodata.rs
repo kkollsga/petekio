@@ -24,19 +24,24 @@ use std::path::Path;
 pub struct GeoData {
     /// The project's length unit; surfaces/wells/points/polygons share it.
     pub unit: Unit,
-    surfaces: IndexMap<String, Surface>,
-    wells: IndexMap<String, Well>,
-    points: IndexMap<String, PointSet>,
-    polygons: IndexMap<String, PolygonSet>,
+    pub(crate) surfaces: IndexMap<String, Surface>,
+    pub(crate) wells: IndexMap<String, Well>,
+    pub(crate) points: IndexMap<String, PointSet>,
+    pub(crate) polygons: IndexMap<String, PolygonSet>,
     /// Global lithostratigraphic column (top names, shallow→deep) derived from
     /// the last loaded well-tops file across *all* its wells. Empty until
     /// [`load_well_tops`](GeoData::load_well_tops) runs; pushed down into every
     /// well so `zones()`/`zone_stats()` present in this order.
-    strat_order: Vec<String>,
+    pub(crate) strat_order: Vec<String>,
     /// User-supplied soft ordering hints `(above, below)` as raw name tokens
     /// (possibly partial). Applied during `load_well_tops` — resolved to actual
     /// top names, then honoured only where the data leaves the pair unordered.
-    strat_hints: Vec<(String, String)>,
+    pub(crate) strat_hints: Vec<(String, String)>,
+    /// Project metadata persisted to a `.pproj` manifest (owner / tags / created;
+    /// `modified` is stamped at save time).
+    pub(crate) owner: Option<String>,
+    pub(crate) tags: Vec<String>,
+    pub(crate) created: Option<u64>,
 }
 
 /// Lower-cased file extension of `path`, or `""` when it has none.
@@ -58,6 +63,9 @@ impl GeoData {
             polygons: IndexMap::new(),
             strat_order: Vec::new(),
             strat_hints: Vec::new(),
+            owner: None,
+            tags: Vec::new(),
+            created: None,
         }
     }
 

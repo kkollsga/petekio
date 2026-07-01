@@ -7,7 +7,9 @@
 
 mod geodata; // GeoData — the load-once project + named/collection access
 mod model_inputs; // GeoData::model_inputs — the model-ready inputs contract
+mod project; // GeoData::save/open/inspect — whole-project .pproj persistence
 mod wells_view; // WellsView — broadcastable, filterable borrow over wells
 
 pub use geodata::GeoData;
+pub use project::ProjectInfo;
 pub use wells_view::WellsView;

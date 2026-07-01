@@ -14,10 +14,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::path::Path;
 
-/// On-disk element-DTO schema version (bumped on a struct-layout change; a bump
-/// ships a migration — see the persistence design). Distinct from the container
-/// magic's hard format version.
-pub(crate) const DATA_VERSION: u32 = 1;
+use serial::DATA_VERSION;
 
 /// Write one serializable element as a single-section `.pproj`.
 fn save_one<T: Serialize>(path: &Path, kind: &str, name: &str, value: &T) -> Result<()> {

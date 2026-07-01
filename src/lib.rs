@@ -37,4 +37,4 @@ pub use core::{
 pub use foundation::{
     BBox, Distribution, GeoError, GridGeometry, Point3, Provenance, Result, Stats, Uncertain, Unit,
 };
-pub use manager::{GeoData, WellsView};
+pub use manager::{GeoData, ProjectInfo, WellsView};

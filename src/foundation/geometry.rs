@@ -3,7 +3,7 @@
 
 /// A point in project coordinates (x = Easting, y = Northing, z = depth,
 /// increasing **downward**).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Point3 {
     pub x: f64,
     pub y: f64,
@@ -28,7 +28,7 @@ pub struct BBox {
 /// A regular, rotatable areal lattice (IRAP/RMS model). Node `(i, j)` runs
 /// `i` along the column/x axis (`ncol` nodes) and `j` along the row/y axis
 /// (`nrow` nodes).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GridGeometry {
     /// Origin x (node 0,0).
     pub xori: f64,

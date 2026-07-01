@@ -28,6 +28,7 @@ pub(crate) type AerialEntry = GeomWithData<[f64; 2], usize>;
 
 /// Scattered points with attribute columns. Coordinates are stored as `[x, y,
 /// z]`; each attribute is a `f64` column aligned 1:1 with `coords`.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct PointSet {
     pub(crate) coords: Vec<[f64; 3]>,
     pub(crate) attrs: IndexMap<String, Vec<f64>>,

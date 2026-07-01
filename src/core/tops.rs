@@ -18,7 +18,7 @@ use crate::foundation::Result;
 use std::path::Path;
 
 /// A formation top: a name and its entry measured depth.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Top {
     /// Formation / marker name (e.g. `"Brent"`).
     pub name: String,

@@ -38,7 +38,7 @@ ndarray = { version = "0.17", features = ["serde"] }
 indexmap = { version = "2", features = ["serde"] }
 las_rs = "0.2.1"
 csv = "1"
-geo = "0.33"
+geo = { version = "0.33", features = ["use-serde"] }
 geozero = { version = "0.15", features = ["with-geo", "with-geojson", "with-wkt", "with-shp"] }
 rstar = "0.13"
 # Persistence (.pproj): serde DTOs + bincode sections + zstd + a JSON header.

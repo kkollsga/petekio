@@ -12,6 +12,7 @@ pub(crate) fn decode_latin1(bytes: &[u8]) -> String {
 
 pub mod container;
 pub mod csv_points;
+pub mod serial;
 pub mod irap;
 pub mod las;
 pub mod petrel_tops;

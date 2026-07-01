@@ -66,7 +66,7 @@ pub enum TrajectoryInput {
 /// `[north, east, down]` from the station's inc/azi, present for survey-derived
 /// nodes (it drives arc-consistent interpolation between stations) and `None`
 /// for explicit `Xyz` paths (which fall back to straight-line interpolation).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Node {
     md: f64,
     p: Point3,
@@ -75,7 +75,7 @@ struct Node {
 
 /// A normalized, positioned well path: a monotone `md → (x, y, z)` curve with
 /// interpolation. `z` is subsea TVD, positive downward.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Trajectory {
     nodes: Vec<Node>,
 }

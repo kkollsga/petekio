@@ -2,7 +2,7 @@
 //! and conversions live here.
 
 /// A length unit. Carried on a `GeoData` project; surfaces/wells inherit it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Unit {
     Feet,
     Metres,

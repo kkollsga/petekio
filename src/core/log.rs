@@ -18,7 +18,7 @@ use std::path::Path;
 
 /// Whether a curve is a continuous log or discrete **core** measurement — so a
 /// consumer can include or exclude core data in per-zone aggregation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum LogKind {
     /// A continuous wireline / computed log (the default).
     #[default]
@@ -29,7 +29,7 @@ pub enum LogKind {
 
 /// One measured-depth-indexed well curve: parallel `md`/`values` with
 /// `f64::NAN` for undefined samples. `md` is ascending.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Log {
     /// Curve mnemonic (e.g. `"GR"`, `"NTG"`).
     pub mnemonic: String,

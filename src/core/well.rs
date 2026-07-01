@@ -23,6 +23,7 @@ use std::collections::HashMap;
 const MAIN: &str = "";
 
 /// A well: a surface location (`head`), a datum (`kb`), and its sidetracks.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Well {
     /// Well identifier.
     pub id: String,
@@ -146,6 +147,7 @@ impl Well {
 
 /// A single bore: an ordered set of trajectories with one active. Carries the
 /// owning well's `head`/`kb` so it can normalize survey input on insert.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Sidetrack {
     /// The bore label (`""` for the main bore).
     pub label: String,

@@ -12,7 +12,7 @@ use std::path::Path;
 /// A rotated regular grid (IRAP/RMS model) holding a primary value layer
 /// (`values`, e.g. depth) plus named attribute layers (thickness, seismic, …)
 /// on the same geometry. Undefined nodes are `NaN`.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Surface {
     /// The areal lattice. Public; `values`/`attributes` are private.
     pub geom: GridGeometry,

@@ -7,9 +7,11 @@
 //! newer petekSim sidecar loads in an older petekIO). `inspect` reads only the
 //! manifest — list a project without decoding any element.
 
+use crate::core::persist::Persistable;
+use crate::core::{PointSet, PolygonSet, Surface, Well};
 use crate::foundation::{GeoError, Result, Unit};
 use crate::io::container::{self, Section};
-use crate::io::serial::{self, DATA_VERSION};
+use crate::io::serial::DATA_VERSION;
 use crate::manager::GeoData;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -98,27 +100,31 @@ impl GeoData {
             .map(|m| (m.version, m.bytes.clone()))
     }
 
+    /// Re-key a self-framed element [`Section`] to its project collection key and
+    /// stamp the project's per-element tags onto it.
+    fn named_section(&self, name: &str, mut sec: Section) -> Section {
+        sec.name = name.to_string();
+        sec.tags = self.element_tags.get(name).cloned().unwrap_or_default();
+        sec
+    }
+
     /// Save the whole project to a single `.pproj` file (written atomically).
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let mut sections: Vec<Section> = Vec::new();
-        let elem = |kind: &str, name: &str, payload: Vec<u8>| Section {
-            kind: kind.to_string(),
-            name: name.to_string(),
-            tags: self.element_tags.get(name).cloned().unwrap_or_default(),
-            version: DATA_VERSION,
-            payload,
-        };
+        // Each element frames itself via the shared `Persistable` mapping (kind +
+        // payload + version); the project overrides the section name with the
+        // collection key and stamps its element tags.
         for (name, s) in &self.surfaces {
-            sections.push(elem("surface", name, serial::to_bytes(s)?));
+            sections.push(self.named_section(name, s.to_section()?));
         }
         for (id, w) in &self.wells {
-            sections.push(elem("well", id, serial::to_bytes(w)?));
+            sections.push(self.named_section(id, w.to_section()?));
         }
         for (name, p) in &self.points {
-            sections.push(elem("points", name, serial::to_bytes(p)?));
+            sections.push(self.named_section(name, p.to_section()?));
         }
         for (name, p) in &self.polygons {
-            sections.push(elem("polygons", name, serial::to_bytes(p)?));
+            sections.push(self.named_section(name, p.to_section()?));
         }
         for (name, m) in &self.model_sections {
             sections.push(Section {
@@ -168,21 +174,22 @@ impl GeoData {
             .map(|e| (e.kind.clone(), e.name.clone()))
             .collect();
         for (kind, name) in index {
+            // Kind strings come from the same `Persistable::KIND` the writer used.
             match kind.as_str() {
-                "surface" => {
-                    let s = serial::from_bytes(&r.read(&name)?.payload)?;
+                k if k == Surface::KIND => {
+                    let s = Surface::from_payload(&r.read(&name)?.payload)?;
                     geo.surfaces.insert(name, s);
                 }
-                "well" => {
-                    let w = serial::from_bytes(&r.read(&name)?.payload)?;
+                k if k == Well::KIND => {
+                    let w = Well::from_payload(&r.read(&name)?.payload)?;
                     geo.wells.insert(name, w);
                 }
-                "points" => {
-                    let p = serial::from_bytes(&r.read(&name)?.payload)?;
+                k if k == PointSet::KIND => {
+                    let p = PointSet::from_payload(&r.read(&name)?.payload)?;
                     geo.points.insert(name, p);
                 }
-                "polygons" => {
-                    let p = serial::from_bytes(&r.read(&name)?.payload)?;
+                k if k == PolygonSet::KIND => {
+                    let p = PolygonSet::from_payload(&r.read(&name)?.payload)?;
                     geo.polygons.insert(name, p);
                 }
                 "model" => {

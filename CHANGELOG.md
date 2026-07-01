@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-07-01
+
 ### Added
 - **Project persistence — a single `.pproj` file.** Save/load a whole `GeoData`
   project to one structured, efficient file (magic + JSON manifest +

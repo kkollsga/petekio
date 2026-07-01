@@ -85,6 +85,27 @@ impl PolygonSet {
     }
 }
 
+impl PointSet {
+    /// Export to GeoJSON (`Point` features; attributes → properties). Round-trips
+    /// with `load_geojson`. `NaN` → `null`.
+    pub fn export_geojson(&self, path: impl AsRef<Path>) -> Result<()> {
+        crate::io::vector_write::write_points_geojson(path.as_ref(), &self.coords, &self.attrs)
+    }
+    /// Export to CSV (`x,y,z` + one column per attribute). Round-trips with
+    /// `load_csv`.
+    pub fn export_csv(&self, path: impl AsRef<Path>) -> Result<()> {
+        crate::io::vector_write::write_points_csv(path.as_ref(), &self.coords, &self.attrs)
+    }
+}
+
+impl PolygonSet {
+    /// Export to GeoJSON (`Polygon` features from the rings). Round-trips with
+    /// `load_geojson`.
+    pub fn export_geojson(&self, path: impl AsRef<Path>) -> Result<()> {
+        crate::io::vector_write::write_polygons_geojson(path.as_ref(), &self.rings())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::core::log::Log;
@@ -181,6 +202,51 @@ mod tests {
         let s = back.stats("poro").unwrap();
         assert_eq!(s.count, 2); // NaN skipped
         std::fs::remove_file(&p).ok();
+    }
+
+    fn tmp_ext(tag: &str, ext: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("pio_exp_{tag}_{}.{ext}", std::process::id()))
+    }
+
+    #[test]
+    fn points_export_geojson_and_csv_round_trip() {
+        let mut attrs = IndexMap::new();
+        attrs.insert("poro".to_string(), vec![0.2, f64::NAN, 0.3]);
+        let pts = PointSet {
+            coords: vec![[1.0, 2.0, 100.0], [3.0, 4.0, 110.0], [5.0, 6.0, 120.0]],
+            attrs,
+        };
+        // GeoJSON round-trip (NaN → null → NaN).
+        let g = tmp_ext("pts_gj", "geojson");
+        pts.export_geojson(&g).unwrap();
+        let bg = PointSet::load_geojson(&g).unwrap();
+        assert_eq!(bg.len(), 3);
+        assert_eq!(bg.stats("poro").unwrap().count, 2);
+        std::fs::remove_file(&g).ok();
+        // CSV round-trip.
+        let c = tmp_ext("pts_csv", "csv");
+        pts.export_csv(&c).unwrap();
+        let bc = PointSet::load_csv(&c, "x", "y", "z").unwrap();
+        assert_eq!(bc.len(), 3);
+        assert_eq!(bc.stats("poro").unwrap().count, 2);
+        std::fs::remove_file(&c).ok();
+    }
+
+    #[test]
+    fn polygons_export_geojson_round_trip() {
+        let rings = vec![vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 10.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ]];
+        let pg = PolygonSet::from_rings(rings);
+        let g = tmp_ext("pgn_gj", "geojson");
+        pg.export_geojson(&g).unwrap();
+        let back = PolygonSet::load_geojson(&g).unwrap();
+        assert!(back.contains(3.0, 1.0));
+        assert!(!back.contains(-1.0, -1.0));
+        std::fs::remove_file(&g).ok();
     }
 
     #[test]

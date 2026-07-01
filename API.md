@@ -255,7 +255,28 @@ impl GeoData {
     /// normalize→validate→interpret→characterise across the project.
     /// Surface and PolygonSet are Clone (horizons/boundary are cloned out).
     pub fn model_inputs(&self) -> Result<ModelInputs>;
+
+    // Persistence — a single structured .pproj file (see the persistence design).
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()>;          // atomic whole-project write
+    pub fn open(path: impl AsRef<Path>) -> Result<GeoData>;            // materialize; model/*+unknown kinds skipped
+    pub fn inspect(path: impl AsRef<Path>) -> Result<ProjectInfo>;     // manifest only (list without loading)
+    pub fn split(src: impl AsRef<Path>, dst: impl AsRef<Path>, names: &[&str]) -> Result<()>; // byte-lossless
+    pub fn export(src: impl AsRef<Path>, dst: impl AsRef<Path>, tags: &[&str]) -> Result<()>; // tag-filtered subset
+    pub fn merge(a: impl AsRef<Path>, b: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<()>;
+    pub fn owner(&self) -> Option<&str>;
+    pub fn set_owner(&mut self, owner: impl Into<String>);
+    pub fn tags(&self) -> &[String];
+    pub fn set_tags(&mut self, tags: Vec<String>);
+    pub fn set_element_tags(&mut self, name: impl Into<String>, tags: Vec<String>);
+    // petekSim's opaque model sidecar (bytes petekIO never parses; per-section version):
+    pub fn put_model_section(&mut self, name: impl Into<String>, tags: Vec<String>, version: u32, bytes: Vec<u8>);
+    pub fn model_section_names(&self) -> Vec<String>;
+    pub fn model_section(&self, name: &str) -> Option<(u32, Vec<u8>)>;
 }
+// Per element: Surface/Well/PointSet/PolygonSet each expose `save(path)`/`load(path)`
+// (a standalone one-section .pproj). Human-readable export: PointSet::export_geojson/
+// export_csv, PolygonSet::export_geojson, Surface::save_irap_classic.
+// ProjectInfo { owner, tags, created, modified, unit, elements: Vec<(kind, name)> }.
 pub struct WellsView<'a> { /* broadcastable, filterable */ }
 impl<'a> WellsView<'a> {
     pub fn filter(&self, pred: impl Fn(&Well) -> bool) -> WellsView<'a>;
@@ -406,6 +427,17 @@ w.xyz(2450)                              # interpolated position at MD
 # Multi-bore wells (a Petrel export tree → one bore per .wellpath) + tops + zone stats:
 geo.load_well("15/9-A1", files="wells/")  # head/kb optional — the .wellpath header fills them
 geo.strat_hint("Basal < Cerisa West")    # soft order hint (A<B = A above B); or above=/below=
+
+# Persistence — one .pproj file (splittable/mergeable/tag-filterable):
+geo.set_owner("kk"); geo.set_tags(["cerisa"]); geo.set_element_tags("15/9-A1", ["cerisa"])
+geo.save("field.pproj")
+info = petekio.GeoData.inspect("field.pproj")     # dict: owner/tags/unit/elements — no decode
+geo = petekio.GeoData.open("field.pproj")
+petekio.GeoData.export("field.pproj", "share.pproj", ["cerisa"])   # tagged subset, one binary
+petekio.GeoData.split("field.pproj", "wells.pproj", ["15/9-A1"])
+petekio.GeoData.merge("a.pproj", "b.pproj", "both.pproj")
+geo.put_model_section("model/seg/props", ["cerisa"], 1, payload_bytes)   # petekSim's opaque sidecar
+v, data = geo.model_section("model/seg/props")    # (version, bytes)
 geo.load_well_tops("WellTops.tops")      # Horizon picks → well+bore; derives the strat column
 geo.strat_order                          # ["Top A", "Sand A", "Top B", ...] global lithostrat column
 w.crs; w.bores()                         # CRS label; e.g. ["", "A", "B", "ST2"]

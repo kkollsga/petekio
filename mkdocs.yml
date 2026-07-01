@@ -41,4 +41,5 @@ nav:
       - GeoData project: guide/geodata.md
       - Wells: guide/wells.md
       - Surfaces, points & polygons: guide/surfaces.md
+      - Projects & persistence: guide/persistence.md
   - API reference: api/reference.md

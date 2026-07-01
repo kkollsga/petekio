@@ -7,6 +7,20 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Project persistence — a single `.pproj` file.** Save/load a whole `GeoData`
+  project to one structured, efficient file (magic + JSON manifest +
+  `zstd(bincode)` sections): `GeoData::save/open`, `inspect` (manifest only —
+  list without decoding), and per-element `Surface/Well/PointSet/PolygonSet`
+  `save`/`load`. The file is **splittable / mergeable / tag-filterable** for
+  team sharing — `split(names)`, `merge(a,b)`, `export(tags)` copy sections
+  byte-for-byte (no re-encode). Project metadata: `owner`, project + per-element
+  `tags`, timestamps. petekSim's model persists as reserved **`model/*` opaque
+  sections** (`put_model_section` / `model_section` / `model_section_names` —
+  bytes petekIO never parses, each with its own version). Two-tier versioning
+  (hard magic + `data_version` gate + serde-default manifest); atomic writes;
+  unknown/`model/*` kinds skipped on load (forward-compatible); NaN preserved.
+  Human-readable export: `PointSet::export_geojson/export_csv`,
+  `PolygonSet::export_geojson`. Full Python bindings. (petekSim-signed-off format.)
 - **`zone_table` views, aggregation, and thickness-weighting** (Python, `Well` +
   `GeoData.wells`):
   - `pivot=True` → wide: `zone` index × `bore` columns (single stat flat; several

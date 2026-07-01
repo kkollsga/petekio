@@ -14,6 +14,7 @@ use crate::{parse_unit, to_pyerr};
 use petekio::GeoData as RsGeoData;
 use pyo3::exceptions::{PyAttributeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyDict};
 
 /// A load-once subsurface project under one declared length unit.
 #[pyclass(name = "GeoData")]
@@ -195,6 +196,99 @@ impl GeoData {
             .map(|w| w.id.clone())
             .collect();
         WellsView::new(slf.clone().unbind(), ids, None)
+    }
+
+    // ---- persistence (.pproj) ---------------------------------------------
+
+    /// Save the whole project to a single `.pproj` file (atomic).
+    fn save(&self, path: &str) -> PyResult<()> {
+        self.inner.save(path).map_err(to_pyerr)
+    }
+
+    /// Open a `.pproj` project.
+    #[staticmethod]
+    fn open(path: &str) -> PyResult<GeoData> {
+        Ok(GeoData {
+            inner: RsGeoData::open(path).map_err(to_pyerr)?,
+        })
+    }
+
+    /// Read a project's manifest (owner/tags/unit/timestamps + element index)
+    /// without decoding any element — a dict.
+    #[staticmethod]
+    fn inspect<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
+        let info = RsGeoData::inspect(path).map_err(to_pyerr)?;
+        let d = PyDict::new(py);
+        d.set_item("owner", info.owner)?;
+        d.set_item("tags", info.tags)?;
+        d.set_item("created", info.created)?;
+        d.set_item("modified", info.modified)?;
+        d.set_item("unit", info.unit)?;
+        d.set_item("elements", info.elements)?;
+        Ok(d)
+    }
+
+    /// Copy `src` → `dst` keeping only sections named in `names` (byte-for-byte).
+    #[staticmethod]
+    fn split(src: &str, dst: &str, names: Vec<String>) -> PyResult<()> {
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        RsGeoData::split(src, dst, &refs).map_err(to_pyerr)
+    }
+
+    /// Copy `src` → `dst` keeping only sections tagged with any of `tags`.
+    #[staticmethod]
+    fn export(src: &str, dst: &str, tags: Vec<String>) -> PyResult<()> {
+        let refs: Vec<&str> = tags.iter().map(String::as_str).collect();
+        RsGeoData::export(src, dst, &refs).map_err(to_pyerr)
+    }
+
+    /// Merge projects `a` and `b` into `dst` (`b` wins on clash).
+    #[staticmethod]
+    fn merge(a: &str, b: &str, dst: &str) -> PyResult<()> {
+        RsGeoData::merge(a, b, dst).map_err(to_pyerr)
+    }
+
+    /// The project owner recorded in the manifest, or `None`.
+    #[getter]
+    fn owner(&self) -> Option<String> {
+        self.inner.owner().map(String::from)
+    }
+    fn set_owner(&mut self, owner: &str) {
+        self.inner.set_owner(owner);
+    }
+
+    /// Project-level custom tags.
+    #[getter]
+    fn tags(&self) -> Vec<String> {
+        self.inner.tags().to_vec()
+    }
+    fn set_tags(&mut self, tags: Vec<String>) {
+        self.inner.set_tags(tags);
+    }
+    /// Tag a single element (by name) so `export(tags=...)` can select it.
+    fn set_element_tags(&mut self, name: &str, tags: Vec<String>) {
+        self.inner.set_element_tags(name, tags);
+    }
+
+    /// Store an opaque model section (petekSim's sidecar) — bytes petekIO frames
+    /// and returns untouched, each with its own `version`.
+    fn put_model_section(&mut self, name: &str, tags: Vec<String>, version: u32, data: &[u8]) {
+        self.inner
+            .put_model_section(name, tags, version, data.to_vec());
+    }
+    /// The names of the model sections held.
+    fn model_section_names(&self) -> Vec<String> {
+        self.inner.model_section_names()
+    }
+    /// A model section's `(version, bytes)`, or `None`.
+    fn model_section<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+    ) -> Option<(u32, Bound<'py, PyBytes>)> {
+        self.inner
+            .model_section(name)
+            .map(|(v, b)| (v, PyBytes::new(py, &b)))
     }
 }
 

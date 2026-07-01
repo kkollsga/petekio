@@ -567,3 +567,43 @@ def test_zone_table_thickness_weighting(tmp_path):
     t = w.zone_table("PHIE", stats=["samples", "gross"], aggregate=True)
     a = t.xs("A", level="zone").loc["all"]
     assert a["samples"] == 4 and a["gross"] > 0
+
+
+def test_project_persistence(tmp_path):
+    geo = petekio.GeoData(unit="m")
+    geo.load_well("15/9-A1", head=(0.0, 0.0), kb=0.0, files=WELL_DIR)
+    geo.set_owner("kk")
+    geo.set_tags(["demo"])
+    geo.set_element_tags("15/9-A1", ["keep"])
+    geo.put_model_section("model/seg/props", ["keep"], 3, b"\x00\xffmodel")
+    geo.put_model_section("model/other", ["drop"], 1, b"\x09")
+    src = str(tmp_path / "p.pproj")
+    geo.save(src)
+
+    # inspect: manifest only
+    info = petekio.GeoData.inspect(src)
+    assert info["owner"] == "kk" and "demo" in info["tags"] and info["unit"] == "Metres"
+    assert any(k == "well" and n == "15/9-A1" for k, n in info["elements"])
+
+    # open: full round-trip incl opaque model bytes
+    re = petekio.GeoData.open(src)
+    assert re.owner == "kk" and re.tags == ["demo"]
+    assert re.well("15/9-A1") is not None
+    assert re.model_section("model/seg/props") == (3, b"\x00\xffmodel")
+    assert set(re.model_section_names()) == {"model/seg/props", "model/other"}
+
+    # export by tag → shareable subset
+    sub = str(tmp_path / "sub.pproj")
+    petekio.GeoData.export(src, sub, ["keep"])
+    s = petekio.GeoData.open(sub)
+    assert s.model_section_names() == ["model/seg/props"]
+    assert s.well("15/9-A1") is not None
+
+    # split then merge
+    wonly = str(tmp_path / "w.pproj")
+    petekio.GeoData.split(src, wonly, ["15/9-A1"])
+    merged = str(tmp_path / "m.pproj")
+    petekio.GeoData.merge(wonly, sub, merged)
+    m = petekio.GeoData.open(merged)
+    assert m.well("15/9-A1") is not None
+    assert m.model_section("model/seg/props") == (3, b"\x00\xffmodel")

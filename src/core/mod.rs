@@ -4,7 +4,7 @@
 
 mod gridding; // scattered-point → Surface interpolation (Nearest/IDW/min-curvature)
 pub mod log; // Log + LogView — MD-indexed well curves and views
-mod persist; // per-element save/load to a standalone .pproj
+pub(crate) mod persist; // per-element save/load to a standalone .pproj
 pub mod points; // PointSet — scattered points + attributes + gridding
 pub mod polygons; // PolygonSet — rings + contains/area/bbox/clip
 pub mod surface;

@@ -16,72 +16,124 @@ use std::path::Path;
 
 use serial::DATA_VERSION;
 
-/// Write one serializable element as a single-section `.pproj`.
-fn save_one<T: Serialize>(path: &Path, kind: &str, name: &str, value: &T) -> Result<()> {
-    let section = Section {
-        kind: kind.to_string(),
-        name: name.to_string(),
-        tags: Vec::new(),
-        version: DATA_VERSION,
-        payload: serial::to_bytes(value)?,
-    };
-    container::write(path, &serde_json::json!({}), DATA_VERSION, &[section])
+/// One-section persistence mapping for a domain element: its `.pproj` section
+/// `kind`, its section name, and the (de)serialization. Defined **once per
+/// type** so both single-element save (here) and whole-project save (`manager`)
+/// agree on the kind strings — add a new element type by implementing this, and
+/// nothing else needs to learn its `kind` (open/closed).
+pub(crate) trait Persistable: Serialize + DeserializeOwned + Sized {
+    /// Stable on-disk section-`kind` tag.
+    const KIND: &'static str;
+    /// This element's section name (its identity within a project).
+    fn element_name(&self) -> String;
+    /// Frame this element as a container [`Section`] — no tags (a project-level
+    /// concern the caller sets), version pinned to [`DATA_VERSION`].
+    fn to_section(&self) -> Result<Section> {
+        Ok(Section {
+            kind: Self::KIND.to_string(),
+            name: self.element_name(),
+            tags: Vec::new(),
+            version: DATA_VERSION,
+            payload: serial::to_bytes(self)?,
+        })
+    }
+    /// Decode this element from a section payload.
+    fn from_payload(bytes: &[u8]) -> Result<Self> {
+        serial::from_bytes(bytes)
+    }
 }
 
-/// Load the first section of `kind` from a `.pproj`.
-fn load_one<T: DeserializeOwned>(path: &Path, kind: &str) -> Result<T> {
+impl Persistable for Surface {
+    const KIND: &'static str = "surface";
+    fn element_name(&self) -> String {
+        "surface".to_string()
+    }
+}
+impl Persistable for Well {
+    const KIND: &'static str = "well";
+    fn element_name(&self) -> String {
+        self.id.clone()
+    }
+}
+impl Persistable for PointSet {
+    const KIND: &'static str = "points";
+    fn element_name(&self) -> String {
+        "points".to_string()
+    }
+}
+impl Persistable for PolygonSet {
+    const KIND: &'static str = "polygons";
+    fn element_name(&self) -> String {
+        "polygons".to_string()
+    }
+}
+
+/// Write one element as a single-section `.pproj`.
+fn save_one<T: Persistable>(path: &Path, value: &T) -> Result<()> {
+    container::write(
+        path,
+        &serde_json::json!({}),
+        DATA_VERSION,
+        &[value.to_section()?],
+    )
+}
+
+/// Load the first section of `T`'s kind from a `.pproj`.
+fn load_one<T: Persistable>(path: &Path) -> Result<T> {
     let mut reader = container::open(path)?;
     let name = reader
         .entries()
         .iter()
-        .find(|e| e.kind == kind)
-        .ok_or_else(|| GeoError::NotFound(format!("no '{kind}' section in {}", path.display())))?
+        .find(|e| e.kind == T::KIND)
+        .ok_or_else(|| {
+            GeoError::NotFound(format!("no '{}' section in {}", T::KIND, path.display()))
+        })?
         .name
         .clone();
-    serial::from_bytes(&reader.read(&name)?.payload)
+    T::from_payload(&reader.read(&name)?.payload)
 }
 
 impl Surface {
     /// Save this surface (geometry + values + attribute layers) to a `.pproj`.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-        save_one(path.as_ref(), "surface", "surface", self)
+        save_one(path.as_ref(), self)
     }
     /// Load a surface previously written with [`save`](Surface::save).
     pub fn load(path: impl AsRef<Path>) -> Result<Surface> {
-        load_one(path.as_ref(), "surface")
+        load_one(path.as_ref())
     }
 }
 
 impl Well {
     /// Save this well (bores, trajectories, logs, tops, CRS) to a `.pproj`.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-        save_one(path.as_ref(), "well", &self.id, self)
+        save_one(path.as_ref(), self)
     }
     /// Load a well previously written with [`save`](Well::save).
     pub fn load(path: impl AsRef<Path>) -> Result<Well> {
-        load_one(path.as_ref(), "well")
+        load_one(path.as_ref())
     }
 }
 
 impl PointSet {
     /// Save this point set (coordinates + attribute columns) to a `.pproj`.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-        save_one(path.as_ref(), "points", "points", self)
+        save_one(path.as_ref(), self)
     }
     /// Load a point set previously written with [`save`](PointSet::save).
     pub fn load(path: impl AsRef<Path>) -> Result<PointSet> {
-        load_one(path.as_ref(), "points")
+        load_one(path.as_ref())
     }
 }
 
 impl PolygonSet {
     /// Save this polygon set (rings) to a `.pproj`.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-        save_one(path.as_ref(), "polygons", "polygons", self)
+        save_one(path.as_ref(), self)
     }
     /// Load a polygon set previously written with [`save`](PolygonSet::save).
     pub fn load(path: impl AsRef<Path>) -> Result<PolygonSet> {
-        load_one(path.as_ref(), "polygons")
+        load_one(path.as_ref())
     }
 }
 

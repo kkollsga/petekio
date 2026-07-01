@@ -34,13 +34,18 @@ exclude = [
 
 [dependencies]
 thiserror = "2"
-ndarray = "0.17"
-indexmap = "2"
+ndarray = { version = "0.17", features = ["serde"] }
+indexmap = { version = "2", features = ["serde"] }
 las_rs = "0.2.1"
 csv = "1"
 geo = "0.33"
 geozero = { version = "0.15", features = ["with-geo", "with-geojson", "with-wkt", "with-shp"] }
 rstar = "0.13"
+# Persistence (.pproj): serde DTOs + bincode sections + zstd + a JSON header.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+zstd = "0.13"
 
 [features]
 default = []

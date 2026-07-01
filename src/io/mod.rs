@@ -10,6 +10,7 @@ pub(crate) fn decode_latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| b as char).collect()
 }
 
+pub mod container;
 pub mod csv_points;
 pub mod irap;
 pub mod las;

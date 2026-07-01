@@ -19,6 +19,7 @@ surfaces / points / polygons land (see the TODO at the bottom).
 
 from __future__ import annotations
 
+import math
 import random
 from pathlib import Path
 
@@ -186,9 +187,105 @@ def make_field(out_dir: str | Path) -> dict[str, Path]:
     return paths
 
 
-# TODO(expand): write_irap_surface / write_points_csv / write_cps3_polygon +
-# make_surfaces / make_points / make_polygons, returned from make_field(), as
-# those datatypes come online — keeping one generator for the whole demo set.
+def write_irap_surface(path: Path, xori: float, yori: float, xinc: float,
+                       yinc: float, ncol: int, nrow: int, fn) -> Path:
+    """An IRAP-classic ASCII surface. `fn(i, j)` -> value (return NaN for undef).
+
+    Matches `io::irap::save_irap_classic`: header lines then values column-major,
+    x-fastest, 6 per line; undefined cells use the 9999900 sentinel.
+    """
+    undef = 9999900.0
+    xmax, ymax = xori + (ncol - 1) * xinc, yori + (nrow - 1) * yinc
+    lines = [
+        f"-996 {nrow} {xinc} {yinc}",
+        f"{xori} {xmax} {yori} {ymax}",
+        f"{ncol} 0 {xori} {yori}",
+        "0  0  0  0  0  0  0",
+    ]
+    toks = []
+    for j in range(nrow):
+        for i in range(ncol):
+            v = fn(i, j)
+            toks.append(f"{undef:.6f}" if v != v else f"{v:.6f}")  # v!=v -> NaN
+    for k in range(0, len(toks), 6):
+        lines.append(" ".join(toks[k:k + 6]))
+    return _write(path, "\n".join(lines) + "\n")
+
+
+def write_points_csv(path: Path, coords: list[tuple[float, float, float, float]]) -> Path:
+    """A headered scattered-point CSV (`x,y,z,poro`) — `poro` rides as an attr."""
+    body = "x,y,z,poro\n" + "".join(
+        f"{x:.2f},{y:.2f},{z:.2f},{p:.4f}\n" for x, y, z, p in coords
+    )
+    return _write(path, body)
+
+
+# --- scalable benchmark field ----------------------------------------------
+
+# A plain 8-marker column for the bench wells (order only; the stress is volume).
+_BENCH_COLUMN = [
+    "Sea Bed", "Top Shale", "Top Reservoir", "Upper Sand",
+    "Mid Sand", "Lower Sand", "Base Reservoir", "Basement",
+]
+
+
+def make_bench_field(out_dir: str | Path, *, n_wells: int = 30, top: float = 100.0,
+                     td: float = 4000.0, step: float = 0.0508, n_points: int = 100_000,
+                     n_surfaces: int = 3, surface_n: int = 250,
+                     seed: int = 0) -> dict:
+    """A **scalable** synthetic field for perf benchmarking — deliberately heavy:
+    **long, high-density** PHIE logs (small `step` → many samples/log), many
+    wells, a big scattered point cloud, and IRAP surfaces.
+
+    Each well is a single LAS in its **own subdir** (so a per-well load walks one
+    directory, not the whole tree). Returns paths + well ids + `samples_per_log`.
+
+    Defaults: 30 wells x ~76.8k samples (2-inch step over ~3.9 km) ≈ 2.3M log
+    samples. Tune `step` down (e.g. 0.0254 = 1 inch) for a denser stress run.
+    """
+    out = Path(out_dir)
+    rng = random.Random(seed)
+    span = td - top
+    samples_per_log = int(span / step) + 1
+    well_ids: list[str] = []
+    top_rows: list[tuple[float, str, str]] = []
+
+    for w in range(n_wells):
+        wid = f"B/1-{w + 1}"
+        well_ids.append(wid)
+        wtop = top + rng.uniform(0.0, 60.0)          # per-well depth shift
+        n = int((td - wtop) / step) + 1
+        # Long, dense PHIE: smooth regional trend + fine high-frequency texture.
+        samples = []
+        for i in range(n):
+            md = wtop + i * step
+            phi = 0.14 + 0.08 * math.sin(md / 220.0) + 0.03 * math.sin(md / 13.0)
+            samples.append((md, max(0.0, phi + rng.uniform(-0.015, 0.015))))
+        stem = wid.replace("/", "_")
+        write_las(out / "wells" / stem / f"{stem}_PHIE.las", "PHIE", "m3/m3", samples)
+        for k, name in enumerate(_BENCH_COLUMN):          # 8 markers down the hole
+            top_rows.append((wtop + span * (k + 0.5) / len(_BENCH_COLUMN), name, wid))
+
+    tops = write_tops(out / "tops" / "bench.tops", top_rows)
+    pts = write_points_csv(out / "points" / "scatter.csv", [
+        (rng.uniform(0, 5000), rng.uniform(0, 5000), rng.uniform(1000, 3000),
+         rng.uniform(0.05, 0.30)) for _ in range(n_points)
+    ])
+    surfaces = [
+        write_irap_surface(
+            out / "surfaces" / f"h{s}.irap", 0.0, 0.0, 25.0, 25.0, surface_n, surface_n,
+            lambda i, j, s=s: 1000.0 + 50.0 * s + 0.01 * i + 0.02 * j)
+        for s in range(n_surfaces)
+    ]
+    return {
+        "wells_dir": out / "wells",
+        "well_ids": well_ids,
+        "tops": tops,
+        "points": pts,
+        "surfaces": surfaces,
+        "samples_per_log": samples_per_log,
+        "n_wells": n_wells,
+    }
 
 
 if __name__ == "__main__":

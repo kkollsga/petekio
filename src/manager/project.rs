@@ -22,14 +22,12 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn section(kind: &str, name: &str, payload: Vec<u8>) -> Section {
-    Section {
-        kind: kind.to_string(),
-        name: name.to_string(),
-        tags: Vec::new(),
-        version: DATA_VERSION,
-        payload,
-    }
+/// An opaque petekSim model section: raw bytes + a version petekIO never parses.
+#[derive(Debug, Clone)]
+pub struct ModelSection {
+    pub version: u32,
+    pub tags: Vec<String>,
+    pub bytes: Vec<u8>,
 }
 
 /// A project's manifest without its element data — the result of [`inspect`].
@@ -62,20 +60,74 @@ impl GeoData {
         self.tags = tags;
     }
 
+    /// Set a single element's custom tags (by name) — written into its section
+    /// so [`export`](GeoData::export) can select it.
+    pub fn set_element_tags(&mut self, name: impl Into<String>, tags: Vec<String>) {
+        self.element_tags.insert(name.into(), tags);
+    }
+
+    /// Store an opaque model section (petekSim's sidecar). petekIO frames +
+    /// compresses it and never parses the bytes. `name` is the section path
+    /// (e.g. `"model/cerisa/props"`); each carries its own `version`.
+    pub fn put_model_section(
+        &mut self,
+        name: impl Into<String>,
+        tags: Vec<String>,
+        version: u32,
+        bytes: Vec<u8>,
+    ) {
+        self.model_sections.insert(
+            name.into(),
+            ModelSection {
+                version,
+                tags,
+                bytes,
+            },
+        );
+    }
+
+    /// The names of the model sections currently held.
+    pub fn model_section_names(&self) -> Vec<String> {
+        self.model_sections.keys().cloned().collect()
+    }
+
+    /// A model section's `(version, bytes)`, or `None`. petekSim decodes these.
+    pub fn model_section(&self, name: &str) -> Option<(u32, Vec<u8>)> {
+        self.model_sections
+            .get(name)
+            .map(|m| (m.version, m.bytes.clone()))
+    }
+
     /// Save the whole project to a single `.pproj` file (written atomically).
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let mut sections: Vec<Section> = Vec::new();
+        let elem = |kind: &str, name: &str, payload: Vec<u8>| Section {
+            kind: kind.to_string(),
+            name: name.to_string(),
+            tags: self.element_tags.get(name).cloned().unwrap_or_default(),
+            version: DATA_VERSION,
+            payload,
+        };
         for (name, s) in &self.surfaces {
-            sections.push(section("surface", name, serial::to_bytes(s)?));
+            sections.push(elem("surface", name, serial::to_bytes(s)?));
         }
         for (id, w) in &self.wells {
-            sections.push(section("well", id, serial::to_bytes(w)?));
+            sections.push(elem("well", id, serial::to_bytes(w)?));
         }
         for (name, p) in &self.points {
-            sections.push(section("points", name, serial::to_bytes(p)?));
+            sections.push(elem("points", name, serial::to_bytes(p)?));
         }
         for (name, p) in &self.polygons {
-            sections.push(section("polygons", name, serial::to_bytes(p)?));
+            sections.push(elem("polygons", name, serial::to_bytes(p)?));
+        }
+        for (name, m) in &self.model_sections {
+            sections.push(Section {
+                kind: "model".to_string(),
+                name: name.clone(),
+                tags: m.tags.clone(),
+                version: m.version,
+                payload: m.bytes.clone(),
+            });
         }
         let now = now_secs();
         let app = json!({
@@ -132,10 +184,44 @@ impl GeoData {
                     let p = serial::from_bytes(&r.read(&name)?.payload)?;
                     geo.polygons.insert(name, p);
                 }
-                _ => {} // model/* or unknown → skipped (forward-compatible)
+                "model" => {
+                    // Opaque — held as raw bytes, never parsed.
+                    let s = r.read(&name)?;
+                    geo.model_sections.insert(
+                        name,
+                        ModelSection {
+                            version: s.version,
+                            tags: s.tags,
+                            bytes: s.payload,
+                        },
+                    );
+                }
+                _ => {} // unknown kind → skipped (forward-compatible)
             }
         }
         Ok(geo)
+    }
+
+    /// Copy `src` → `dst` keeping only sections whose name is in `names`
+    /// (byte-for-byte — model sections included, never re-encoded).
+    pub fn split(src: impl AsRef<Path>, dst: impl AsRef<Path>, names: &[&str]) -> Result<()> {
+        container::filter_to(src.as_ref(), dst.as_ref(), |e| {
+            names.contains(&e.name.as_str())
+        })
+    }
+
+    /// Copy `src` → `dst` keeping only sections tagged with **any** of `tags` — a
+    /// single shareable binary subset, byte-for-byte.
+    pub fn export(src: impl AsRef<Path>, dst: impl AsRef<Path>, tags: &[&str]) -> Result<()> {
+        container::filter_to(src.as_ref(), dst.as_ref(), |e| {
+            e.tags.iter().any(|t| tags.contains(&t.as_str()))
+        })
+    }
+
+    /// Merge projects `a` and `b` into `dst` (on a kind+name clash, `b` wins),
+    /// copying every section byte-for-byte.
+    pub fn merge(a: impl AsRef<Path>, b: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<()> {
+        container::merge_to(a.as_ref(), b.as_ref(), dst.as_ref())
     }
 
     /// Read a project's manifest without decoding any element (partial open).

@@ -42,6 +42,13 @@ pub struct GeoData {
     pub(crate) owner: Option<String>,
     pub(crate) tags: Vec<String>,
     pub(crate) created: Option<u64>,
+    /// Per-element custom tags (keyed by element name), written into each section
+    /// so `export`-by-tag can select a shareable subset.
+    pub(crate) element_tags: IndexMap<String, Vec<String>>,
+    /// petekSim's opaque model sidecar: `model/<seg>/…` sections held as raw
+    /// bytes + a per-section version. petekIO frames/compresses them on save and
+    /// hands them back untouched — it never parses their contents.
+    pub(crate) model_sections: IndexMap<String, crate::manager::ModelSection>,
 }
 
 /// Lower-cased file extension of `path`, or `""` when it has none.
@@ -66,6 +73,8 @@ impl GeoData {
             owner: None,
             tags: Vec::new(),
             created: None,
+            element_tags: IndexMap::new(),
+            model_sections: IndexMap::new(),
         }
     }
 

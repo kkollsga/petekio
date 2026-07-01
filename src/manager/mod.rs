@@ -11,5 +11,6 @@ mod project; // GeoData::save/open/inspect — whole-project .pproj persistence
 mod wells_view; // WellsView — broadcastable, filterable borrow over wells
 
 pub use geodata::GeoData;
+pub(crate) use project::ModelSection;
 pub use project::ProjectInfo;
 pub use wells_view::WellsView;

@@ -14,10 +14,6 @@
 //! JSON header evolves via serde defaults (soft). Per-section `version` lets an
 //! opaque sidecar (e.g. petekSim's model) evolve independently.
 
-// The manager `Project` layer (next phase) is the first consumer; until then the
-// public surface here is exercised only by unit tests, so allow dead_code.
-#![allow(dead_code)]
-
 use crate::foundation::{GeoError, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::File;

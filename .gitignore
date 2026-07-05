@@ -9,6 +9,7 @@ __pycache__/
 *.so
 *.pyd
 .venv/
+.venv-docs-nb/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

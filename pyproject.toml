@@ -28,8 +28,8 @@ dynamic = ["version"]
 pandas = ["pandas"]
 
 [project.urls]
-Repository = "https://github.com/kkollsga/petekio"
-Issues = "https://github.com/kkollsga/petekio/issues"
+Repository = "https://github.com/kkollsga/petekio-next"
+Issues = "https://github.com/kkollsga/petekio-next/issues"
 
 [tool.maturin]
 # The cdylib that becomes the wheel's extension lives in py/; the importable

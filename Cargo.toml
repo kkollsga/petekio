@@ -2,11 +2,11 @@
 members = ["py"]
 
 [workspace.package]
-version = "0.2.8"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/kkollsga/petekio"
+repository = "https://github.com/kkollsga/petekio-next"
 authors = ["Kristian dF Kollsgård <kkollsg@gmail.com>"]
 
 [package]
@@ -46,15 +46,11 @@ rstar = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1"
-# Shared numeric kernels + generic `.pproj` container.
-# PRE-RELEASE FAMILY MODE: pinned to the sibling working tree (`../petekTools`),
-# matching the rest of the suite, so petekIO builds against petekTools HEAD and
-# there is exactly ONE `petektools` in the lockfile (the registry-0.1 pin let a
-# second, type-incompatible copy leak in via a downstream consumer — the
-# dual-petektools type-identity trap). THE PUBLISH BATCH SWAPS ALL FAMILY DEPS
-# BACK TO REGISTRY VERSIONS TOGETHER (petektools = "0.1" or later); do not
-# publish petekIO with a path dep.
-petektools = { path = "../petekTools" }
+# Shared numeric kernels + generic `.pproj` container. Registry pin for publish;
+# the workspace-level `[patch.crates-io]` below redirects it to the sibling
+# working tree for LOCAL dev builds (dev-only, stripped from the published crate —
+# see the patch note). One `petektools` in the lockfile either way.
+petektools = "0.2.0"
 
 [features]
 default = []
@@ -77,3 +73,16 @@ harness = false
 [[bench]]
 name = "petro_hotpath"
 harness = false
+
+# --- DEV-ONLY: local family builds ------------------------------------------
+# The `petektools` dependency above is a crates.io registry pin (for publish).
+# This patch redirects it to the sibling working tree so local/CI dev builds
+# compile against petekTools HEAD (and there is exactly ONE `petektools` in the
+# lockfile). `[patch]` sections are a WORKSPACE-ROOT concern: cargo strips them
+# from the published `Cargo.toml`, and a downstream consumer of the published
+# `petekio` crate never sees this — it resolves `petektools = "0.2.0"` from
+# crates.io. Harmless in the published artifact; remove only if the sibling
+# checkout goes away. (Verified: `cargo publish --dry-run` packages the pinned
+# dependency, not the patched path.)
+[patch.crates-io]
+petektools = { path = "../petekTools" }

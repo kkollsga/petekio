@@ -6,7 +6,7 @@ version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
-repository = "https://github.com/kkollsga/petekio-next"
+repository = "https://github.com/kkollsga/petekio"
 authors = ["Kristian dF Kollsgård <kkollsg@gmail.com>"]
 
 [package]

@@ -38,7 +38,7 @@ Rust:
 
 ```toml
 [dependencies]
-petekio = "0.2"
+petekio = "0.3"
 ```
 
 Python (PyO3 wheel):

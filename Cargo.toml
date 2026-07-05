@@ -46,10 +46,8 @@ rstar = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1"
-# Shared numeric kernels + generic `.pproj` container. Registry pin for publish;
-# the workspace-level `[patch.crates-io]` below redirects it to the sibling
-# working tree for LOCAL dev builds (dev-only, stripped from the published crate —
-# see the patch note). One `petektools` in the lockfile either way.
+# Shared numeric kernels + generic `.pproj` container. Resolved from crates.io
+# (the family is published; the dev-only [patch.crates-io] was removed at launch).
 petektools = "0.2.0"
 
 [features]
@@ -73,16 +71,3 @@ harness = false
 [[bench]]
 name = "petro_hotpath"
 harness = false
-
-# --- DEV-ONLY: local family builds ------------------------------------------
-# The `petektools` dependency above is a crates.io registry pin (for publish).
-# This patch redirects it to the sibling working tree so local/CI dev builds
-# compile against petekTools HEAD (and there is exactly ONE `petektools` in the
-# lockfile). `[patch]` sections are a WORKSPACE-ROOT concern: cargo strips them
-# from the published `Cargo.toml`, and a downstream consumer of the published
-# `petekio` crate never sees this — it resolves `petektools = "0.2.0"` from
-# crates.io. Harmless in the published artifact; remove only if the sibling
-# checkout goes away. (Verified: `cargo publish --dry-run` packages the pinned
-# dependency, not the patched path.)
-[patch.crates-io]
-petektools = { path = "../petekTools" }

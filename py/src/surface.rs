@@ -1,0 +1,393 @@
+//! `Surface` — the gridded workhorse: IO, sampling, element-wise math, operator
+//! overloads (scalar and surface↔surface), attribute access, statistics, and
+//! volumetrics. Mirrors `petekio::Surface`.
+//!
+//! Numpy is out of scope, so `surface.attr["seismic"]` returns the **promoted**
+//! attribute as a `Surface` (not a raw array); `surface.attr.names()` lists the
+//! attribute layers.
+//!
+//! **Backing (the "share, don't copy" design).** A `Surface` handed back from a
+//! `GeoData` project (`surface()`/`surfaces()`/`load_surface()`) is a cheap
+//! **view** (`InGeo`) that re-resolves the borrowed grid by name on each call —
+//! no per-access deep copy of the grid + every attribute layer. Surfaces built
+//! standalone (`load_*`/`constant`/math results/promoted attributes) are `Owned`
+//! (an `Arc<Surface>`, shared cheaply on clone). Mutation (`set_attr`) is
+//! **copy-on-write**: an `InGeo` view detaches to an owned copy before mutating,
+//! so a handed-back surface never writes back into the project — the same
+//! observable semantics as the former eager deep copy, minus the copy on read.
+
+use crate::geodata::GeoData;
+use crate::geometry::{BBox, GridGeometry};
+use crate::stats::Stats;
+use crate::to_pyerr;
+use petekio::Surface as RsSurface;
+use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::prelude::*;
+use std::sync::Arc;
+
+/// Where a `Surface` wrapper reads its grid from.
+enum SurfaceBacking {
+    /// A standalone surface (loaded / constructed / computed), shared by `Arc`.
+    Owned(Arc<RsSurface>),
+    /// A view into a `GeoData` project, re-resolved by name (no copy).
+    InGeo { geo: Py<GeoData>, name: String },
+}
+
+/// A regular gridded surface (IRAP/RMS model): a primary value layer plus named
+/// attribute layers on the same geometry. `NaN` = undefined.
+#[pyclass(name = "Surface")]
+pub struct Surface {
+    backing: SurfaceBacking,
+}
+
+impl Surface {
+    /// Wrap an owned Rust surface (a hand-back that isn't tied to a project).
+    pub(crate) fn wrap(inner: RsSurface) -> Surface {
+        Surface {
+            backing: SurfaceBacking::Owned(Arc::new(inner)),
+        }
+    }
+
+    /// A cheap view into project `geo`'s surface `name` (no grid copy).
+    pub(crate) fn view(geo: Py<GeoData>, name: String) -> Surface {
+        Surface {
+            backing: SurfaceBacking::InGeo { geo, name },
+        }
+    }
+
+    /// Resolve the borrowed Rust surface and run `f` over it.
+    pub(crate) fn with<R>(&self, py: Python<'_>, f: impl FnOnce(&RsSurface) -> R) -> PyResult<R> {
+        match &self.backing {
+            SurfaceBacking::Owned(a) => Ok(f(a)),
+            SurfaceBacking::InGeo { geo, name } => {
+                let g = geo.borrow(py);
+                let s = g
+                    .inner
+                    .surface(name)
+                    .ok_or_else(|| PyValueError::new_err(format!("no surface '{name}'")))?;
+                Ok(f(s))
+            }
+        }
+    }
+
+    /// Resolve `self` **and** `other` at once (both may be views) and run `f`.
+    fn with2<R>(
+        &self,
+        py: Python<'_>,
+        other: &Surface,
+        f: impl FnOnce(&RsSurface, &RsSurface) -> R,
+    ) -> PyResult<R> {
+        self.with(py, |s| other.with(py, |o| f(s, o)))?
+    }
+
+    /// Get a mutable owned surface, detaching an `InGeo` view first (copy-on-write)
+    /// so a mutation never writes back into the project.
+    fn owned_mut(&mut self, py: Python<'_>) -> PyResult<&mut RsSurface> {
+        if let SurfaceBacking::InGeo { geo, name } = &self.backing {
+            let cloned = {
+                let g = geo.borrow(py);
+                let s = g
+                    .inner
+                    .surface(name)
+                    .ok_or_else(|| PyValueError::new_err(format!("no surface '{name}'")))?;
+                s.clone()
+            };
+            self.backing = SurfaceBacking::Owned(Arc::new(cloned));
+        }
+        match &mut self.backing {
+            SurfaceBacking::Owned(a) => Ok(Arc::make_mut(a)),
+            SurfaceBacking::InGeo { .. } => unreachable!("just detached to Owned"),
+        }
+    }
+}
+
+#[pymethods]
+impl Surface {
+    /// Load an IRAP-classic (ROXAR ASCII) surface from `path`.
+    #[staticmethod]
+    fn load_irap_classic(py: Python<'_>, path: &str) -> PyResult<Surface> {
+        py.detach(|| RsSurface::load_irap_classic(path))
+            .map(Surface::wrap)
+            .map_err(to_pyerr)
+    }
+
+    /// Load a CPS-3 regular grid (`.CPS3grid`) surface from `path`.
+    #[staticmethod]
+    fn load_cps3_grid(py: Python<'_>, path: &str) -> PyResult<Surface> {
+        py.detach(|| RsSurface::load_cps3_grid(path))
+            .map(Surface::wrap)
+            .map_err(to_pyerr)
+    }
+
+    /// A surface whose every node holds `value`, on `geom`.
+    #[staticmethod]
+    fn constant(geom: &GridGeometry, value: f64) -> Surface {
+        Surface::wrap(RsSurface::constant(geom.inner.clone(), value))
+    }
+
+    /// Write this surface's primary layer as IRAP-classic ASCII to `path`.
+    fn save_irap_classic(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        self.with(py, |s| py.detach(|| s.save_irap_classic(path)))?
+            .map_err(to_pyerr)
+    }
+
+    /// Bilinear sample at world `(x, y)`; `None` outside the grid or near an
+    /// undefined node.
+    fn sample(&self, py: Python<'_>, x: f64, y: f64) -> PyResult<Option<f64>> {
+        self.with(py, |s| s.sample(x, y))
+    }
+
+    /// Resample the primary layer onto `target` (bilinear). Kernel NaN-corner
+    /// policy (nearest corner NaN → NaN, else renormalized over finite corners).
+    /// Raises on a rotated source/target geometry (axis-aligned kernel only).
+    fn resample(&self, py: Python<'_>, target: &GridGeometry) -> PyResult<Surface> {
+        let t = target.inner.clone();
+        self.with(py, |s| py.detach(|| s.resample(&t)))?
+            .map(Surface::wrap)
+            .map_err(to_pyerr)
+    }
+
+    // ---- element-wise math (new surface) ----
+
+    fn ln(&self, py: Python<'_>) -> PyResult<Surface> {
+        self.with(py, |s| Surface::wrap(s.ln()))
+    }
+    fn log10(&self, py: Python<'_>) -> PyResult<Surface> {
+        self.with(py, |s| Surface::wrap(s.log10()))
+    }
+    fn exp(&self, py: Python<'_>) -> PyResult<Surface> {
+        self.with(py, |s| Surface::wrap(s.exp()))
+    }
+    fn sqrt(&self, py: Python<'_>) -> PyResult<Surface> {
+        self.with(py, |s| Surface::wrap(s.sqrt()))
+    }
+    fn abs(&self, py: Python<'_>) -> PyResult<Surface> {
+        self.with(py, |s| Surface::wrap(s.abs()))
+    }
+    fn powf(&self, py: Python<'_>, n: f64) -> PyResult<Surface> {
+        self.with(py, |s| Surface::wrap(s.powf(n)))
+    }
+    fn clamp_min(&self, py: Python<'_>, lo: f64) -> PyResult<Surface> {
+        self.with(py, |s| Surface::wrap(s.clamp_min(lo)))
+    }
+    fn clamp(&self, py: Python<'_>, lo: f64, hi: f64) -> PyResult<Surface> {
+        self.with(py, |s| Surface::wrap(s.clamp(lo, hi)))
+    }
+
+    // ---- surface↔surface math (named forms; equal geometry required) ----
+
+    fn plus(&self, py: Python<'_>, other: &Surface) -> PyResult<Surface> {
+        self.with2(py, other, |s, o| s.plus(o))?
+            .map(Surface::wrap)
+            .map_err(to_pyerr)
+    }
+    fn minus(&self, py: Python<'_>, other: &Surface) -> PyResult<Surface> {
+        self.with2(py, other, |s, o| s.minus(o))?
+            .map(Surface::wrap)
+            .map_err(to_pyerr)
+    }
+    fn times(&self, py: Python<'_>, other: &Surface) -> PyResult<Surface> {
+        self.with2(py, other, |s, o| s.times(o))?
+            .map(Surface::wrap)
+            .map_err(to_pyerr)
+    }
+    fn divided_by(&self, py: Python<'_>, other: &Surface) -> PyResult<Surface> {
+        self.with2(py, other, |s, o| s.divided_by(o))?
+            .map(Surface::wrap)
+            .map_err(to_pyerr)
+    }
+
+    /// `base - top`, optionally clamped at zero (negative thickness → 0).
+    #[staticmethod]
+    #[pyo3(signature = (top, base, clamp_zero = false))]
+    fn thickness(
+        py: Python<'_>,
+        top: &Surface,
+        base: &Surface,
+        clamp_zero: bool,
+    ) -> PyResult<Surface> {
+        top.with2(py, base, |t, b| RsSurface::thickness(t, b, clamp_zero))?
+            .map(Surface::wrap)
+            .map_err(to_pyerr)
+    }
+
+    // ---- operator overloads ----
+
+    fn __add__(&self, py: Python<'_>, rhs: &Bound<'_, PyAny>) -> PyResult<Surface> {
+        self.binop(py, rhs, |s, k| s + k, |a, b| a.plus(py, b))
+    }
+    fn __sub__(&self, py: Python<'_>, rhs: &Bound<'_, PyAny>) -> PyResult<Surface> {
+        self.binop(py, rhs, |s, k| s - k, |a, b| a.minus(py, b))
+    }
+    fn __mul__(&self, py: Python<'_>, rhs: &Bound<'_, PyAny>) -> PyResult<Surface> {
+        self.binop(py, rhs, |s, k| s * k, |a, b| a.times(py, b))
+    }
+    fn __truediv__(&self, py: Python<'_>, rhs: &Bound<'_, PyAny>) -> PyResult<Surface> {
+        self.binop(py, rhs, |s, k| s / k, |a, b| a.divided_by(py, b))
+    }
+
+    // Reflected scalar operators (`scalar <op> surface`).
+    fn __radd__(&self, py: Python<'_>, lhs: f64) -> PyResult<Surface> {
+        self.with(py, |s| Surface::wrap(s + lhs))
+    }
+    fn __rmul__(&self, py: Python<'_>, lhs: f64) -> PyResult<Surface> {
+        self.with(py, |s| Surface::wrap(s * lhs))
+    }
+    fn __rsub__(&self, py: Python<'_>, lhs: f64) -> PyResult<Surface> {
+        // lhs - self = -(self) + lhs = self * -1 + lhs
+        self.with(py, |s| Surface::wrap(&(s * -1.0) + lhs))
+    }
+
+    // ---- statistics & volumetrics ----
+
+    /// Summary statistics over the defined nodes.
+    fn stats(&self, py: Python<'_>) -> PyResult<Stats> {
+        self.with(py, |s| Stats::new(s.stats()))
+    }
+
+    /// Areal extent of nodes whose value is `<= depth`.
+    fn area_below(&self, py: Python<'_>, depth: f64) -> PyResult<f64> {
+        self.with(py, |s| s.area_below(depth))
+    }
+    /// Areal extent of nodes whose value is `>= depth`.
+    fn area_above(&self, py: Python<'_>, depth: f64) -> PyResult<f64> {
+        self.with(py, |s| s.area_above(depth))
+    }
+
+    /// Volume between this surface and `base` (equal geometry required).
+    fn volume_between(&self, py: Python<'_>, base: &Surface) -> PyResult<f64> {
+        self.with2(py, base, |s, b| py.detach(|| s.volume_between(b)))?
+            .map_err(to_pyerr)
+    }
+
+    /// The hypsometric curve as `[(depth, area), …]`, ascending.
+    fn hypsometry(&self, py: Python<'_>) -> PyResult<Vec<(f64, f64)>> {
+        self.with(py, |s| s.hypsometry())
+    }
+
+    // ---- attribute access ----
+
+    /// The attribute accessor: `surface.attr["seismic"]` (or `surface.attr(name)`)
+    /// returns the promoted attribute layer as a `Surface`; `.names()` lists them.
+    #[getter]
+    fn attr(slf: Bound<'_, Self>) -> AttrAccessor {
+        AttrAccessor {
+            surface: slf.unbind(),
+        }
+    }
+
+    /// The names of all attribute layers, in insertion order.
+    fn attr_names(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.with(py, |s| {
+            s.attr_names().iter().map(|n| n.to_string()).collect()
+        })
+    }
+
+    /// Set (or replace) attribute `name` from another surface's primary layer
+    /// (must match this surface's geometry). Copy-on-write: an `InGeo` view
+    /// detaches to an owned copy first, so the project is never mutated.
+    fn set_attr(&mut self, py: Python<'_>, name: &str, values: &Surface) -> PyResult<()> {
+        let arr = values.with(py, |v| v.values().clone())?;
+        self.owned_mut(py)?.set_attr(name, arr).map_err(to_pyerr)
+    }
+
+    // ---- geometry getters ----
+
+    /// A copy of this surface's grid geometry.
+    #[getter]
+    fn geometry(&self, py: Python<'_>) -> PyResult<GridGeometry> {
+        self.with(py, |s| GridGeometry::new(s.geom.clone()))
+    }
+    #[getter]
+    fn ncol(&self, py: Python<'_>) -> PyResult<usize> {
+        self.with(py, |s| s.geom.ncol)
+    }
+    #[getter]
+    fn nrow(&self, py: Python<'_>) -> PyResult<usize> {
+        self.with(py, |s| s.geom.nrow)
+    }
+    #[getter]
+    fn rotation_deg(&self, py: Python<'_>) -> PyResult<f64> {
+        self.with(py, |s| s.geom.rotation_deg)
+    }
+    /// Axis-aligned bounding box of the grid nodes.
+    fn bbox(&self, py: Python<'_>) -> PyResult<BBox> {
+        self.with(py, |s| BBox::new(s.geom.bbox()))
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        self.with(py, |s| {
+            format!("Surface(ncol={}, nrow={})", s.geom.ncol, s.geom.nrow)
+        })
+    }
+}
+
+impl Surface {
+    /// Dispatch a binary operator over a scalar `f64` or another `Surface`.
+    fn binop(
+        &self,
+        py: Python<'_>,
+        rhs: &Bound<'_, PyAny>,
+        scalar: impl FnOnce(&RsSurface, f64) -> RsSurface,
+        surface: impl FnOnce(&Surface, &Surface) -> PyResult<Surface>,
+    ) -> PyResult<Surface> {
+        if let Ok(k) = rhs.extract::<f64>() {
+            self.with(py, |s| Surface::wrap(scalar(s, k)))
+        } else if let Ok(other) = rhs.extract::<PyRef<'_, Surface>>() {
+            surface(self, &other)
+        } else {
+            Err(PyTypeError::new_err(
+                "Surface operands must be a float or another Surface",
+            ))
+        }
+    }
+}
+
+/// Accessor returned by `surface.attr`: subscript or call by attribute name to
+/// promote that attribute layer to a standalone `Surface`.
+#[pyclass(name = "AttrAccessor")]
+pub struct AttrAccessor {
+    surface: Py<Surface>,
+}
+
+#[pymethods]
+impl AttrAccessor {
+    /// `surface.attr["name"]` → the promoted attribute layer as a `Surface`.
+    fn __getitem__(&self, py: Python<'_>, name: &str) -> PyResult<Surface> {
+        self.promote(py, name)
+    }
+
+    /// `surface.attr("name")` → the promoted attribute layer as a `Surface`.
+    fn __call__(&self, py: Python<'_>, name: &str) -> PyResult<Surface> {
+        self.promote(py, name)
+    }
+
+    /// `name in surface.attr`.
+    fn __contains__(&self, py: Python<'_>, name: &str) -> PyResult<bool> {
+        self.surface
+            .borrow(py)
+            .with(py, |s| s.attr_names().contains(&name))
+    }
+
+    /// The attribute layer names, in insertion order.
+    fn names(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.surface.borrow(py).with(py, |s| {
+            s.attr_names().iter().map(|n| n.to_string()).collect()
+        })
+    }
+}
+
+impl AttrAccessor {
+    fn promote(&self, py: Python<'_>, name: &str) -> PyResult<Surface> {
+        let promoted = self
+            .surface
+            .borrow(py)
+            .with(py, |s| s.as_attr_surface(name))?;
+        match promoted {
+            Some(p) => Ok(Surface::wrap(p)),
+            None => Err(pyo3::exceptions::PyKeyError::new_err(format!(
+                "no attribute layer '{name}'"
+            ))),
+        }
+    }
+}

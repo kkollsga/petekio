@@ -1,0 +1,4 @@
+edition = "2021"
+# Keep module declarations in dependency-layer order (foundation → io → core →
+# analysis → manager), not alphabetized — the order documents the architecture.
+reorder_modules = false

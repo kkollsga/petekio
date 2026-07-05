@@ -1,0 +1,12 @@
+{ "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [0.0, 0.0, 10.0] },
+      "properties": { "poro": 0.10, "name": "a" } },
+    { "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [10.0, 0.0, 20.0] },
+      "properties": { "poro": 0.20, "name": "b" } },
+    { "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [0.0, 10.0, 30.0] },
+      "properties": { "poro": 0.30, "name": "c" } }
+  ] }

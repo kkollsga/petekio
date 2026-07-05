@@ -1,0 +1,22 @@
+[package]
+name = "petekio-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "PyO3 bindings for petekio — the source of the `petekio` Python wheel (built by maturin). Rust users depend on the `petekio` crate directly."
+# Not for crates.io: this crate is the wheel source; the publishable library is
+# the sibling `petekio` crate. Publishing this would be redundant + confusing.
+publish = false
+
+[lib]
+name = "_petekio"
+crate-type = ["cdylib"]
+
+[dependencies]
+petekio = { path = "..", version = "0.2.3" }
+# abi3-py310 → one wheel for CPython 3.10+. extension-module → the wheel is a
+# Python extension (python symbols resolved at runtime, not linked).
+pyo3 = { version = "0.29", features = ["abi3-py310", "extension-module"] }

@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-crate:
+    name: crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish to crates.io (skip if this version is already published)
+        run: |
+          VER=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name=="petekio") | .version')
+          if curl -fsS -H "User-Agent: petekio-ci" \
+               "https://crates.io/api/v1/crates/petekio/$VER" \
+               | jq -e '.version.num' >/dev/null 2>&1; then
+            echo "petekio $VER already on crates.io — skipping publish"
+          else
+            cargo publish -p petekio --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          fi
+
+  sdist:
+    name: build sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: dist
+
+  wheels:
+    name: build wheels ${{ matrix.runner }} ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, target: x86_64 }
+          - { runner: ubuntu-latest, target: aarch64 }
+          # One macOS job: a universal2 wheel (x86_64 + arm64) built on the
+          # Apple-Silicon runner — no separate Intel (macos-13) runner needed.
+          - { runner: macos-14, target: universal2-apple-darwin }
+          - { runner: windows-latest, target: x64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          sccache: "true"
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.runner }}-${{ matrix.target }}
+          path: dist
+
+  publish-pypi:
+    name: PyPI (trusted publishing)
+    needs: [sdist, wheels]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

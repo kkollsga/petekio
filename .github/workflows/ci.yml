@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      # Scope clippy/test to the library crate; the PyO3 wheel crate is built +
+      # validated by the maturin wheel job in release.yml (it needs a Python env).
+      - run: cargo clippy -p petekio --all-targets --all-features -- -D warnings
+      - run: cargo test -p petekio --all-features

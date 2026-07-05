@@ -1,0 +1,79 @@
+[workspace]
+members = ["py"]
+
+[workspace.package]
+version = "0.2.8"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/kkollsga/petekio"
+authors = ["Kristian dF Kollsgård <kkollsg@gmail.com>"]
+
+[package]
+name = "petekio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Subsurface data ingestion + structure layer: surfaces, wells, points, polygons with loading, interpolation, and statistics."
+readme = "README.md"
+keywords = ["subsurface", "geoscience", "geology", "seismic", "irap"]
+categories = ["science", "parsing"]
+# Keep the published crate lean — the Python wheel sources + CI live in the repo
+# but aren't part of the Rust library. (Workspace member `py/` is auto-excluded.)
+# Keep the published crate lean and ship NO test/example data: tests/ (golden
+# fixtures) and examples/ (notebooks + sample data) aren't part of the library a
+# downstream user consumes. (benches/ stays — a declared [[bench]] target.)
+exclude = [
+    "/python", "/pyproject.toml", "/.github", "/.cargo", "/dist", "/.claude",
+    "/CLAUDE.md", "/tests", "/examples",
+    "/docs", "/mkdocs.yml", "/.readthedocs.yaml", "/site",
+]
+
+[dependencies]
+thiserror = "2"
+ndarray = { version = "0.17", features = ["serde"] }
+indexmap = { version = "2", features = ["serde"] }
+las_rs = "0.2.1"
+csv = "1"
+geo = { version = "0.33", features = ["use-serde"] }
+geozero = { version = "0.15", features = ["with-geo", "with-geojson", "with-wkt", "with-shp"] }
+rstar = "0.13"
+# Persistence (.pproj): serde DTOs + bincode sections layered on petekTools'
+# generic container (which owns the magic/JSON-header/zstd framing).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+# Shared numeric kernels + generic `.pproj` container.
+# PRE-RELEASE FAMILY MODE: pinned to the sibling working tree (`../petekTools`),
+# matching the rest of the suite, so petekIO builds against petekTools HEAD and
+# there is exactly ONE `petektools` in the lockfile (the registry-0.1 pin let a
+# second, type-incompatible copy leak in via a downstream consumer — the
+# dual-petektools type-identity trap). THE PUBLISH BATCH SWAPS ALL FAMILY DEPS
+# BACK TO REGISTRY VERSIONS TOGETHER (petektools = "0.1" or later); do not
+# publish petekIO with a path dep.
+petektools = { path = "../petekTools" }
+
+[features]
+default = []
+# f32 storage typedef for memory-bound large surfaces (SPEC "Storage
+# precision"). Wiring deferred — API.md locks `Array2<f64>` for now.
+f32 = []
+
+[dev-dependencies]
+approx = "0.5"
+criterion = "0.5"
+
+[[bench]]
+name = "gridding"
+harness = false
+
+[[bench]]
+name = "strat_order"
+harness = false
+
+[[bench]]
+name = "petro_hotpath"
+harness = false

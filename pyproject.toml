@@ -1,0 +1,39 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "petekio"
+description = "Subsurface data ingestion + structure layer: surfaces, wells, points, polygons — loading, interpolation, statistics."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Kristian dF Kollsgård", email = "kkollsg@gmail.com" }]
+keywords = ["subsurface", "geoscience", "geology", "seismic", "irap"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering",
+    "Operating System :: OS Independent",
+]
+dynamic = ["version"]
+
+# pandas is needed only for `zone_table()` (returns a DataFrame); imported
+# lazily, so the base wheel stays dependency-free. `pip install petekio[pandas]`.
+[project.optional-dependencies]
+pandas = ["pandas"]
+
+[project.urls]
+Repository = "https://github.com/kkollsga/petekio"
+Issues = "https://github.com/kkollsga/petekio/issues"
+
+[tool.maturin]
+# The cdylib that becomes the wheel's extension lives in py/; the importable
+# Python package is python/petekio/ (re-exports the extension).
+manifest-path = "py/Cargo.toml"
+module-name = "petekio._petekio"
+python-source = "python"

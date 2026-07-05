@@ -10,6 +10,15 @@ The pipeline is the point:
 
 **ingest → normalize → validate → interpret → characterise**
 
+## Documentation
+
+The canonical docs for the whole petek family live on the **petekSuite site**
+— petekIO's pages there:
+
+- **[Library guide](https://peteksuite.readthedocs.io/en/latest/libraries/petekio/)** — the petekIO guide.
+- **Tutorials** — [Data ingest with petekIO](https://peteksuite.readthedocs.io/en/latest/tutorials/data-ingest/) · [Well analysis](https://peteksuite.readthedocs.io/en/latest/tutorials/well-analysis/).
+- **[Notebooks](https://peteksuite.readthedocs.io/en/latest/notebooks/)** — executed examples: [ingest tour](https://peteksuite.readthedocs.io/en/latest/notebooks/petekio/01_ingest_tour/) · [well analysis](https://peteksuite.readthedocs.io/en/latest/notebooks/petekio/02_well_analysis/).
+
 ## Why build on it
 
 Subsurface data is the unglamorous, error-prone groundwork under every reservoir

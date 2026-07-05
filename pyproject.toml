@@ -28,6 +28,8 @@ dynamic = ["version"]
 pandas = ["pandas"]
 
 [project.urls]
+# The petekSuite site is the canonical docs home for the whole family.
+Documentation = "https://peteksuite.readthedocs.io/en/latest/libraries/petekio/"
 Repository = "https://github.com/kkollsga/petekio"
 Issues = "https://github.com/kkollsga/petekio/issues"
 

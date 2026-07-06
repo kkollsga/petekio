@@ -6,6 +6,25 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-06
+
+### Added
+- Public bounded content detector: `FormatKind` plus `detect(path)`, with
+  content-first identification for CPS-3, IRAP classic/points, EarthVision, LAS,
+  wellpath, Petrel tops, `crsmeta.xml`, GeoJSON, and CSV point headers. New
+  tests cover extensionless and misnamed-extension files.
+- `GeoData` manager dispatch now consumes `detect()` for surfaces, points,
+  polygons, and well-tree file classification where practical, so content wins
+  over misleading extensions. `FormatKind::Unknown` preserves the previous
+  extension fallback.
+- Minimal `crsmeta.xml` sidecar support for well loads: the CRS label is parsed
+  and attached to `Well::crs()` (label only, no reprojection). Surface, point,
+  and polygon objects still have no CRS field, so no sidecar is attached there.
+- Petrel `Type=Other` well-tops picks now surface as `FluidContact` values on
+  `Well`/`Sidetrack` via `contact(s)` instead of being silently dropped. Contacts
+  stay separate from formation `Top`s, so they do not create zones or alter the
+  `load_well_tops` assigned-top count.
+
 ### License — Apache-2.0 (`decision_license_ratified`)
 - The project is licensed under **Apache-2.0**. Canonical Apache License 2.0 text
   is provided as [LICENSE](LICENSE); a [NOTICE](NOTICE) names the copyright holder.
@@ -101,21 +120,6 @@ battery (`test_spec_conformance.py`, testing-doctrine R7).
   single O(n+k) merge-walk instead of a per-sample O(k·n) `at_md` sweep.
 
 ### Added
-- Public bounded content detector: `FormatKind` plus `detect(path)`, with
-  content-first identification for CPS-3, IRAP classic/points, EarthVision, LAS,
-  wellpath, Petrel tops, `crsmeta.xml`, GeoJSON, and CSV point headers. New
-  tests cover extensionless and misnamed-extension files.
-- `GeoData` manager dispatch now consumes `detect()` for surfaces, points,
-  polygons, and well-tree file classification where practical, so content wins
-  over misleading extensions. `FormatKind::Unknown` preserves the previous
-  extension fallback.
-- Minimal `crsmeta.xml` sidecar support for well loads: the CRS label is parsed
-  and attached to `Well::crs()` (label only, no reprojection). Surface, point,
-  and polygon objects still have no CRS field, so no sidecar is attached there.
-- Petrel `Type=Other` well-tops picks now surface as `FluidContact` values on
-  `Well`/`Sidetrack` via `contact(s)` instead of being silently dropped. Contacts
-  stay separate from formation `Top`s, so they do not create zones or alter the
-  `load_well_tops` assigned-top count.
 - `PointSet::coords(&self) -> &[[f64; 3]]` (Rust) — the public read side of
   `from_coords`: the raw `[x, y, z]` points in load order (`NaN` carried
   through). Additive (open/closed); lets a consumer grid the scatter itself

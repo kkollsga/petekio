@@ -8,6 +8,7 @@ broadcastable wells view. See https://github.com/kkollsga/petekio.
 
 from ._petekio import (
     BBox,
+    FormatKind,
     GeoData,
     GridGeometry,
     IngestSpec,
@@ -24,6 +25,7 @@ from ._petekio import (
     WellsView,
     __version__,
     canonical_mnemonic,
+    detect,
 )
 
 # The standalone WellLogBundle producer (well.view() / a logs-only session). The
@@ -45,6 +47,7 @@ from ._specs import (
 
 __all__ = [
     "BBox",
+    "FormatKind",
     "GeoData",
     "GridGeometry",
     "IngestSpec",
@@ -65,5 +68,6 @@ __all__ = [
     "__version__",
     "build_well_log_bundle",
     "canonical_mnemonic",
+    "detect",
     "encode_lane",
 ]

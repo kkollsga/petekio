@@ -13,6 +13,7 @@
 
 mod geodata;
 mod geometry;
+mod detect;
 mod points;
 mod specs;
 mod stats;
@@ -98,6 +99,8 @@ pub(crate) fn parse_grid_method(s: &str) -> PyResult<GridMethod> {
 fn _petekio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(canonical_mnemonic, m)?)?;
+    m.add_function(wrap_pyfunction!(detect::detect, m)?)?;
+    m.add_class::<detect::FormatKind>()?;
     m.add_class::<stats::Stats>()?;
     m.add_class::<geometry::BBox>()?;
     m.add_class::<geometry::GridGeometry>()?;

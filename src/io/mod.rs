@@ -46,7 +46,9 @@ pub(crate) fn csv_error(context: &str, e: csv::Error) -> crate::foundation::GeoE
 
 pub mod container;
 pub mod cps3;
+pub mod crsmeta;
 pub mod csv_points;
+pub mod detect;
 pub mod earthvision;
 pub mod serial;
 pub mod irap;

@@ -18,6 +18,6 @@ pub use log::{Log, LogKind, LogView};
 pub use points::{GridMethod, PointSet};
 pub use polygons::PolygonSet;
 pub use surface::Surface;
-pub use tops::{Interval, Top};
+pub use tops::{FluidContact, Interval, Top};
 pub use trajectory::{Station, Trajectory, TrajectoryInput};
 pub use well::{Sidetrack, Well};

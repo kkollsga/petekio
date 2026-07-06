@@ -10,6 +10,29 @@ Conventions: `Result<T> = std::result::Result<T, GeoError>`; arrays are
 
 ---
 
+## Format Detection
+
+```rust
+pub enum FormatKind {
+    Cps3Grid,
+    Cps3Lines,
+    IrapClassicGrid,
+    IrapClassicPoints,
+    EarthVisionGrid,
+    Las,
+    WellPath,
+    PetrelTops,
+    CrsMetaXml,
+    GeoJson,
+    CsvPoints,
+    Unknown,
+}
+
+/// Bounded content-sniffing detector. Reads only leading header bytes; file
+/// extension is a fallback/tiebreaker, not the primary authority.
+pub fn detect(path: impl AsRef<Path>) -> Result<FormatKind>;
+```
+
 ## foundation
 
 ```rust
@@ -153,6 +176,8 @@ impl Well {
     pub fn mnemonics(&self) -> Vec<&str>;
     pub fn zones(&self) -> Vec<Interval>;            // formation zones, in strat order if set, else MD
     pub fn zone_stats(&self, mnemonic: &str) -> Vec<(String, Stats)>;  // per-zone average(mean)+sum
+    pub fn contacts(&self) -> impl Iterator<Item = &FluidContact>;     // non-strat picks on the resolved bore
+    pub fn contact(&self, name: &str) -> Option<&FluidContact>;
     pub fn set_strat_order(&mut self, order: &[String]);  // push lithostrat column into every bore
 }
 
@@ -176,6 +201,8 @@ impl Sidetrack {
     pub fn mnemonics(&self) -> Vec<&str>;               // curve mnemonics on this bore, insertion order
     pub fn zones(&self) -> Vec<Interval>;               // strat order when set (see set_strat_order), else MD
     pub fn zone_stats(&self, mnemonic: &str) -> Vec<(String, Stats)>;
+    pub fn contacts(&self) -> impl Iterator<Item = &FluidContact>;
+    pub fn contact(&self, name: &str) -> Option<&FluidContact>;
 }
 
 pub struct Station { pub md: f64, pub inc_deg: f64, pub azi_deg: f64 }
@@ -197,6 +224,7 @@ impl Trajectory {
 }
 
 pub struct Top { pub name: String, pub md: f64 }
+pub struct FluidContact { pub name: String, pub md: f64 } // OWC/GOC/FWL etc.; not a zone top
 pub struct Interval { pub name: String, pub top_md: f64, pub base_md: f64 } // base = next top / TD
 impl Interval {
     pub fn log(&self, mnemonic: &str) -> Option<LogView>;    // log clipped to this interval
@@ -263,9 +291,9 @@ impl PolygonSet {
 pub struct GeoData { pub unit: Unit /* surfaces, wells, points, polygons private */ }
 impl GeoData {
     pub fn new(unit: Unit) -> GeoData;
-    pub fn load_surface(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&Surface>;
+    pub fn load_surface(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&Surface>; // content-first detect(); Unknown falls back to extension
     pub fn load_well(&mut self, id: &str, head: (f64,f64), kb: f64,
-                     files: impl AsRef<Path>) -> Result<&Well>;  // one .wellpath→main bore (co-locates logs/tops), many→one bore each; .las→logs, .csv→tops
+                     files: impl AsRef<Path>) -> Result<&Well>;  // content-first tree walk: one .wellpath→main bore (co-locates logs/tops), many→one bore each; LAS→logs; .csv→tops; crsmeta.xml→Well::crs label
     pub fn set_curve_aliases(&mut self, aliases: NameMap);  // opt-in STICKY: canonicalize log mnemonics at load (map→table→vintage strip); off by default (raw preserved)
     pub fn load_well_with(&mut self, id: &str, head: (f64,f64), kb: f64, files: impl AsRef<Path>, aliases: Option<&NameMap>) -> Result<()>;  // per-call, NON-sticky aliases (project state preserved+restored); the IngestSpec seam
     pub fn load_well_tops(&mut self, path: impl AsRef<Path>) -> Result<usize>;  // Petrel multi-well tops → matching well+bore (well-name match folds /,-,space,case → variant-tolerant); derives strat_order across the file
@@ -273,8 +301,8 @@ impl GeoData {
     pub fn add_strat_hint(&mut self, above: &str, below: &str);  // soft hint; fills stalemates, data wins
     pub fn strat_hint(&mut self, spec: &str) -> Result<()>;      // shorthand: "A < B" (A above) / "A > B"
     pub fn add_strat_hints(&mut self, hints: &StratHints);       // apply a declarative StratHints value (the IngestSpec seam)
-    pub fn load_points(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PointSet>;
-    pub fn load_polygons(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PolygonSet>;
+    pub fn load_points(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PointSet>;     // content-first detect(); Unknown falls back to extension
+    pub fn load_polygons(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PolygonSet>; // content-first detect(); Unknown falls back to extension
     pub fn surface(&self, name: &str) -> Option<&Surface>;
     pub fn well(&self, id: &str) -> Option<&Well>;
     pub fn well_mut(&mut self, id: &str) -> Option<&mut Well>;   // in-place e.g. Well::set_default_bore
@@ -506,6 +534,7 @@ v, data = geo.model_section("model/seg/props")    # (version, bytes)
 geo.load_well_tops("WellTops.tops")      # Horizon picks → well+bore; derives the strat column
 geo.strat_order                          # ["Top A", "Sand A", "Top B", ...] global lithostrat column
 w.crs; w.bores()                         # CRS label; e.g. ["", "A", "B", "ST2"]
+w.contact("OWC"); bore.contacts()        # fluid contacts as (name, md), not formation zones
 w.is_multibore                           # True → the top-level accessors below RAISE until a bore is chosen
 w.xyz(2450)                              # ValueError "well '99/9-1' has 3 bores (A, B, ST2) — use .sidetrack(name) or .set_default_bore(name)"
 w.set_default_bore("A"); w.default_bore  # route w.xyz/tvd/log/top through bore A ("A"); clears via load
@@ -545,6 +574,7 @@ geo.wells.filter(field="Gullfaks").tops("Brent")   # broadcast view
 
 # Curve-name authority (canonical LAS mnemonic; petekio is the family namer):
 petekio.canonical_mnemonic("suwi")       # -> "SW"   (case-insensitive, vintage-stripped)
+petekio.detect("surface_without_extension") == petekio.FormatKind.IrapClassicGrid
 
 # Standalone log correlation viewer — the WellLogBundle producer + a logs-only
 # viewer session (kind "wells_logs", schema_version 4). Builds the bundle from a

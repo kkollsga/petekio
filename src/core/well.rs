@@ -29,13 +29,14 @@
 //! positioned curve-set **per bore** (`well_id = "<id> <bore>"`), never routing
 //! through `primary`.
 //!
-//! Each sidetrack also owns its [`Log`]s and formation [`Top`]s: `add_log`/
-//! `add_tops` ingest them, `log` returns a full-curve [`LogView`], and `top`
-//! resolves a marker into the [`Interval`] it names (base = the next top's MD by
-//! sorted MD, else the active trajectory's total depth).
+//! Each sidetrack also owns its [`Log`]s, formation [`Top`]s, and fluid-contact
+//! picks. `add_log`/`add_tops` ingest the stratigraphic data, `log` returns a
+//! full-curve [`LogView`], and `top` resolves a marker into the [`Interval`] it
+//! names (base = the next top's MD by sorted MD, else the active trajectory's
+//! total depth).
 
 use crate::core::log::{Log, LogView};
-use crate::core::tops::{Interval, Top};
+use crate::core::tops::{FluidContact, Interval, Top};
 use crate::core::trajectory::{Trajectory, TrajectoryInput};
 use crate::foundation::{GeoError, Point3, Result, Stats};
 use indexmap::IndexMap;
@@ -260,6 +261,16 @@ impl Well {
         self.primary().zone_stats(mnemonic)
     }
 
+    /// Fluid contacts on the [resolved bore](Self::primary), in load order.
+    pub fn contacts(&self) -> impl Iterator<Item = &FluidContact> {
+        self.primary().contacts()
+    }
+
+    /// The named fluid contact on the [resolved bore](Self::primary), if present.
+    pub fn contact(&self, name: &str) -> Option<&FluidContact> {
+        self.primary().contact(name)
+    }
+
     /// Push the project lithostratigraphic order into every bore, so `zones()` /
     /// `zone_stats()` (on the well and each sidetrack) present zones in it.
     /// Called by the manager after loading a tops file.
@@ -284,6 +295,10 @@ pub struct Sidetrack {
     /// Formation tops, kept sorted ascending by MD so the next top resolves a
     /// base. Invariant maintained by [`add_tops`](Sidetrack::add_tops).
     tops: Vec<Top>,
+    /// Non-stratigraphic picks (OWC/GOC/FWL, etc.) in load order. Kept separate
+    /// from formation tops so contacts do not create zones.
+    #[serde(default)]
+    contacts: Vec<FluidContact>,
     /// Project-wide lithostratigraphic order (top names, shallow→deep), pushed
     /// down from the manager at tops-load time via [`set_strat_order`]. Empty
     /// until set; when non-empty, [`zones`](Sidetrack::zones) returns zones in
@@ -304,6 +319,7 @@ impl Sidetrack {
             active: 0,
             logs: Vec::new(),
             tops: Vec::new(),
+            contacts: Vec::new(),
             strat_order: Vec::new(),
         }
     }
@@ -380,6 +396,11 @@ impl Sidetrack {
         self.sort_tops();
     }
 
+    /// Add non-stratigraphic fluid contacts to this sidetrack.
+    pub fn add_contacts(&mut self, contacts: Vec<FluidContact>) {
+        self.contacts.extend(contacts);
+    }
+
     /// Set the project-wide lithostratigraphic order (top names, shallow→deep).
     /// Pushed down from the manager once a tops file is loaded; [`zones`] then
     /// presents zones in this order, and a coincident-MD (zero-thickness)
@@ -436,6 +457,18 @@ impl Sidetrack {
             .iter()
             .find(|l| l.mnemonic.eq_ignore_ascii_case(mnemonic))
             .map(|l| l.view())
+    }
+
+    /// Fluid contacts on this bore, in load order.
+    pub fn contacts(&self) -> impl Iterator<Item = &FluidContact> {
+        self.contacts.iter()
+    }
+
+    /// The named fluid contact on this bore, case-insensitive.
+    pub fn contact(&self, name: &str) -> Option<&FluidContact> {
+        self.contacts
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
     }
 
     /// All logs on this bore, in insertion order. Lets a consumer enumerate

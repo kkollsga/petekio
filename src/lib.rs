@@ -31,10 +31,11 @@ pub use analysis::{
     SummaryInputs, WellCurveInput,
 };
 pub use core::{
-    GridMethod, Interval, Log, LogKind, LogView, PointSet, PolygonSet, Sidetrack, Station, Surface,
-    Top, Trajectory, TrajectoryInput, Well,
+    FluidContact, GridMethod, Interval, Log, LogKind, LogView, PointSet, PolygonSet, Sidetrack,
+    Station, Surface, Top, Trajectory, TrajectoryInput, Well,
 };
 pub use foundation::{
     BBox, Distribution, GeoError, GridGeometry, Point3, Provenance, Result, Stats, Uncertain, Unit,
 };
+pub use io::detect::{detect, FormatKind};
 pub use manager::{GeoData, ProjectInfo, WellsView};

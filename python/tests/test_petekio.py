@@ -379,7 +379,10 @@ def test_sidetrack_zones_and_stats(tmp_path):
         '1 2 -3 -999 -999 -999 2440.0 -3 Other "OWC" "15/9-A1"\n'
     )
     added = geo.load_well_tops(str(tops))
-    assert added == 1  # Horizon kept, Other (OWC) skipped
+    assert added == 1  # Horizon counted as a zone top.
+    assert w.contact("owc") == ("OWC", 2440.0)
+    assert st.contact("OWC") == ("OWC", 2440.0)
+    assert st.contacts() == [("OWC", 2440.0)]
 
 
 def test_load_well_optional_head_kb_from_wellpath(tmp_path):
@@ -685,3 +688,10 @@ def test_project_persistence(tmp_path):
     m = petekio.GeoData.open(merged)
     assert m.well("15/9-A1") is not None
     assert m.model_section("model/seg/props") == (3, b"\x00\xffmodel")
+def test_format_detector_is_public(tmp_path):
+    p = tmp_path / "misnamed.csv"
+    p.write_text("~Version\n VERS. 2.0 :\n~Well\n STRT.M 100 :\n")
+
+    assert "detect" in petekio.__all__
+    assert "FormatKind" in petekio.__all__
+    assert petekio.detect(str(p)) == petekio.FormatKind.Las

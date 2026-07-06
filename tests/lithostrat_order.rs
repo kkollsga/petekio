@@ -52,3 +52,28 @@ fn loaded_well_zones_follow_the_global_column() {
     assert_eq!(geom("Sand"), Some((120.0, 120.0))); // shallower coincident → zero
     assert!(geom("Mid").unwrap().1 > 120.0); // deeper owns the interval to TD
 }
+
+#[test]
+fn petrel_other_picks_surface_as_contacts_not_zones() {
+    let (well, _tops) = common::synth_field();
+    let d = common::tmpdir("fluid_contacts");
+    let tops = d.join("contacts.tops");
+    std::fs::write(
+        &tops,
+        "# Petrel well tops\nVERSION 2\nBEGIN HEADER\nX\nY\nZ\nTWT\nTWT2\nage\nMD\nPVD\nType\nSurface\nWell\nEND HEADER\n\
+         1 2 -1 -999 -999 -999 100.0 -1 Horizon \"Top\" \"FIELD-1 A\"\n\
+         1 2 -1 -999 -999 -999 130.0 -1 Other \"OWC\" \"FIELD-1 A\"\n",
+    )
+    .unwrap();
+
+    let mut geo = GeoData::new(Unit::Metres);
+    geo.load_well("FIELD-1", (0.0, 0.0), 0.0, &well).unwrap();
+    let attached_tops = geo.load_well_tops(&tops).unwrap();
+    assert_eq!(attached_tops, 1);
+
+    let bore = geo.well("FIELD-1").unwrap().sidetrack("A").unwrap();
+    assert_eq!(bore.zones().len(), 1);
+    let contact = bore.contact("owc").unwrap();
+    assert_eq!(contact.name, "OWC");
+    assert_eq!(contact.md, 130.0);
+}

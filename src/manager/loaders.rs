@@ -9,12 +9,13 @@
 //! method for the formats it accepts.
 
 use crate::core::{
-    Log, LogKind, PointSet, PolygonSet, Station, Surface, Top, TrajectoryInput, Well,
+    FluidContact, Log, LogKind, PointSet, PolygonSet, Station, Surface, Top, TrajectoryInput, Well,
 };
 use crate::foundation::{GeoError, Point3, Result};
 use crate::manager::GeoData;
+use crate::FormatKind;
 use indexmap::IndexMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Lower-cased file extension of `path`, or `""` when it has none.
 fn ext_of(path: &Path) -> String {
@@ -24,18 +25,39 @@ fn ext_of(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
+#[derive(Debug, Clone)]
+struct ClassifiedFile {
+    path: PathBuf,
+    kind: FormatKind,
+}
+
+fn classify(path: &Path) -> Result<FormatKind> {
+    crate::io::detect::detect(path)
+}
+
 impl GeoData {
-    /// Load a surface from `path` and store it under `name`, dispatching on
-    /// extension: `.irap`/`.gri`/none → IRAP classic (FIRST) ASCII grid;
-    /// `.cps3grid` → CPS-3 regular grid. Returns a borrow of the stored surface.
+    /// Load a surface from `path` and store it under `name`, dispatching
+    /// content-first (`detect(path)`), with extension fallback only when the
+    /// detector returns `Unknown`: IRAP classic (FIRST) ASCII grid or CPS-3
+    /// regular grid. Returns a borrow of the stored surface.
     pub fn load_surface(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&Surface> {
         let path = path.as_ref();
-        let surface = match ext_of(path).as_str() {
-            "irap" | "gri" | "" => Surface::load_irap_classic(path)?,
-            "cps3grid" => Surface::load_cps3_grid(path)?,
+        let surface = match classify(path)? {
+            FormatKind::IrapClassicGrid => Surface::load_irap_classic(path)?,
+            FormatKind::Cps3Grid => Surface::load_cps3_grid(path)?,
+            FormatKind::Unknown => match ext_of(path).as_str() {
+                "irap" | "gri" | "" => Surface::load_irap_classic(path)?,
+                "cps3grid" => Surface::load_cps3_grid(path)?,
+                other => {
+                    return Err(GeoError::Parse(format!(
+                        "load_surface: unsupported surface extension '.{other}' for '{}'",
+                        path.display()
+                    )))
+                }
+            },
             other => {
-                return Err(GeoError::Parse(format!(
-                    "load_surface: unsupported surface extension '.{other}' for '{}'",
+                return Err(GeoError::Format(format!(
+                    "load_surface: '{}' is {other:?}, not a supported surface format",
                     path.display()
                 )))
             }
@@ -89,6 +111,10 @@ impl GeoData {
             vec![root.to_path_buf()]
         };
         paths.retain(|p| p.is_file());
+        let mut files: Vec<ClassifiedFile> = paths
+            .into_iter()
+            .map(|path| classify(&path).map(|kind| ClassifiedFile { path, kind }))
+            .collect::<Result<_>>()?;
 
         // In a shared tree the files are well-id-named (`99_9-1_A.wellpath`);
         // keep only this well's. If no filename carries the id (a flat folder
@@ -97,30 +123,40 @@ impl GeoData {
         // Compute the id match once per path (was an `any` scan + a `retain` scan,
         // each re-normalizing every stem). If any file carries the id, keep only
         // the matching ones.
-        let matches: Vec<bool> = paths.iter().map(|p| file_matches_id(p, &id_key)).collect();
+        let matches: Vec<bool> = files
+            .iter()
+            .map(|f| file_matches_id(&f.path, &id_key))
+            .collect();
         if matches.iter().any(|&m| m) {
             let mut keep = matches.iter();
-            paths.retain(|_| *keep.next().unwrap());
+            files.retain(|f| *keep.next().unwrap() || f.kind == FormatKind::CrsMetaXml);
         }
 
-        let wellpaths: Vec<_> = paths
+        let wellpaths: Vec<_> = files
             .iter()
-            .filter(|p| ext_of(p) == "wellpath")
-            .cloned()
+            .filter(|f| f.kind == FormatKind::WellPath)
+            .map(|f| f.path.clone())
             .collect();
-        let las: Vec<_> = paths
+        let las: Vec<_> = files
             .iter()
-            .filter(|p| ext_of(p) == "las")
-            .cloned()
+            .filter(|f| f.kind == FormatKind::Las)
+            .map(|f| f.path.clone())
             .collect();
         let mut tops: Vec<Top> = Vec::new();
-        for path in &paths {
-            if ext_of(path) == "csv" {
-                tops.extend(Top::load_csv(path, "name", "md")?);
+        for file in &files {
+            if file.kind == FormatKind::CsvPoints && ext_of(&file.path) == "csv" {
+                tops.extend(Top::load_csv(&file.path, "name", "md")?);
             }
         }
+        let crs = files
+            .iter()
+            .filter(|f| f.kind == FormatKind::CrsMetaXml)
+            .find_map(|f| crate::io::crsmeta::load_label(&f.path).ok());
 
         let mut well = Well::new(id, head, kb);
+        if let Some(label) = crs {
+            well.set_crs(label);
+        }
 
         if wellpaths.is_empty() {
             // No survey files → single main bore with a synthesized vertical
@@ -194,9 +230,10 @@ impl GeoData {
     /// the matching already-loaded well + bore. The record's `Well` field is
     /// matched to a loaded well id (exact, or the id is a separator-delimited
     /// prefix — `"99/9-1 B"` → well `99/9-1`, bore `B` if that bore exists, else
-    /// the main bore). Only `Type == Horizon` picks are taken (lithostratigraphy);
-    /// `Other` picks (fluid contacts OWC/GOC/FWL) and unknown-well records are
-    /// skipped. Returns the number of tops assigned. (Load wells *before* tops.)
+    /// the main bore). `Type == Horizon` picks become formation tops;
+    /// `Type == Other` picks become fluid contacts (OWC/GOC/FWL, etc.). Unknown
+    /// wells are skipped. Returns the number of tops assigned. (Load wells
+    /// *before* tops.)
     ///
     /// Side effect: derives the project's **global lithostratigraphic column**
     /// ([`strat_order`](GeoData::strat_order)) from *every* well's Horizon picks
@@ -239,15 +276,10 @@ impl GeoData {
             crate::algorithms::wells::merge_strat_order(&seqs, &hints)
         };
 
-        // Distribute each Horizon pick to the matching loaded well + bore.
+        // Distribute Horizon picks to tops, and Other picks to contacts.
         let ids: Vec<String> = self.wells.keys().cloned().collect();
         let mut added = 0;
         for r in recs {
-            // Only lithostratigraphic picks define zones; skip `Other` (fluid
-            // contacts OWC/GOC/FWL, etc. — not stratigraphy).
-            if !r.kind.eq_ignore_ascii_case("Horizon") {
-                continue;
-            }
             let Some(id) = ids.iter().find(|id| well_name_matches(id, &r.well)) else {
                 continue;
             };
@@ -258,9 +290,13 @@ impl GeoData {
             } else {
                 String::new()
             };
-            well.sidetrack_mut(&label)
-                .add_tops(vec![Top::new(r.surface, r.md)]);
-            added += 1;
+            let st = well.sidetrack_mut(&label);
+            if r.kind.eq_ignore_ascii_case("Horizon") {
+                st.add_tops(vec![Top::new(r.surface, r.md)]);
+                added += 1;
+            } else if r.kind.eq_ignore_ascii_case("Other") {
+                st.add_contacts(vec![FluidContact::new(r.surface, r.md)]);
+            }
         }
 
         // Push the column into every loaded well, then record it on the project.
@@ -272,21 +308,33 @@ impl GeoData {
     }
 
     /// Load a point set from `path` and store it under `name`, returning a
-    /// borrow. Dispatches on extension: `.geojson` → GeoJSON; `.csv` → headered
-    /// CSV with `x`/`y`/`z` columns (other numeric columns → attributes);
-    /// `.earthvisiongrid` → EarthVision grid ASCII (null nodes dropped);
-    /// `.xyz`/`.irap`/`.dat`/`.irapclassicpoints`/none → RMS plain `X Y Z`
-    /// (header-sniffed: a foreign format is a typed `GeoError::Format`).
+    /// borrow. Dispatches content-first (`detect(path)`), with extension fallback
+    /// only when the detector returns `Unknown`: GeoJSON, headered CSV with
+    /// `x`/`y`/`z`, EarthVision grid ASCII, or RMS plain `X Y Z`.
     pub fn load_points(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PointSet> {
         let path = path.as_ref();
-        let points = match ext_of(path).as_str() {
-            "geojson" | "json" => PointSet::load_geojson(path)?,
-            "csv" => PointSet::load_csv(path, "x", "y", "z")?,
-            "earthvisiongrid" => PointSet::load_earthvision_grid(path)?,
-            "xyz" | "irap" | "dat" | "irapclassicpoints" | "" => PointSet::load_irap_points(path)?,
+        let points = match classify(path)? {
+            FormatKind::GeoJson => PointSet::load_geojson(path)?,
+            FormatKind::CsvPoints => PointSet::load_csv(path, "x", "y", "z")?,
+            FormatKind::EarthVisionGrid => PointSet::load_earthvision_grid(path)?,
+            FormatKind::IrapClassicPoints => PointSet::load_irap_points(path)?,
+            FormatKind::Unknown => match ext_of(path).as_str() {
+                "geojson" | "json" => PointSet::load_geojson(path)?,
+                "csv" => PointSet::load_csv(path, "x", "y", "z")?,
+                "earthvisiongrid" => PointSet::load_earthvision_grid(path)?,
+                "xyz" | "irap" | "dat" | "irapclassicpoints" | "" => {
+                    PointSet::load_irap_points(path)?
+                }
+                other => {
+                    return Err(GeoError::Parse(format!(
+                        "load_points: unsupported point extension '.{other}' for '{}'",
+                        path.display()
+                    )))
+                }
+            },
             other => {
-                return Err(GeoError::Parse(format!(
-                    "load_points: unsupported point extension '.{other}' for '{}'",
+                return Err(GeoError::Format(format!(
+                    "load_points: '{}' is {other:?}, not a supported point format",
                     path.display()
                 )))
             }
@@ -296,19 +344,30 @@ impl GeoData {
     }
 
     /// Load a polygon set from `path` and store it under `name`, returning a
-    /// borrow. Dispatches on extension: `.geojson` → GeoJSON; `.shp` →
-    /// shapefile; `.cps3lines` → CPS-3 polyline blocks; `.pol`/`.xyz`/`.irap`/
-    /// none → RMS rings (`999.0` separators).
+    /// borrow. Dispatches content-first (`detect(path)`), with extension fallback
+    /// only when the detector returns `Unknown`: GeoJSON, shapefile, CPS-3
+    /// polyline blocks, or RMS rings (`999.0` separators).
     pub fn load_polygons(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PolygonSet> {
         let path = path.as_ref();
-        let polygons = match ext_of(path).as_str() {
-            "geojson" | "json" => PolygonSet::load_geojson(path)?,
-            "shp" => PolygonSet::load_shapefile(path)?,
-            "cps3lines" => PolygonSet::load_cps3_lines(path)?,
-            "pol" | "xyz" | "irap" | "" => PolygonSet::load_irap_polygons(path)?,
+        let polygons = match classify(path)? {
+            FormatKind::GeoJson => PolygonSet::load_geojson(path)?,
+            FormatKind::Cps3Lines => PolygonSet::load_cps3_lines(path)?,
+            FormatKind::IrapClassicPoints => PolygonSet::load_irap_polygons(path)?,
+            FormatKind::Unknown => match ext_of(path).as_str() {
+                "geojson" | "json" => PolygonSet::load_geojson(path)?,
+                "shp" => PolygonSet::load_shapefile(path)?,
+                "cps3lines" => PolygonSet::load_cps3_lines(path)?,
+                "pol" | "xyz" | "irap" | "" => PolygonSet::load_irap_polygons(path)?,
+                other => {
+                    return Err(GeoError::Parse(format!(
+                        "load_polygons: unsupported polygon extension '.{other}' for '{}'",
+                        path.display()
+                    )))
+                }
+            },
             other => {
-                return Err(GeoError::Parse(format!(
-                    "load_polygons: unsupported polygon extension '.{other}' for '{}'",
+                return Err(GeoError::Format(format!(
+                    "load_polygons: '{}' is {other:?}, not a supported polygon format",
                     path.display()
                 )))
             }

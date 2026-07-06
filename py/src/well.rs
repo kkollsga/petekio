@@ -293,6 +293,22 @@ impl Well {
         self.with_well(py, |w| Ok(w.crs().map(|s| s.to_string())))
     }
 
+    /// Fluid-contact picks on the resolved bore as `(name, md)` rows.
+    /// Raises on a multi-bore well with no default bore (select one first).
+    fn contacts(&self, py: Python<'_>) -> PyResult<Vec<(String, f64)>> {
+        self.require_resolvable(py)?;
+        self.with_well(py, |w| {
+            Ok(w.contacts().map(|c| (c.name.clone(), c.md)).collect())
+        })
+    }
+
+    /// The named fluid-contact pick on the resolved bore as `(name, md)`, or `None`.
+    /// Raises on a multi-bore well with no default bore (select one first).
+    fn contact(&self, py: Python<'_>, name: &str) -> PyResult<Option<(String, f64)>> {
+        self.require_resolvable(py)?;
+        self.with_well(py, |w| Ok(w.contact(name).map(|c| (c.name.clone(), c.md))))
+    }
+
     /// The bore (sidetrack) labels, in order (`""` is the main bore).
     fn bores(&self, py: Python<'_>) -> PyResult<Vec<String>> {
         self.with_well(py, |w| {
@@ -539,6 +555,18 @@ impl Sidetrack {
             top_name: None,
             bore: Some(self.label.clone()),
         }))
+    }
+
+    /// Fluid-contact picks on this bore as `(name, md)` rows.
+    fn contacts(&self, py: Python<'_>) -> PyResult<Vec<(String, f64)>> {
+        self.resolve(py, |s| {
+            Ok(s.contacts().map(|c| (c.name.clone(), c.md)).collect())
+        })
+    }
+
+    /// The named fluid-contact pick on this bore as `(name, md)`, or `None`.
+    fn contact(&self, py: Python<'_>, name: &str) -> PyResult<Option<(String, f64)>> {
+        self.resolve(py, |s| Ok(s.contact(name).map(|c| (c.name.clone(), c.md))))
     }
 
     /// Net-conditioned per-zone aggregation of curve `value` on this bore: for

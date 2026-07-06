@@ -43,6 +43,25 @@ impl Top {
     }
 }
 
+/// A non-stratigraphic well pick such as OWC, GOC, or FWL.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FluidContact {
+    /// Contact name from the pick surface/marker column.
+    pub name: String,
+    /// Pick measured depth.
+    pub md: f64,
+}
+
+impl FluidContact {
+    /// A fluid contact named `name` at measured depth `md`.
+    pub fn new(name: impl Into<String>, md: f64) -> FluidContact {
+        FluidContact {
+            name: name.into(),
+            md,
+        }
+    }
+}
+
 /// The depth interval a [`Top`] names: `[top_md, base_md)`, where `base_md` is
 /// the next top's MD (or total depth for the deepest top). Borrows the owning
 /// sidetrack's logs so [`log`](Self::log) can clip them to this window.

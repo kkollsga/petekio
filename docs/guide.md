@@ -11,10 +11,9 @@ The pipeline is the point:
 **ingest → normalize → validate → interpret → characterise**
 
 This guide walks the Python surface end to end. Two runnable notebooks accompany
-it: [`01_ingest_tour`](../examples/notebooks/01_ingest_tour.ipynb) (author a small
-project, load it, inspect it, persist it) and
-[`02_well_analysis`](../examples/notebooks/02_well_analysis.ipynb) (net-cutoff
-sweeps, zone tables, the correlation view).
+it under `examples/notebooks/`: `01_ingest_tour.ipynb` (author a small project,
+load it, inspect it, persist it) and `02_well_analysis.ipynb` (net-cutoff sweeps,
+zone tables, the correlation view).
 
 ## Why build on it
 
@@ -188,6 +187,6 @@ The declarative, frozen load- and view-time specs — each is JSON-durable
 
 ## Where to go next
 
-- Run the two notebooks under [`examples/notebooks/`](../examples/notebooks/).
+- Run the two notebooks under `examples/notebooks/`.
 - **API.md** — the locked public API contract (Rust, mirrored in Python).
 - **SPEC.md** — the design constitution + architecture.

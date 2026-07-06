@@ -38,6 +38,7 @@ nav:
   - Home: index.md
   - Install: install.md
   - Guides:
+      - Overview: guide.md
       - GeoData project: guide/geodata.md
       - Wells: guide/wells.md
       - Surfaces, points & polygons: guide/surfaces.md

@@ -4,7 +4,7 @@
 
 ```toml
 [dependencies]
-petekio = "0.2"
+petekio = "0.3"
 ```
 
 petekIO requires Rust 1.88+. The crate is pure Rust core; the Python bindings

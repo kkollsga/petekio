@@ -6,6 +6,28 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-07
+
+### Added
+- Added strict regular-grid inference for point clouds:
+  `PointSet::infer_geometry(tolerance)` in Rust and
+  `PointSet.infer_geometry(tolerance=1e-3, edge=...)` in Python. The Python
+  edge option accepts `"occupied"`, `"convex_hull"`, and `"full_rect"` and
+  returns a `GridGeometry` carrying a matching `geometry.edge` polygon. Inference
+  raises a loud geometry-inference error when the points are genuinely scattered,
+  duplicated onto the same lattice node, or miss the detected lattice by more
+  than tolerance.
+- Added `GridGeometry.edge` and `Surface.edge` in Python. `surface.geometry`
+  now returns a geometry whose `.edge` polygon matches `surface.edge`, so
+  modelling code can use the same edge API whether geometry came from a surface
+  or from point-set inference.
+
+### Changed
+- Renamed the Rust surface outline method from `Surface::boundary_polygon()` to
+  `Surface::edge()` and routed model-input boundary derivation through the new
+  edge method. This removes the duplicate legacy surface-boundary API name in
+  favour of the shared geometry/surface edge vocabulary.
+
 ## [0.3.3] - 2026-07-07
 
 ### Added

@@ -10,6 +10,8 @@ arithmetic, statistics, and volumetrics.
 top = geo.load_surface("top_res", "surfaces/top_res.irap")
 
 top.geometry                 # GridGeometry (xori/yori, xinc/yinc, ncol/nrow, ...)
+top.edge                     # PolygonSet around the defined surface nodes
+top.geometry.edge            # same edge carried by the returned geometry
 top.bbox                     # BBox of the grid
 top.sample(x, y)             # bilinear sample at a world coordinate
 top.stats.mean               # NaN-skipping statistics
@@ -37,8 +39,13 @@ attributes), or RMS/IRAP plain `X Y Z`.
 ```python
 pts = geo.load_points("picks", "picks.geojson")
 pts.bbox
-grid = pts.to_surface(grid_geom)   # grid scattered points (minimum-curvature)
+geom = pts.infer_geometry(edge="convex_hull")  # strict; raises if points are not grid-like
+grid = pts.to_surface(grid_geom)               # or grid scattered points onto an explicit model grid
 ```
+
+Use `infer_geometry()` only when the points are expected to be a regular grid
+export. For genuinely scattered picks or irregular vendor exports, choose the
+model/template `GridGeometry` explicitly and call `to_surface(...)`.
 
 ## Polygons
 

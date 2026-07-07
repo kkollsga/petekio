@@ -8,8 +8,8 @@
 //! identical to our `GridGeometry`, so the seam is a 1:1 map (`to_lattice`); the
 //! kernels themselves were lifted from petekIO 0.2.0 and are held at parity.
 
-use crate::core::surface::Surface;
-use crate::foundation::{BBox, GridGeometry, Point3, Result, Stats};
+use crate::core::{PolygonSet, Surface};
+use crate::foundation::{BBox, GeoError, GridGeometry, Point3, Result, Stats};
 use indexmap::IndexMap;
 use petektools::{grid as pt_grid, grid_min_curvature_seeded, GridMethod as PtGridMethod};
 use rstar::primitives::GeomWithData;
@@ -26,6 +26,17 @@ pub enum GridMethod {
     InverseDistance,
     /// Briggs minimum-curvature (biharmonic SOR relaxation, data-anchored).
     MinimumCurvature,
+}
+
+/// Edge polygon to attach when inferring a grid geometry from points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeometryEdge {
+    /// Rectangular footprint spanning the occupied lattice index extents.
+    Occupied,
+    /// Convex hull of the input point cloud.
+    ConvexHull,
+    /// Full rectangular lattice footprint.
+    FullRect,
 }
 
 impl GridMethod {
@@ -190,6 +201,46 @@ impl PointSet {
         tree.nearest_neighbor([x, y]).map(|e| e.data)
     }
 
+    /// Infer a regular grid geometry from point coordinates. The returned
+    /// geometry spans the occupied lattice extents; use
+    /// [`infer_geometry_with_edge`](Self::infer_geometry_with_edge) when the
+    /// caller also needs the modelling edge polygon.
+    pub fn infer_geometry(&self, tolerance: f64) -> Result<GridGeometry> {
+        self.infer_geometry_with_edge(tolerance, GeometryEdge::Occupied)
+            .map(|(geom, _edge)| geom)
+    }
+
+    /// Infer a regular grid geometry and an edge polygon. This is intentionally
+    /// strict: genuinely scattered points, ambiguous axes, duplicate lattice
+    /// nodes, or coordinates that miss the inferred lattice by more than
+    /// `tolerance` return `GeoError::GeometryInference`.
+    pub fn infer_geometry_with_edge(
+        &self,
+        tolerance: f64,
+        edge: GeometryEdge,
+    ) -> Result<(GridGeometry, PolygonSet)> {
+        let geom = infer_grid_geometry_from_coords(&self.coords, tolerance)?;
+        let edge_polygon = match edge {
+            GeometryEdge::Occupied | GeometryEdge::FullRect => {
+                PolygonSet::from_grid_geometry(&geom)
+            }
+            GeometryEdge::ConvexHull => {
+                let pts = self
+                    .coords
+                    .iter()
+                    .filter(|c| c[0].is_finite() && c[1].is_finite())
+                    .map(|c| [c[0], c[1]])
+                    .collect();
+                PolygonSet::convex_hull_xy(pts).ok_or_else(|| {
+                    GeoError::GeometryInference(
+                        "convex hull edge requires at least three non-collinear points".into(),
+                    )
+                })?
+            }
+        };
+        Ok((geom, edge_polygon))
+    }
+
     /// Grid the points' Z values onto `geom` using `method`, returning a new
     /// `Surface`. See `dev-docs/designs/gridding-method.md`.
     pub fn to_surface(&self, geom: GridGeometry, method: GridMethod) -> Result<Surface> {
@@ -221,6 +272,197 @@ impl PointSet {
             .map(|(i, c)| GeomWithData::new([c[0], c[1]], i))
             .collect();
         RTree::bulk_load(entries)
+    }
+}
+
+fn infer_grid_geometry_from_coords(coords: &[[f64; 3]], tolerance: f64) -> Result<GridGeometry> {
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        return Err(GeoError::GeometryInference(
+            "tolerance must be a finite positive number".into(),
+        ));
+    }
+
+    let pts: Vec<[f64; 2]> = coords
+        .iter()
+        .filter(|c| c[0].is_finite() && c[1].is_finite())
+        .map(|c| [c[0], c[1]])
+        .collect();
+    if pts.len() < 4 {
+        return Err(GeoError::GeometryInference(
+            "at least four finite points are required".into(),
+        ));
+    }
+
+    let vectors = neighbour_vectors(&pts, tolerance);
+    if vectors.len() < 2 {
+        return Err(GeoError::GeometryInference(
+            "not enough neighbouring points to detect grid axes".into(),
+        ));
+    }
+
+    let (e1, e2, xinc, yinc) = infer_axes_and_spacing(&vectors, tolerance)?;
+    let anchor = pts[0];
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
+    for p in &pts {
+        let dx = p[0] - anchor[0];
+        let dy = p[1] - anchor[1];
+        uv.push((dx * e1[0] + dy * e1[1], dx * e2[0] + dy * e2[1]));
+    }
+
+    let min_u = uv.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let min_v = uv.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let mut ij: Vec<(isize, isize)> = Vec::with_capacity(uv.len());
+    let mut max_i = 0isize;
+    let mut max_j = 0isize;
+    let mut max_residual = 0.0_f64;
+
+    for (u, v) in uv {
+        let fi = (u - min_u) / xinc;
+        let fj = (v - min_v) / yinc;
+        let i = fi.round() as isize;
+        let j = fj.round() as isize;
+        if i < 0 || j < 0 {
+            return Err(GeoError::GeometryInference(
+                "inferred negative lattice index; grid origin is ambiguous".into(),
+            ));
+        }
+        let du = (fi - i as f64).abs() * xinc;
+        let dv = (fj - j as f64).abs() * yinc;
+        let residual = du.hypot(dv);
+        max_residual = max_residual.max(residual);
+        if residual > tolerance {
+            return Err(GeoError::GeometryInference(format!(
+                "point misses inferred lattice by {residual:.6}, above tolerance {tolerance:.6}"
+            )));
+        }
+        max_i = max_i.max(i);
+        max_j = max_j.max(j);
+        ij.push((i, j));
+    }
+
+    ij.sort_unstable();
+    if ij.windows(2).any(|w| w[0] == w[1]) {
+        return Err(GeoError::GeometryInference(
+            "multiple points map to the same inferred grid node".into(),
+        ));
+    }
+    if max_i < 1 || max_j < 1 {
+        return Err(GeoError::GeometryInference(
+            "detected points do not span a two-dimensional grid".into(),
+        ));
+    }
+
+    let xori = anchor[0] + min_u * e1[0] + min_v * e2[0];
+    let yori = anchor[1] + min_u * e1[1] + min_v * e2[1];
+    let rotation_deg = e1[1].atan2(e1[0]).to_degrees();
+
+    let geom = GridGeometry {
+        xori,
+        yori,
+        xinc,
+        yinc,
+        ncol: (max_i + 1) as usize,
+        nrow: (max_j + 1) as usize,
+        rotation_deg,
+        yflip: false,
+    };
+
+    if max_residual > tolerance {
+        return Err(GeoError::GeometryInference(format!(
+            "maximum lattice residual {max_residual:.6} exceeds tolerance {tolerance:.6}"
+        )));
+    }
+    Ok(geom)
+}
+
+fn neighbour_vectors(pts: &[[f64; 2]], tolerance: f64) -> Vec<[f64; 2]> {
+    let entries: Vec<AerialEntry> = pts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| GeomWithData::new(*p, i))
+        .collect();
+    let tree = RTree::bulk_load(entries);
+    let stride = (pts.len() / 2000).max(1);
+    let mut vectors = Vec::new();
+
+    for (idx, p) in pts.iter().enumerate().step_by(stride) {
+        for neighbour in tree.nearest_neighbor_iter(*p).take(13) {
+            if neighbour.data == idx {
+                continue;
+            }
+            let q = pts[neighbour.data];
+            let dx = q[0] - p[0];
+            let dy = q[1] - p[1];
+            if dx.hypot(dy) > tolerance {
+                vectors.push([dx, dy]);
+            }
+        }
+    }
+    vectors
+}
+
+fn infer_axes_and_spacing(
+    vectors: &[[f64; 2]],
+    tolerance: f64,
+) -> Result<([f64; 2], [f64; 2], f64, f64)> {
+    let mut by_len: Vec<[f64; 2]> = vectors.to_vec();
+    by_len.sort_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])));
+
+    let first = *by_len
+        .first()
+        .ok_or_else(|| GeoError::GeometryInference("no neighbour vectors found".into()))?;
+    let mut e1 = unit(first)?;
+    if e1[0] < 0.0 || (e1[0].abs() <= f64::EPSILON && e1[1] < 0.0) {
+        e1 = [-e1[0], -e1[1]];
+    }
+    let e2 = [-e1[1], e1[0]];
+
+    let xinc = spacing_along(vectors, e1, tolerance)?;
+    let yinc = spacing_along(vectors, e2, tolerance)?;
+    Ok((e1, e2, xinc, yinc))
+}
+
+fn unit(v: [f64; 2]) -> Result<[f64; 2]> {
+    let d = v[0].hypot(v[1]);
+    if d == 0.0 || !d.is_finite() {
+        return Err(GeoError::GeometryInference(
+            "zero-length vector while detecting grid axes".into(),
+        ));
+    }
+    Ok([v[0] / d, v[1] / d])
+}
+
+fn spacing_along(vectors: &[[f64; 2]], axis: [f64; 2], tolerance: f64) -> Result<f64> {
+    let mut projected: Vec<f64> = vectors
+        .iter()
+        .filter_map(|v| {
+            let along = (v[0] * axis[0] + v[1] * axis[1]).abs();
+            let across = (v[0] * -axis[1] + v[1] * axis[0]).abs();
+            (along > tolerance && across <= tolerance).then_some(along)
+        })
+        .collect();
+    projected.sort_by(|a, b| a.total_cmp(b));
+    let shortest = projected.first().copied().ok_or_else(|| {
+        GeoError::GeometryInference("could not detect regular spacing on both grid axes".into())
+    })?;
+    let near_step: Vec<f64> = projected
+        .into_iter()
+        .filter(|v| *v <= shortest * 1.5 + tolerance)
+        .collect();
+    median(&near_step).ok_or_else(|| {
+        GeoError::GeometryInference("could not detect regular spacing on both grid axes".into())
+    })
+}
+
+fn median(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        Some((values[mid - 1] + values[mid]) * 0.5)
+    } else {
+        Some(values[mid])
     }
 }
 
@@ -321,6 +563,55 @@ mod tests {
         let p = PointSet::from_parts(Vec::new(), IndexMap::new());
         assert!(p.is_empty());
         assert!(p.nearest(0.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn infer_geometry_recovers_rotated_lattice() {
+        let source = GridGeometry {
+            xori: 456_123.5,
+            yori: 6_712_345.25,
+            xinc: 37.0,
+            yinc: 83.0,
+            ncol: 5,
+            nrow: 4,
+            rotation_deg: 27.5,
+            yflip: false,
+        };
+        let mut coords = Vec::new();
+        for j in 0..source.nrow {
+            for i in 0..source.ncol {
+                let (x, y) = source.node_xy(i, j);
+                coords.push([x, y, 1000.0 + i as f64 + j as f64]);
+            }
+        }
+
+        let p = PointSet::from_coords(coords);
+        let (geom, edge) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::FullRect)
+            .unwrap();
+        approx::assert_relative_eq!(geom.xori, source.xori, epsilon = 1e-6);
+        approx::assert_relative_eq!(geom.yori, source.yori, epsilon = 1e-6);
+        approx::assert_relative_eq!(geom.xinc, source.xinc, epsilon = 1e-9);
+        approx::assert_relative_eq!(geom.yinc, source.yinc, epsilon = 1e-9);
+        assert_eq!(geom.ncol, source.ncol);
+        assert_eq!(geom.nrow, source.nrow);
+        approx::assert_relative_eq!(geom.rotation_deg, source.rotation_deg, epsilon = 1e-9);
+        approx::assert_relative_eq!(edge.area(), (4.0 * 37.0) * (3.0 * 83.0), epsilon = 1e-6);
+    }
+
+    #[test]
+    fn infer_geometry_errors_for_scattered_points() {
+        let p = PointSet::from_coords(vec![
+            [0.0, 0.0, 1.0],
+            [11.0, 0.2, 2.0],
+            [3.0, 8.7, 3.0],
+            [19.0, 4.1, 4.0],
+            [7.0, 17.3, 5.0],
+        ]);
+        assert!(matches!(
+            p.infer_geometry(1e-3),
+            Err(GeoError::GeometryInference(_))
+        ));
     }
 
     fn grid5() -> crate::foundation::GridGeometry {

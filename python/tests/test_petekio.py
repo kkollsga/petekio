@@ -38,6 +38,13 @@ def test_surface_load_and_geometry():
     assert math.isfinite(b.xmin) and math.isfinite(b.xmax)
 
 
+def test_surface_edge_matches_geometry_edge():
+    g = petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 3, 3)
+    s = petekio.Surface.constant(g, 5.0)
+    assert math.isclose(s.edge.area(), 400.0, abs_tol=1e-9)
+    assert math.isclose(s.geometry.edge.area(), s.edge.area(), abs_tol=1e-9)
+
+
 def test_surface_sample_and_stats():
     s = petekio.Surface.load_irap_classic(IRAP)
     st = s.stats()
@@ -192,6 +199,42 @@ def test_pointset_to_surface():
     assert surf2.stats().count > 0
     with pytest.raises(TypeError):
         p.to_surface(g, "bogus")
+
+
+def test_pointset_infer_geometry_and_edge_options():
+    source = petekio.GridGeometry(456123.5, 6712345.25, 37.0, 83.0, 5, 4, 27.5)
+    x, y, z = [], [], []
+    for j in range(source.nrow):
+        for i in range(source.ncol):
+            xi, yi = source.node_xy(i, j)
+            x.append(xi)
+            y.append(yi)
+            z.append(1000.0 + i + j)
+
+    p = petekio.PointSet.from_xyz(x, y, z)
+    geom = p.infer_geometry(tolerance=1e-6, edge="full_rect")
+    assert math.isclose(geom.xori, source.xori, abs_tol=1e-6)
+    assert math.isclose(geom.yori, source.yori, abs_tol=1e-6)
+    assert math.isclose(geom.xinc, source.xinc, abs_tol=1e-9)
+    assert math.isclose(geom.yinc, source.yinc, abs_tol=1e-9)
+    assert geom.ncol == source.ncol
+    assert geom.nrow == source.nrow
+    assert math.isclose(geom.rotation_deg, source.rotation_deg, abs_tol=1e-9)
+    assert math.isclose(geom.edge.area(), (4 * 37.0) * (3 * 83.0), abs_tol=1e-6)
+
+    hull_geom = p.infer_geometry(tolerance=1e-6, edge="convex_hull")
+    assert math.isclose(hull_geom.edge.area(), geom.edge.area(), abs_tol=1e-6)
+    assert petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 3, 3).edge.area() == 400.0
+
+
+def test_pointset_infer_geometry_rejects_scattered_points():
+    p = petekio.PointSet.from_xyz(
+        [0.0, 11.0, 3.0, 19.0, 7.0],
+        [0.0, 0.2, 8.7, 4.1, 17.3],
+        [1.0, 2.0, 3.0, 4.0, 5.0],
+    )
+    with pytest.raises(ValueError, match="geometry inference failed"):
+        p.infer_geometry()
 
 
 def test_polygonset_geojson():

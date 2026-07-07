@@ -70,7 +70,7 @@ impl GeoData {
 
         let summary = self.summary(&acc);
         let spatial = SpatialInputs {
-            boundary: self.boundary_polygon(),
+            boundary: self.edge_polygon(),
             horizons: self.horizons(),
             well_curves,
         };
@@ -176,7 +176,7 @@ impl GeoData {
     /// Reservoir area as an [`Uncertain`] in **m²**, from the boundary polygon's
     /// area (project unit² → m²). `NaN` deterministic when no boundary exists.
     fn area_m2(&self) -> Uncertain {
-        match self.boundary_polygon() {
+        match self.edge_polygon() {
             Some(poly) => Uncertain {
                 value: self.unit.area_to_m2(poly.area()),
                 distribution: crate::foundation::Distribution::Deterministic,
@@ -199,10 +199,10 @@ impl GeoData {
 
     /// The boundary outline: the first polygon set if any, else the first
     /// surface's convex outline.
-    fn boundary_polygon(&self) -> Option<crate::core::PolygonSet> {
+    fn edge_polygon(&self) -> Option<crate::core::PolygonSet> {
         if let Some((_, poly)) = self.polygons_named().next() {
             return Some(poly.clone());
         }
-        self.surfaces().next().and_then(|s| s.boundary_polygon())
+        self.surfaces().next().and_then(|s| s.edge())
     }
 }

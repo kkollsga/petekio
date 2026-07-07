@@ -114,9 +114,9 @@ column.
 
 | Domain | What you get |
 | --- | --- |
-| **Surfaces** | IRAP-classic load, sample/resample (bilinear), arithmetic, stats, `area_below` volumetrics, gridding from scattered points (minimum-curvature) |
+| **Surfaces** | IRAP-classic load, sample/resample (bilinear), edge polygons, arithmetic, stats, `area_below` volumetrics, gridding from scattered points (minimum-curvature) |
 | **Wells** | Positioned `.wellpath` trajectories (MD preserved; minimum-curvature interpolation), multi-bore (sidetracks), LAS logs with mnemonic aliasing, Petrel well-tops, per-zone stats, field-wide lithostratigraphic ordering |
-| **Points / polygons** | IRAP / GeoJSON / CSV load, clip, point-to-surface gridding |
+| **Points / polygons** | IRAP / GeoJSON / CSV load, strict regular-grid geometry inference, clip, point-to-surface gridding |
 | **Project** | `GeoData` substrate — load once, broadcast across the collection; views are read-only filtered subsets |
 
 ## Built in gates

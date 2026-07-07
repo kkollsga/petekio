@@ -1,7 +1,8 @@
 //! `GridGeometry` + `BBox` — the rotatable lattice and an axis-aligned box.
 //! Mirrors `petekio::{GridGeometry, BBox}`.
 
-use petekio::{BBox as RsBBox, GridGeometry as RsGeom};
+use crate::points::PolygonSet;
+use petekio::{BBox as RsBBox, GridGeometry as RsGeom, PolygonSet as RsPolygonSet};
 use pyo3::prelude::*;
 
 /// An axis-aligned 2-D bounding box (read-only).
@@ -48,11 +49,15 @@ impl BBox {
 #[pyclass(name = "GridGeometry")]
 pub struct GridGeometry {
     pub(crate) inner: RsGeom,
+    edge: Option<RsPolygonSet>,
 }
 
 impl GridGeometry {
-    pub(crate) fn new(inner: RsGeom) -> GridGeometry {
-        GridGeometry { inner }
+    pub(crate) fn with_edge(inner: RsGeom, edge: RsPolygonSet) -> GridGeometry {
+        GridGeometry {
+            inner,
+            edge: Some(edge),
+        }
     }
 }
 
@@ -82,6 +87,7 @@ impl GridGeometry {
                 rotation_deg,
                 yflip,
             },
+            edge: None,
         }
     }
 
@@ -132,6 +138,18 @@ impl GridGeometry {
     /// Axis-aligned bounding box of all nodes.
     fn bbox(&self) -> BBox {
         BBox::new(self.inner.bbox())
+    }
+
+    /// Edge polygon associated with the geometry. Inferred geometries may carry a
+    /// point-derived edge (`"convex_hull"`); plain geometries derive the rectangular
+    /// lattice footprint.
+    #[getter]
+    fn edge(&self) -> PolygonSet {
+        let edge = self
+            .edge
+            .clone()
+            .unwrap_or_else(|| RsPolygonSet::from_grid_geometry(&self.inner));
+        PolygonSet::owned(edge)
     }
 
     fn __repr__(&self) -> String {

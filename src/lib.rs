@@ -31,8 +31,8 @@ pub use analysis::{
     SummaryInputs, WellCurveInput,
 };
 pub use core::{
-    FluidContact, GridMethod, Interval, Log, LogKind, LogView, PointSet, PolygonSet, Sidetrack,
-    Station, Surface, Top, Trajectory, TrajectoryInput, Well,
+    FluidContact, GeometryEdge, GridMethod, Interval, Log, LogKind, LogView, PointSet, PolygonSet,
+    Sidetrack, Station, Surface, Top, Trajectory, TrajectoryInput, Well,
 };
 pub use foundation::{
     BBox, Distribution, GeoError, GridGeometry, Point3, Provenance, Result, Stats, Uncertain, Unit,

@@ -11,7 +11,7 @@ use crate::geometry::{BBox, GridGeometry};
 use crate::stats::Stats;
 use crate::surface::Surface;
 use crate::{parse_grid_method, to_pyerr};
-use petekio::{PointSet as RsPointSet, PolygonSet as RsPolygonSet};
+use petekio::{GeometryEdge, PointSet as RsPointSet, PolygonSet as RsPolygonSet};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -136,6 +136,22 @@ impl PointSet {
         self.with(py, |p| Ok(p.nearest(x, y)))
     }
 
+    /// Infer a regular grid geometry from the points. Raises `ValueError` when
+    /// the point cloud is not grid-like within `tolerance`.
+    ///
+    /// `edge` controls `geometry.edge`: `"occupied"` (default), `"convex_hull"`,
+    /// or `"full_rect"`.
+    #[pyo3(signature = (tolerance = 1e-3, edge = "occupied"))]
+    fn infer_geometry(&self, py: Python<'_>, tolerance: f64, edge: &str) -> PyResult<GridGeometry> {
+        let edge = parse_geometry_edge(edge)?;
+        self.with(py, |p| {
+            let (geom, edge_polygon) = p
+                .infer_geometry_with_edge(tolerance, edge)
+                .map_err(to_pyerr)?;
+            Ok(GridGeometry::with_edge(geom, edge_polygon))
+        })
+    }
+
     /// Grid the points' Z values onto `geom` using `method` (`"nearest"`,
     /// `"idw"`, or `"min_curvature"`), returning a new `Surface`.
     #[pyo3(signature = (geom, method = "idw"))]
@@ -152,6 +168,22 @@ impl PointSet {
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         self.with(py, |p| Ok(format!("PointSet(len={})", p.len())))
+    }
+}
+
+fn parse_geometry_edge(s: &str) -> PyResult<GeometryEdge> {
+    match s
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_")
+        .as_str()
+    {
+        "occupied" => Ok(GeometryEdge::Occupied),
+        "convex_hull" | "convexhull" | "hull" => Ok(GeometryEdge::ConvexHull),
+        "full_rect" | "fullrect" | "rect" | "rectangle" => Ok(GeometryEdge::FullRect),
+        other => Err(PyValueError::new_err(format!(
+            "unknown geometry edge '{other}' (expected 'occupied', 'convex_hull', or 'full_rect')"
+        ))),
     }
 }
 

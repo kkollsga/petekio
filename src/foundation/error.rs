@@ -25,6 +25,10 @@ pub enum GeoError {
     #[error("geometry mismatch: {0}")]
     GeometryMismatch(String),
 
+    /// A point cloud could not be interpreted as a regular grid geometry.
+    #[error("geometry inference failed: {0}")]
+    GeometryInference(String),
+
     /// A named item (surface, well, attribute, …) was not found.
     #[error("not found: {0}")]
     NotFound(String),

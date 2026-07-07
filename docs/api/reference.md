@@ -68,7 +68,7 @@ and percentiles (`.p10`, `.p50`, `.p90`).
 
 | Member | Description |
 | --- | --- |
-| `.geometry` / `.bbox` | `GridGeometry`; bounding box. |
+| `.geometry` / `.bbox` / `.edge` | `GridGeometry`; bounding box; convex edge polygon over defined nodes. `surface.geometry.edge` matches `surface.edge`. |
 | `.stats` | NaN-skipping statistics. |
 | `.sample(x, y)` | Bilinear sample at a world coordinate. |
 | `.resample(grid_geom)` | Bilinear onto another geometry → new `Surface`. |
@@ -79,7 +79,8 @@ and percentiles (`.p10`, `.p50`, `.p90`).
 
 | Member | Description |
 | --- | --- |
-| `PointSet.bbox` / `.to_surface(grid_geom)` / `.clip(polygon)` | Bounds; grid (minimum-curvature); clip to a polygon. |
+| `PointSet.bbox` / `.infer_geometry(...)` / `.to_surface(grid_geom)` | Bounds; strict regular-grid geometry inference; grid points onto an explicit geometry. |
+| `GridGeometry.edge` | Edge polygon carried by inferred geometry, or a rectangular footprint for plain geometries. |
 | `PolygonSet.rings` | The constituent rings. |
 
 ## Trajectory (standalone)

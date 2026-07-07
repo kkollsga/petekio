@@ -57,7 +57,7 @@ impl GridGeometry {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum GeoError { /* Io, Parse, Format, GeometryMismatch, NotFound, OutOfRange, Unsupported, Unit, ... */ }
+pub enum GeoError { /* Io, Parse, Format, GeometryMismatch, GeometryInference, NotFound, OutOfRange, Unsupported, Unit, ... */ }
 ```
 
 ## Stats — the universal aggregation result
@@ -129,7 +129,7 @@ impl Surface {
 
     // filtering + outline
     pub fn smooth(&self, radius: usize) -> Surface;          // NaN-aware moving average; preserves the defined mask
-    pub fn boundary_polygon(&self) -> Option<PolygonSet>;    // convex hull of defined nodes; None if <3
+    pub fn edge(&self) -> Option<PolygonSet>;                // convex hull of defined nodes; None if <3
 
     // cube extraction (Phase 3) → a surface attribute
     pub fn slice_cube(&self, cube: &Cube, sampling: Sampling) -> Surface;
@@ -251,6 +251,7 @@ impl<'a> LogView<'a> {
 
 ```rust
 pub struct PointSet { /* N×3 coords + named attribute columns */ }
+pub enum GeometryEdge { Occupied, ConvexHull, FullRect }
 impl PointSet {
     pub fn from_coords(coords: Vec<[f64; 3]>) -> PointSet;    // in-memory, no file
     pub fn z_stats(&self) -> Stats;                          // stats over the z coordinate
@@ -265,6 +266,8 @@ impl PointSet {
     pub fn stats(&self, attr: &str) -> Option<Stats>;
     pub fn bbox(&self) -> BBox;
     pub fn nearest(&self, x: f64, y: f64) -> Option<usize>;
+    pub fn infer_geometry(&self, tolerance: f64) -> Result<GridGeometry>;
+    pub fn infer_geometry_with_edge(&self, tolerance: f64, edge: GeometryEdge) -> Result<(GridGeometry, PolygonSet)>;
     pub fn to_surface(&self, geom: GridGeometry, method: GridMethod) -> Result<Surface>;
     pub fn regrid_min_curvature(&self, prior: &Surface) -> Result<Surface>;  // warm-started incremental re-grid on prior's lattice
 }
@@ -613,8 +616,11 @@ petekio.ViewSettings(serve=True, save=None)                  # HOW view() delive
 ```
 
 Python rules: `Stats` fields exposed as read-only attributes; operators (`+ - * /`)
-on `Surface`; `surface.attr["name"]` indexed access; `well.<top>.<log>` resolves
-via `__getattr__` (top interval → log → `Stats`). Bindings are thin: every method
-delegates to the Rust API above. The spec value-objects (`NetSettings`,
-`IngestSpec`, `ViewSpec`, `ViewSettings`) follow the family house spec pattern
-(declarative WHAT / HOW, applied at explicit moments; spec XOR legacy kwargs).
+on `Surface`; `surface.attr["name"]` indexed access; `surface.edge` and
+`surface.geometry.edge` expose matching `PolygonSet` outlines; `PointSet`
+exposes `infer_geometry(tolerance=1e-3, edge="occupied"|"convex_hull"|"full_rect")`;
+`well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
+Bindings are thin: every method delegates to the Rust API above. The spec
+value-objects (`NetSettings`, `IngestSpec`, `ViewSpec`, `ViewSettings`) follow
+the family house spec pattern (declarative WHAT / HOW, applied at explicit
+moments; spec XOR legacy kwargs).

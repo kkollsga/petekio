@@ -4,7 +4,7 @@
 //! and `core::surface`.
 
 use crate::core::surface::Surface;
-use crate::foundation::{BBox, Result};
+use crate::foundation::{BBox, GridGeometry, Result};
 use geo::prelude::*;
 use geo::{Coord, LineString, Point, Polygon};
 use ndarray::Array2;
@@ -34,6 +34,34 @@ impl PolygonSet {
             })
             .collect();
         PolygonSet { polys }
+    }
+
+    /// Build the rectangular footprint of a grid geometry from its corner nodes.
+    pub fn from_grid_geometry(geom: &GridGeometry) -> PolygonSet {
+        let ni = geom.ncol.saturating_sub(1);
+        let nj = geom.nrow.saturating_sub(1);
+        let corners = [
+            geom.node_xy(0, 0),
+            geom.node_xy(ni, 0),
+            geom.node_xy(ni, nj),
+            geom.node_xy(0, nj),
+        ];
+        let ring = corners
+            .into_iter()
+            .map(|(x, y)| [x, y, 0.0])
+            .collect::<Vec<_>>();
+        PolygonSet::from_rings(vec![ring])
+    }
+
+    /// Convex hull of XY points as a polygon set. Returns `None` for degenerate
+    /// inputs with fewer than three non-collinear points.
+    pub fn convex_hull_xy(points: Vec<[f64; 2]>) -> Option<PolygonSet> {
+        let hull = convex_hull(points);
+        if hull.len() < 3 {
+            return None;
+        }
+        let ring = hull.into_iter().map(|p| [p[0], p[1], 0.0]).collect();
+        Some(PolygonSet::from_rings(vec![ring]))
     }
 
     /// Load polygons from a GeoJSON file (`Polygon`/`MultiPolygon`/`LineString`
@@ -134,6 +162,38 @@ impl PolygonSet {
         }
         Surface::from_values_unchecked(geom.clone(), out)
     }
+}
+
+/// Andrew's monotone-chain convex hull over XY points; returns the hull vertices
+/// counter-clockwise (no repeated closing vertex). Degenerate (collinear) inputs
+/// may return fewer than three points.
+pub(crate) fn convex_hull(mut pts: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    pts.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    pts.dedup();
+    if pts.len() < 3 {
+        return pts;
+    }
+    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut lower: Vec<[f64; 2]> = Vec::new();
+    for &p in &pts {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+    let mut upper: Vec<[f64; 2]> = Vec::new();
+    for &p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
 }
 
 #[cfg(test)]

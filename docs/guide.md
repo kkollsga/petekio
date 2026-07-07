@@ -55,6 +55,8 @@ Operations return **new** surfaces — the type is immutable.
 ```python
 top = geo.surface("top_res")
 top.sample(cx, cy)              # NaN-aware bilinear point read (None outside the grid)
+top.edge                        # convex edge polygon over defined nodes
+top.geometry.edge               # same edge on the returned geometry object
 top.stats().mean                # count / mean / min / max / std / p10 / p50 / p90
 top.area_below(1990.0)          # Σ cell-area where value ≤ depth — the GRV-style query
 top.resample(target_geometry)   # bilinear onto another lattice
@@ -65,6 +67,17 @@ thick = petekio.Surface.thickness(top, base, clamp_zero=True)  # base − top, �
 Scattered `(x, y, z)` data grids into a surface via `PointSet.to_surface(geom,
 method)` with `"nearest"`, `"idw"`, or `"minimum_curvature"` (Briggs biharmonic,
 honouring the points as hard constraints).
+
+If a point cloud is really a regular grid export, `PointSet.infer_geometry(...)`
+can recover the lattice and attach an edge polygon:
+
+```python
+geom = pts.infer_geometry(tolerance=1e-3, edge="convex_hull")
+surf = pts.to_surface(geom, method="nearest")
+```
+
+Inference is deliberately strict and raises when points are scattered, duplicate
+onto the same lattice node, or do not fit the detected lattice within tolerance.
 
 ## Wells, logs and tops
 
@@ -180,9 +193,9 @@ The declarative, frozen load- and view-time specs — each is JSON-durable
 
 | Domain | What you get |
 | --- | --- |
-| **Surfaces** | IRAP-classic / CPS-3 load, sample & resample (bilinear), arithmetic, stats, `area_below` volumetrics, gridding from scattered points (minimum-curvature) |
+| **Surfaces** | IRAP-classic / CPS-3 load, sample & resample (bilinear), edge polygons, arithmetic, stats, `area_below` volumetrics, gridding from scattered points (minimum-curvature) |
 | **Wells** | Positioned `.wellpath` trajectories (MD preserved; minimum-curvature), multi-bore sidetracks, LAS logs with mnemonic aliasing, Petrel well-tops, per-zone stats, field-wide lithostratigraphic ordering, net cutoffs |
-| **Points / polygons** | IRAP / GeoJSON / CSV load, clip, point-to-surface gridding |
+| **Points / polygons** | IRAP / GeoJSON / CSV load, strict regular-grid geometry inference, clip, point-to-surface gridding |
 | **Project** | `GeoData` substrate — load once, broadcast across the collection; read-only filtered views; single-file `.pproj` persistence |
 
 ## Where to go next

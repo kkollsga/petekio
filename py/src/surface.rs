@@ -18,9 +18,10 @@
 
 use crate::geodata::GeoData;
 use crate::geometry::{BBox, GridGeometry};
+use crate::points::PolygonSet;
 use crate::stats::Stats;
 use crate::to_pyerr;
-use petekio::Surface as RsSurface;
+use petekio::{PolygonSet as RsPolygonSet, Surface as RsSurface};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -296,7 +297,15 @@ impl Surface {
     /// A copy of this surface's grid geometry.
     #[getter]
     fn geometry(&self, py: Python<'_>) -> PyResult<GridGeometry> {
-        self.with(py, |s| GridGeometry::new(s.geom.clone()))
+        self.with(py, |s| {
+            GridGeometry::with_edge(s.geom.clone(), surface_edge(s))
+        })
+    }
+
+    /// Edge polygon enclosing the surface's defined nodes.
+    #[getter]
+    fn edge(&self, py: Python<'_>) -> PyResult<PolygonSet> {
+        self.with(py, |s| PolygonSet::owned(surface_edge(s)))
     }
     #[getter]
     fn ncol(&self, py: Python<'_>) -> PyResult<usize> {
@@ -320,6 +329,12 @@ impl Surface {
             format!("Surface(ncol={}, nrow={})", s.geom.ncol, s.geom.nrow)
         })
     }
+}
+
+fn surface_edge(surface: &RsSurface) -> RsPolygonSet {
+    surface
+        .edge()
+        .unwrap_or_else(|| RsPolygonSet::from_rings(Vec::new()))
 }
 
 impl Surface {

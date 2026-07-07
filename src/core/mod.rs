@@ -15,7 +15,7 @@ pub mod trajectory; // well path: minimum-curvature normalization + interpolatio
 pub mod well; // Well → Sidetrack → Trajectory hierarchy
 
 pub use log::{Log, LogKind, LogView};
-pub use points::{GridMethod, PointSet};
+pub use points::{GeometryEdge, GridMethod, PointSet};
 pub use polygons::PolygonSet;
 pub use surface::Surface;
 pub use tops::{FluidContact, Interval, Top};

@@ -48,14 +48,14 @@ impl Surface {
         Surface::from_values_unchecked(self.geom.clone(), out)
     }
 
-    /// The boundary polygon enclosing the surface's defined region — the convex
-    /// hull (in world XY) of all non-`NaN` nodes. Returns `None` if fewer than
-    /// three defined nodes exist.
+    /// The edge polygon enclosing the surface's defined region — the convex hull
+    /// (in world XY) of all non-`NaN` nodes. Returns `None` if fewer than three
+    /// defined nodes exist.
     ///
     /// This is a **convex** outline (a drainage-boundary approximation); a
     /// concave hull is a future refinement. Backs `ModelInputs::boundary` when no
     /// explicit boundary polygon is supplied.
-    pub fn boundary_polygon(&self) -> Option<PolygonSet> {
+    pub fn edge(&self) -> Option<PolygonSet> {
         let (nc, nr) = (self.geom.ncol, self.geom.nrow);
         let v = self.values();
         let mut pts: Vec<[f64; 2]> = Vec::new();
@@ -70,45 +70,8 @@ impl Surface {
         if pts.len() < 3 {
             return None;
         }
-        let hull = convex_hull(pts);
-        if hull.len() < 3 {
-            return None;
-        }
-        let ring: Vec<[f64; 3]> = hull.iter().map(|p| [p[0], p[1], 0.0]).collect();
-        Some(PolygonSet::from_rings(vec![ring]))
+        PolygonSet::convex_hull_xy(pts)
     }
-}
-
-/// Andrew's monotone-chain convex hull over XY points; returns the hull vertices
-/// counter-clockwise (no repeated closing vertex). Degenerate (collinear) inputs
-/// may return fewer than three points.
-fn convex_hull(mut pts: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
-    pts.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
-    pts.dedup();
-    if pts.len() < 3 {
-        return pts;
-    }
-    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
-        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-    };
-    let mut lower: Vec<[f64; 2]> = Vec::new();
-    for &p in &pts {
-        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
-            lower.pop();
-        }
-        lower.push(p);
-    }
-    let mut upper: Vec<[f64; 2]> = Vec::new();
-    for &p in pts.iter().rev() {
-        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
-            upper.pop();
-        }
-        upper.push(p);
-    }
-    lower.pop();
-    upper.pop();
-    lower.extend(upper);
-    lower
 }
 
 #[cfg(test)]
@@ -160,19 +123,19 @@ mod tests {
     }
 
     #[test]
-    fn boundary_polygon_hull_area() {
+    fn edge_hull_area() {
         // 3×3 fully-defined grid, nodes at 0/10/20 → hull is the 20×20 square.
         let s = Surface::constant(geom(3, 10.0), 1.0);
-        let poly = s.boundary_polygon().unwrap();
+        let poly = s.edge().unwrap();
         assert_relative_eq!(poly.area(), 400.0, epsilon = 1e-9);
     }
 
     #[test]
-    fn boundary_polygon_none_when_too_few_defined() {
+    fn edge_none_when_too_few_defined() {
         let mut v = ndarray::Array2::from_elem((3, 3), f64::NAN);
         v[[0, 0]] = 1.0;
         v[[1, 1]] = 1.0; // only two defined nodes
         let s = Surface::new(geom(3, 10.0), v).unwrap();
-        assert!(s.boundary_polygon().is_none());
+        assert!(s.edge().is_none());
     }
 }

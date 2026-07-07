@@ -64,7 +64,13 @@ in your own code:
 ```python
 import petekio
 
-project = petekio.Project.load("Data", aliases={"por": ["PHIE", "PORO"]})
+project = petekio.Project.load(
+    "Data",
+    settings=petekio.LoadSettings(
+        crs="EPSG:32631",
+        aliases={"por": ["PHIE", "PORO"]},
+    ),
+)
 project.inventory()
 geo = project.geodata
 

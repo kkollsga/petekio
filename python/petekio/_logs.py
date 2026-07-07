@@ -15,7 +15,7 @@ _TESTS = {"is_finite", "is_null", "not_null"}
 
 
 class Logs:
-    """Project log namespace with lazy channel expression access."""
+    """Project wells log namespace with lazy channel expression access."""
 
     def __init__(self, project: Any) -> None:
         self._project = project
@@ -23,7 +23,15 @@ class Logs:
         self._aliases = _normalise_aliases(getattr(project, "aliases", None))
         self._canonical = self._canonical_index(self._actual.values())
 
-    def __getitem__(self, name: str) -> "LogChannel":
+    def __len__(self) -> int:
+        return len(self.names())
+
+    def __iter__(self):
+        return iter(self.names())
+
+    def __getitem__(self, name: int | slice | str) -> "LogChannel | str | list[str]":
+        if isinstance(name, (int, slice)):
+            return self.names()[name]
         return self.channel(name)
 
     def __getattr__(self, name: str) -> "LogChannel":
@@ -111,8 +119,17 @@ class Logs:
 
     as_dict = to_dict
 
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Logs):
+            return self.names() == other.names()
+        if isinstance(other, list):
+            return self.names() == other
+        return False
+
     def __repr__(self) -> str:
-        return f"Logs({self.names()!r})"
+        return repr(self.names())
+
+    __str__ = __repr__
 
     @staticmethod
     def _discover_actual_mnemonics(project: Any) -> dict[str, str]:

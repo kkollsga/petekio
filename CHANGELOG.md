@@ -6,6 +6,27 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-07
+
+### Added
+- Added `LoadSettings` and made `petekio.Project.load(..., settings=...)` the
+  canonical project-loading entry point.
+- Added list-like project inventories for `project.surfaces`, `project.wells`,
+  `project.wells.logs`, `project.wells.<well>.logs`, `project.tops`,
+  `project.points`, and `project.polygons`; loaded asset names now prefer simple
+  stems such as `Top reservoir` when unambiguous.
+- Added `project.tops["well tops"]` DataFrame access for loaded top sets.
+
+### Changed
+- Moved log inventory under `project.wells.logs` and per-well log collections,
+  aligning project structure with the suite API design.
+- Extended inline log expression tests around filtered calls such as
+  `logs.PHIE(logs.NetSand > 0.50)`.
+- Updated CI and release workflows to current action versions and the
+  Actions-owned release flow.
+- Aligned the internal Python binding crate's self-dependency floor with the
+  workspace release version.
+
 ## [0.3.2] - 2026-07-07
 
 ### Added

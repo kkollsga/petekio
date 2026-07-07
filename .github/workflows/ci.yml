@@ -14,11 +14,11 @@ jobs:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.1
       - run: cargo fmt --all -- --check
       # Scope clippy/test to the library crate; the PyO3 wheel crate is built +
       # validated by the maturin wheel job in release.yml (it needs a Python env).

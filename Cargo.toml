@@ -2,7 +2,7 @@
 members = ["py"]
 
 [workspace.package]
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -48,7 +48,7 @@ serde_json = "1"
 bincode = "1"
 # Shared numeric kernels + generic `.pproj` container. Resolved from crates.io
 # (the family is published; the dev-only [patch.crates-io] was removed at launch).
-petektools = "0.2.3"
+petektools = "0.2.4"
 
 [features]
 default = []

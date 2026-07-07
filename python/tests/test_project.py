@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import petekio
+import pytest
 
 
 def _write(path: Path, text: str) -> Path:
@@ -65,25 +66,89 @@ def test_project_load_raw_tree_inventory_and_accessors(tmp_path):
         "polygons": 1,
         "skipped": 1,
     }
-    assert inv["surfaces"] == ["Surfaces.Top reservoir"]
-    assert inv["points"] == ["Points.samples"]
-    assert inv["polygons"] == ["Polygons.ModelEdge"]
+    assert inv["surfaces"] == ["Top reservoir"]
+    assert inv["points"] == ["samples"]
+    assert inv["polygons"] == ["ModelEdge"]
     assert inv["wells"] == ["99/9-1"]
     assert inv["tops"] == ["WellTops"]
     assert inv["sidecars"] == ["Wells/crsmeta.xml"]
     assert inv["skipped"][0]["reason"] == "unsupported_format"
     assert all(item["path"] != "Wells/crsmeta.xml" for item in inv["skipped"])
 
-    assert project.surface("Surfaces.Top reservoir").stats().count == 4
-    assert project.surfaces["Surfaces.Top reservoir"].stats().count == 4
-    assert project.points["Points.samples"].stats("poro").count == 2
-    assert project.polygons["Polygons.ModelEdge"].contains(0.5, 0.5)
+    assert project.surfaces == ["Top reservoir"]
+    assert list(project.surfaces) == ["Top reservoir"]
+    assert project.surfaces[0] == "Top reservoir"
+    assert project.surface("Top reservoir").stats().count == 4
+    assert project.surfaces["Top reservoir"].stats().count == 4
+    assert project.points["samples"].stats("poro").count == 2
+    assert project.polygons["ModelEdge"].contains(0.5, 0.5)
+
+    assert project.wells == ["99/9-1"]
+    assert list(project.wells) == ["99/9-1"]
+    assert project.wells[0] == "99/9-1"
+    assert project.wells.logs == ["por"]
+    assert str(project.wells.logs) == "['por']"
+    assert list(project.wells.logs) == ["por"]
+    assert project.wells.logs[0] == "por"
+    assert project.wells["99/9-1"].logs == ["por"]
+    assert project.wells._99_9_1.logs == ["por"]
+    assert project.wells.logs.por.name == "por"
+
+    assert project.tops == ["WellTops"]
+    assert str(project.tops) == "['WellTops']"
+    pytest.importorskip("pandas")
+    tops = project.tops["well tops"]
+    assert list(tops["surface"]) == ["Top A", "Base A"]
+    assert list(tops["well"]) == ["99/9-1", "99/9-1"]
+    assert list(tops["md"]) == [105.0, 115.0]
+    assert project.tops["WellTops"].equals(tops)
 
     well = project.well("99/9-1")
     assert well is not None
     assert well.top("Top A") is not None
     assert well.log("por").stats().count == 3
     assert well.crs == "ED50"
+
+
+def test_project_load_accepts_petekio_load_settings(tmp_path):
+    root = tmp_path / "Data"
+    _write(root / "Wells" / "99_9-1_A_CompLogs.las", _las())
+
+    project = petekio.Project.load(
+        root,
+        settings=petekio.LoadSettings(
+            crs="EPSG:32631",
+            aliases={"por": ["PHIE_2025"]},
+            unit="m",
+        ),
+    )
+
+    inv = project.inventory()
+    assert project.crs == "EPSG:32631"
+    assert project.aliases == {"por": ["PHIE_2025"]}
+    assert project.settings == {"unit": "m"}
+    assert inv["crs"] == "EPSG:32631"
+    assert inv["aliases"] == {"por": ["PHIE_2025"]}
+    assert project.well("99/9-1").log("por").stats().count == 3
+
+
+def test_project_load_accepts_settings_mapping_aliases_and_crs(tmp_path):
+    root = tmp_path / "Data"
+    _write(root / "Wells" / "99_9-1_A_CompLogs.las", _las())
+
+    project = petekio.Project.load(
+        root,
+        settings={
+            "crs": "EPSG:32631",
+            "aliases": {"por": ["PHIE_2025"]},
+            "unit": "m",
+        },
+    )
+
+    assert project.crs == "EPSG:32631"
+    assert project.aliases == {"por": ["PHIE_2025"]}
+    assert project.settings == {"unit": "m"}
+    assert project.well("99/9-1").log("por").stats().count == 3
 
 
 def test_project_load_does_not_false_skip_tops_csv(tmp_path):
@@ -97,9 +162,21 @@ def test_project_load_does_not_false_skip_tops_csv(tmp_path):
     inv = project.inventory()
 
     assert inv["wells"] == ["15/9-A1"]
-    assert inv["points"] == ["Points.samples"]
+    assert inv["points"] == ["samples"]
     assert inv["skipped"] == []
     assert project.well("15/9-A1").top("Top A") is not None
+
+
+def test_project_load_uses_relative_names_for_duplicate_spatial_stems(tmp_path):
+    root = tmp_path / "Data"
+    _write(root / "Surfaces" / "Top reservoir.irap", _irap())
+    _write(root / "Alternatives" / "Top reservoir.irap", _irap())
+
+    project = petekio.Project.load(root)
+
+    assert project.surfaces == ["Alternatives.Top reservoir", "Surfaces.Top reservoir"]
+    assert project.surface("Alternatives.Top reservoir").stats().count == 4
+    assert project.surface("Surfaces.Top reservoir").stats().count == 4
 
 
 def test_project_load_pproj_delegates_to_geodata_open(tmp_path):

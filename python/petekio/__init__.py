@@ -37,7 +37,7 @@ from ._viewer import (
     build_well_log_bundle,
     encode_lane,
 )
-from ._project import Project
+from ._project import LoadSettings, Project
 from ._logs import Logs, LogChannel, LogPredicate
 
 # The pure-Python view spec value-objects (WHAT / HOW for well.view()). The
@@ -59,6 +59,7 @@ __all__ = [
     "LogSession",
     "LogView",
     "Logs",
+    "LoadSettings",
     "NetSettings",
     "PointSet",
     "PolygonSet",

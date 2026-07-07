@@ -8,8 +8,10 @@ and user-facing inventory, while all loaded subsurface data remains in the Rust
 from __future__ import annotations
 
 import json
+import re
+import shlex
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 from pathlib import Path
 from typing import Any
@@ -28,8 +30,29 @@ class _FileRecord:
     kind: FormatKind
 
 
+@dataclass(frozen=True)
+class LoadSettings:
+    """Project loading settings owned by petekIO.
+
+    ``Project.load(..., settings=LoadSettings(...))`` is the notebook-facing
+    form. The explicit ``aliases=``, ``crs=``, and mapping-style ``settings=``
+    arguments remain supported for compatibility with earlier examples.
+    """
+
+    crs: str | None = None
+    aliases: Mapping[str, Any] | None = None
+    unit: str = "m"
+    options: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_mapping(self) -> dict[str, Any]:
+        out = dict(self.options)
+        if self.unit:
+            out["unit"] = self.unit
+        return out
+
+
 class _NamedCollection:
-    """Small mapping-like view over Project names resolved through GeoData."""
+    """List-like project names with optional lookup by name."""
 
     def __init__(self, names: Iterable[str], getter):
         self._names = list(names)
@@ -38,23 +61,32 @@ class _NamedCollection:
     def __len__(self) -> int:
         return len(self._names)
 
-    def __iter__(self) -> Iterator[Any]:
-        return iter(self.values())
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._names)
 
     def __contains__(self, name: object) -> bool:
-        return name in self._names
+        return isinstance(name, str) and _resolve_collection_name(name, self._names) is not None
 
-    def __getitem__(self, name: str) -> Any:
-        value = self._getter(name)
-        if value is None:
+    def __getitem__(self, name: int | slice | str) -> Any:
+        if isinstance(name, (int, slice)):
+            return self._names[name]
+        resolved = _resolve_collection_name(name, self._names)
+        if resolved is None:
             raise KeyError(name)
+        value = self._getter(resolved)
+        if value is None:
+            raise KeyError(resolved)
         return value
 
     def __call__(self, name: str) -> Any:
-        return self._getter(name)
+        resolved = _resolve_collection_name(name, self._names)
+        return None if resolved is None else self._getter(resolved)
 
     def get(self, name: str, default: Any = None) -> Any:
-        value = self._getter(name)
+        resolved = _resolve_collection_name(name, self._names)
+        if resolved is None:
+            return default
+        value = self._getter(resolved)
         return default if value is None else value
 
     def names(self) -> list[str]:
@@ -66,8 +98,155 @@ class _NamedCollection:
     def items(self) -> list[tuple[str, Any]]:
         return [(name, self._getter(name)) for name in self._names]
 
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _NamedCollection):
+            return self._names == other._names
+        if isinstance(other, list):
+            return self._names == other
+        return False
+
     def __repr__(self) -> str:
-        return f"NamedCollection({self._names!r})"
+        return repr(self._names)
+
+    __str__ = __repr__
+
+
+class _TopsCollection:
+    """List-like top-set names with DataFrame lookup by set name."""
+
+    def __init__(self, names: Iterable[str], rows_by_name: Mapping[str, list[dict[str, Any]]]):
+        self._names = list(names)
+        self._rows_by_name = {str(name): list(rows) for name, rows in rows_by_name.items()}
+
+    def __len__(self) -> int:
+        return len(self._names)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._names)
+
+    def __contains__(self, name: object) -> bool:
+        return isinstance(name, str) and _resolve_collection_name(name, self._names) is not None
+
+    def __getitem__(self, name: int | slice | str) -> Any:
+        if isinstance(name, (int, slice)):
+            return self._names[name]
+        resolved = _resolve_collection_name(name, self._names)
+        if resolved is None:
+            raise KeyError(name)
+        return _dataframe(self._rows_by_name.get(resolved, []))
+
+    def get(self, name: str, default: Any = None) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            return default
+
+    def names(self) -> list[str]:
+        return list(self._names)
+
+    def items(self) -> list[tuple[str, Any]]:
+        return [(name, self[name]) for name in self._names]
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _TopsCollection):
+            return self._names == other._names
+        if isinstance(other, list):
+            return self._names == other
+        return False
+
+    def __repr__(self) -> str:
+        return repr(self._names)
+
+    __str__ = __repr__
+
+
+class _ProjectWellView:
+    """Project well wrapper that exposes notebook-friendly log discovery."""
+
+    def __init__(self, well_id: str, well: Any) -> None:
+        self.id = well_id
+        self._well = well
+
+    @property
+    def logs(self) -> list[str]:
+        return _well_log_names(self._well)
+
+    @property
+    def raw(self) -> Any:
+        return self._well
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._well, name)
+
+    def __repr__(self) -> str:
+        return f"Well({self.id!r})"
+
+
+class _ProjectWellsView:
+    """List-like project wells view with project-wide log discovery."""
+
+    def __init__(self, project: "Project") -> None:
+        self._project = project
+        self._view = project.geodata.wells
+        self._names = list(project._inventory.get("wells", []))
+
+    @property
+    def logs(self) -> Any:
+        """Project-wide list-like lazy log-expression namespace."""
+
+        from ._logs import Logs
+
+        return Logs(self._project)
+
+    def __len__(self) -> int:
+        return len(self._names)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._names)
+
+    def __contains__(self, well_id: object) -> bool:
+        return well_id in self._names
+
+    def __getitem__(self, well_id: int | slice | str) -> Any:
+        if isinstance(well_id, (int, slice)):
+            return self._names[well_id]
+        well = self._project.well(well_id)
+        if well is None:
+            raise KeyError(well_id)
+        return _ProjectWellView(well_id, well)
+
+    def names(self) -> list[str]:
+        return list(self._names)
+
+    def values(self) -> list[_ProjectWellView]:
+        return [self[name] for name in self._names]
+
+    def items(self) -> list[tuple[str, _ProjectWellView]]:
+        return [(name, self[name]) for name in self._names]
+
+    def get(self, well_id: str, default: Any = None) -> Any:
+        try:
+            return self[well_id]
+        except KeyError:
+            return default
+
+    def __getattr__(self, name: str) -> Any:
+        well_id = _well_attr_lookup(name, self._names)
+        if well_id is not None:
+            return self[well_id]
+        return getattr(self._view, name)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _ProjectWellsView):
+            return self._names == other._names
+        if isinstance(other, list):
+            return self._names == other
+        return False
+
+    def __repr__(self) -> str:
+        return repr(self._names)
+
+    __str__ = __repr__
 
 
 class Project:
@@ -82,6 +261,7 @@ class Project:
         crs: str | None = None,
         settings: Mapping[str, Any] | None = None,
         inventory: Mapping[str, Any] | None = None,
+        tops_tables: Mapping[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self._geo = geo
         self.source = None if source is None else str(source)
@@ -89,6 +269,10 @@ class Project:
         self.crs = crs
         self.settings = dict(settings or {})
         self._inventory = dict(inventory or self._empty_inventory(self.source))
+        self._tops_tables = {
+            str(name): [dict(row) for row in rows]
+            for name, rows in (tops_tables or {}).items()
+        }
         self._log_resolution_cache: dict[str, list[dict[str, Any]]] = {}
 
     @classmethod
@@ -97,12 +281,16 @@ class Project:
         path: str | Path,
         aliases: Mapping[str, Any] | None = None,
         crs: str | None = None,
-        settings: Mapping[str, Any] | None = None,
+        settings: Mapping[str, Any] | LoadSettings | None = None,
     ) -> "Project":
         """Load a `.pproj` or recursively ingest a raw Petrel-style directory."""
 
         src = Path(path)
-        settings_dict = dict(settings or {})
+        aliases, crs, settings_dict = _coerce_load_settings(
+            aliases=aliases,
+            crs=crs,
+            settings=settings,
+        )
         if src.suffix.lower() == ".pproj":
             geo = GeoData.open(str(src))
             return cls(
@@ -112,6 +300,7 @@ class Project:
                 crs=crs,
                 settings=settings_dict,
                 inventory=cls._inventory_from_pproj(src),
+                tops_tables={},
             )
         if not src.is_dir():
             raise ValueError(f"Project.load: expected a .pproj file or directory, got '{src}'")
@@ -128,7 +317,7 @@ class Project:
         inventory["sidecars"] = [str(p.relative_to(src)) for p in sidecars]
 
         loaded_well_dirs = _load_wells(geo, src, records, ingest, settings_dict, inventory, skipped)
-        _load_petrel_tops(geo, src, records, inventory, skipped)
+        tops_tables = _load_petrel_tops(geo, src, records, inventory, skipped)
         _load_surfaces_points_polygons(
             geo,
             src,
@@ -153,6 +342,7 @@ class Project:
             crs=crs,
             settings=settings_dict,
             inventory=inventory,
+            tops_tables=tops_tables,
         )
 
     @property
@@ -181,19 +371,19 @@ class Project:
 
     @property
     def wells(self) -> Any:
-        return self._geo.wells
+        return _ProjectWellsView(self)
 
     @property
-    def tops(self) -> list[str]:
-        return list(self._inventory.get("tops", []))
+    def tops(self) -> _TopsCollection:
+        """Loaded well-top set names; index by set name for a pandas DataFrame."""
+
+        return _TopsCollection(self._inventory.get("tops", []), self._tops_tables)
 
     @property
     def logs(self) -> Any:
-        """Lazy log-expression namespace for static workflow recipes."""
+        """Compatibility alias for ``project.wells.logs``."""
 
-        from ._logs import Logs
-
-        return Logs(self)
+        return self.wells.logs
 
     def surface(self, name: str) -> Any:
         return self._geo.surface(name)
@@ -246,7 +436,8 @@ class Project:
         if cached is not None:
             return _copy_positioned_logs(cached)
 
-        channel = self.logs.validate(_coerce_log_channel(source, self.logs))
+        logs = self.wells.logs
+        channel = logs.validate(_coerce_log_channel(source, logs))
         if not isinstance(channel, LogChannel):
             raise TypeError("log source must resolve to a LogChannel")
 
@@ -370,6 +561,41 @@ def _copy_positioned_logs(wells: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _coerce_load_settings(
+    *,
+    aliases: Mapping[str, Any] | None,
+    crs: str | None,
+    settings: Mapping[str, Any] | LoadSettings | None,
+) -> tuple[Mapping[str, Any] | None, str | None, dict[str, Any]]:
+    settings_aliases: Mapping[str, Any] | None = None
+    settings_crs: str | None = None
+
+    if isinstance(settings, LoadSettings):
+        settings_dict = settings.to_mapping()
+        settings_aliases = settings.aliases
+        settings_crs = settings.crs
+    elif settings is None:
+        settings_dict = {}
+    elif isinstance(settings, Mapping):
+        settings_dict = dict(settings)
+        raw_aliases = settings_dict.pop("aliases", None)
+        if raw_aliases is not None:
+            if not isinstance(raw_aliases, Mapping):
+                raise TypeError("Project.load settings['aliases'] must be a mapping")
+            settings_aliases = raw_aliases
+        raw_crs = settings_dict.pop("crs", None)
+        if raw_crs is not None:
+            settings_crs = str(raw_crs)
+    else:
+        raise TypeError("Project.load settings must be a mapping or LoadSettings")
+
+    return (
+        aliases if aliases is not None else settings_aliases,
+        crs if crs is not None else settings_crs,
+        settings_dict,
+    )
+
+
 def _normalise_aliases(aliases: Mapping[str, Any] | None) -> dict[str, str]:
     if not aliases:
         return {}
@@ -384,6 +610,68 @@ def _normalise_aliases(aliases: Mapping[str, Any] | None) -> dict[str, str]:
         else:
             raise TypeError("Project.load aliases values must be strings or iterables of strings")
     return out
+
+
+def _well_attr_lookup(attr: str, well_ids: Iterable[str]) -> str | None:
+    for well_id in well_ids:
+        if attr == well_id or attr == _identifier_for(well_id):
+            return well_id
+    return None
+
+
+def _resolve_collection_name(name: str, names: Iterable[str]) -> str | None:
+    names_list = list(names)
+    if name in names_list:
+        return name
+    token = _lookup_token(name)
+    matches = [candidate for candidate in names_list if _lookup_token(candidate) == token]
+    if len(matches) == 1:
+        return matches[0]
+    leaf_matches = [
+        candidate
+        for candidate in names_list
+        if _lookup_token(str(candidate).rsplit(".", 1)[-1]) == token
+    ]
+    if len(leaf_matches) == 1:
+        return leaf_matches[0]
+    return None
+
+
+def _lookup_token(value: str) -> str:
+    return re.sub(r"[^0-9a-z]+", "", str(value).casefold())
+
+
+def _identifier_for(name: str) -> str:
+    ident = re.sub(r"\W+", "_", str(name)).strip("_")
+    if not ident:
+        return "_"
+    if ident[0].isdigit():
+        ident = f"_{ident}"
+    return ident
+
+
+def _well_log_names(well: Any) -> list[str]:
+    names: list[str] = []
+    bore_names = _call_or_empty(well, "bores")
+    if not bore_names:
+        names.extend(str(mnemonic) for mnemonic in _call_or_empty(well, "mnemonics"))
+    else:
+        for bore in bore_names:
+            sidetrack = well.sidetrack(bore)
+            if sidetrack is None:
+                continue
+            names.extend(str(mnemonic) for mnemonic in _call_or_empty(sidetrack, "mnemonics"))
+    return sorted(set(names), key=str.casefold)
+
+
+def _call_or_empty(obj: Any, method: str) -> list[Any]:
+    fn = getattr(obj, method, None)
+    if fn is None:
+        return []
+    try:
+        return list(fn())
+    except Exception:
+        return []
 
 
 def _coerce_log_channel(source: Any, logs: Any) -> Any:
@@ -599,16 +887,26 @@ def _load_petrel_tops(
     records: list[_FileRecord],
     inventory: dict[str, Any],
     skipped: list[dict[str, str]],
-) -> None:
-    for rec in records:
-        if rec.kind != FormatKind.PetrelTops:
-            continue
+) -> dict[str, list[dict[str, Any]]]:
+    top_records = [rec for rec in records if rec.kind == FormatKind.PetrelTops]
+    stem_counts: dict[str, int] = {}
+    for rec in top_records:
+        stem_counts[rec.path.stem] = stem_counts.get(rec.path.stem, 0) + 1
+    tables: dict[str, list[dict[str, Any]]] = {}
+    for rec in top_records:
+        name = rec.path.stem if stem_counts.get(rec.path.stem, 0) <= 1 else _name_for(root, rec.path)
         try:
             geo.load_well_tops(str(rec.path))
         except Exception as exc:
             skipped.append(_skip(root, rec.path, SKIP_LOAD_ERROR, f"load_well_tops: {exc}"))
             continue
-        inventory["tops"].append(_name_for(root, rec.path))
+        inventory["tops"].append(name)
+        try:
+            tables[name] = _parse_petrel_tops_table(rec.path)
+        except Exception as exc:
+            skipped.append(_skip(root, rec.path, SKIP_LOAD_ERROR, f"parse_well_tops: {exc}"))
+            tables[name] = []
+    return tables
 
 
 def _load_surfaces_points_polygons(
@@ -621,6 +919,7 @@ def _load_surfaces_points_polygons(
     ignored_dirs: set[Path],
 ) -> None:
     loaded_paths = {r.path for r in records if r.kind in (FormatKind.Las, FormatKind.WellPath)}
+    stem_counts = _spatial_stem_counts(records, ignored_dirs=ignored_dirs, loaded_paths=loaded_paths)
     for rec in records:
         if rec.path in loaded_paths or rec.kind in (FormatKind.CrsMetaXml, FormatKind.PetrelTops):
             continue
@@ -635,7 +934,7 @@ def _load_surfaces_points_polygons(
             skipped.append(_skip(root, rec.path, SKIP_AMBIGUOUS_GEOJSON, repr(rec.kind)))
             continue
 
-        name = _name_for(root, rec.path)
+        name = _asset_name_for(root, rec.path, role=role, stem_counts=stem_counts)
         try:
             if role == "surface":
                 geo.load_surface(name, str(rec.path))
@@ -648,6 +947,26 @@ def _load_surfaces_points_polygons(
                 inventory["polygons"].append(name)
         except Exception as exc:
             skipped.append(_skip(root, rec.path, SKIP_LOAD_ERROR, f"load_{role}: {exc}"))
+
+
+def _spatial_stem_counts(
+    records: list[_FileRecord],
+    *,
+    ignored_dirs: set[Path],
+    loaded_paths: set[Path],
+) -> dict[tuple[str, str], int]:
+    counts: dict[tuple[str, str], int] = {}
+    for rec in records:
+        if rec.path in loaded_paths or rec.kind in (FormatKind.CrsMetaXml, FormatKind.PetrelTops):
+            continue
+        if _inside_any(rec.path, ignored_dirs):
+            continue
+        role = _spatial_role(rec.path, rec.kind)
+        if role not in {"surface", "points", "polygons"}:
+            continue
+        key = (role, rec.path.stem)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _spatial_role(path: Path, kind: FormatKind) -> str | None:
@@ -793,6 +1112,87 @@ def _name_for(root: Path, path: Path) -> str:
     rel = path.relative_to(root)
     stem = rel.with_suffix("").as_posix()
     return stem.replace("/", ".")
+
+
+def _asset_name_for(
+    root: Path,
+    path: Path,
+    *,
+    role: str,
+    stem_counts: Mapping[tuple[str, str], int],
+) -> str:
+    stem = path.stem
+    if stem_counts.get((role, stem), 0) <= 1:
+        return stem
+    return _name_for(root, path)
+
+
+def _parse_petrel_tops_table(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    header: list[str] = []
+    in_header = False
+    for raw in path.read_text(errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        upper = line.upper()
+        if upper == "BEGIN HEADER":
+            in_header = True
+            header = []
+            continue
+        if upper == "END HEADER":
+            in_header = False
+            continue
+        if in_header:
+            header.append(_top_column_name(line))
+            continue
+        if not header:
+            continue
+        parts = shlex.split(line)
+        if len(parts) < len(header):
+            continue
+        row: dict[str, Any] = {
+            key: _coerce_top_value(value)
+            for key, value in zip(header, parts, strict=False)
+        }
+        row["source"] = str(path)
+        rows.append(row)
+    return rows
+
+
+def _top_column_name(name: str) -> str:
+    key = str(name).strip().casefold().replace(" ", "_")
+    aliases = {
+        "surface": "surface",
+        "well": "well",
+        "type": "type",
+        "md": "md",
+        "pvd": "pvd",
+        "twt": "twt",
+        "twt2": "twt2",
+        "age": "age",
+        "x": "x",
+        "y": "y",
+        "z": "z",
+    }
+    return aliases.get(key, key)
+
+
+def _coerce_top_value(value: str) -> Any:
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def _dataframe(rows: list[dict[str, Any]]) -> Any:
+    try:
+        import pandas as pd
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise ImportError(
+            "project.tops[...] requires pandas; install with `pip install petekio[pandas]`"
+        ) from exc
+    return pd.DataFrame(rows)
 
 
 def _skip(root: Path, path: Path, reason: str, detail: str) -> dict[str, str]:

@@ -6,6 +6,24 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-07
+
+### Added
+- Python `petekio.Project.load(path, aliases=None, crs=None, settings=None)` as
+  the canonical raw-project loading facade. It wraps `GeoData` rather than
+  owning duplicate data, delegates `.pproj` files to `GeoData.open`, recursively
+  scans raw project directories, loads wells before Petrel tops, exposes
+  inventory counts/names/skips, and keeps `crsmeta.xml` sidecars out of skipped
+  records.
+- Added `project.logs`, `Logs`, `LogChannel`, and `LogPredicate` for lazy,
+  pandas-style well-log expressions such as `logs.PHIE(logs.NetSand > 0.50)`.
+  The resolver returns positioned per-well samples and accepts serialized
+  expression dictionaries so downstream modelling layers can persist or forward
+  the same source description without importing petekIO internals.
+- Added defensive caching for resolved log expressions. Cached results are
+  copied on return so consumers can mutate their local sample lists without
+  corrupting the project cache.
+
 ## [0.3.1] - 2026-07-06
 
 ### Added

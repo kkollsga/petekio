@@ -64,6 +64,11 @@ in your own code:
 ```python
 import petekio
 
+project = petekio.Project.load("Data", aliases={"por": ["PHIE", "PORO"]})
+project.inventory()
+geo = project.geodata
+
+# Or build the same substrate manually:
 geo = petekio.GeoData(unit="m")
 
 # A surface (IRAP classic) — sample, stats, volumetrics, resample.

@@ -37,6 +37,8 @@ from ._viewer import (
     build_well_log_bundle,
     encode_lane,
 )
+from ._project import Project
+from ._logs import Logs, LogChannel, LogPredicate
 
 # The pure-Python view spec value-objects (WHAT / HOW for well.view()). The
 # reservoir cutoffs (NetSettings) + load-time IngestSpec live on the Rust side.
@@ -52,11 +54,15 @@ __all__ = [
     "GridGeometry",
     "IngestSpec",
     "Interval",
+    "LogChannel",
+    "LogPredicate",
     "LogSession",
     "LogView",
+    "Logs",
     "NetSettings",
     "PointSet",
     "PolygonSet",
+    "Project",
     "Sidetrack",
     "Stats",
     "Surface",

@@ -496,6 +496,15 @@ impl Cube {
 ```python
 import petekio
 
+project = petekio.Project.load("Data", aliases={
+    "por": ["PHIE", "PORO", "PorE_BC"],   # canonical -> raw names is accepted
+})
+project.inventory()                       # counts + loaded names + stable skipped reasons
+project.surfaces["Top reservoir"]         # named access over the underlying GeoData
+project.well("15/9-A1")
+project.geodata                           # the underlying GeoData substrate
+pproj_project = petekio.Project.load("field.pproj")  # delegates to GeoData.open
+
 geo = petekio.GeoData(unit="ft")
 geo.load_surface("top", "top.irap")       # or top.CPS3grid (CPS-3 grid)
 # real-format dispatch by extension: .CPS3grid→surface, .CPS3lines→polygons,

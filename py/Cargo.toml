@@ -16,7 +16,7 @@ name = "_petekio"
 crate-type = ["cdylib"]
 
 [dependencies]
-petekio = { path = "..", version = "0.3.7" }
+petekio = { path = "..", version = "0.3.8" }
 ndarray = "0.17"
 # abi3-py310 → one wheel for CPython 3.10+. extension-module → the wheel is a
 # Python extension (python symbols resolved at runtime, not linked).

@@ -287,7 +287,7 @@ def test_earthvision_pointset_infer_geometry_uses_column_row(tmp_path):
     assert math.isclose(geom.yinc, 10.0, abs_tol=1e-9)
 
 
-def test_pointset_trimesh_edge_tracks_concave_footprint_by_default():
+def test_pointset_concave_hull_edge_uses_topology_by_default():
     x, y, z, col, row = [], [], [], [], []
     for j in range(4):
         for i in range(4):
@@ -303,12 +303,15 @@ def test_pointset_trimesh_edge_tracks_concave_footprint_by_default():
     p.row = row
 
     default = p.infer_geometry(tolerance=1e-6)
+    concave = p.infer_geometry(tolerance=1e-6, edge="concave_hull")
     trimesh = p.infer_geometry(tolerance=1e-6, edge="trimesh")
     hull = p.infer_geometry(tolerance=1e-6, edge="convex_hull")
     full_rect = p.infer_geometry(tolerance=1e-6, edge="full_rect")
 
-    assert math.isclose(default.edge.area(), 5.5, abs_tol=1e-12)
-    assert math.isclose(trimesh.edge.area(), default.edge.area(), abs_tol=1e-12)
+    assert math.isclose(default.edge.area(), 5.0, abs_tol=1e-12)
+    assert math.isclose(concave.edge.area(), default.edge.area(), abs_tol=1e-12)
+    assert math.isclose(trimesh.edge.area(), 5.5, abs_tol=1e-12)
+    assert trimesh.edge.area() > default.edge.area()
     assert hull.edge.area() > trimesh.edge.area()
     assert math.isclose(full_rect.edge.area(), 9.0, abs_tol=1e-12)
 
@@ -341,9 +344,11 @@ def test_pointset_trimesh_edge_works_without_topology():
 
     p = petekio.PointSet.from_xyz(x, y, z)
 
+    default = p.infer_geometry(tolerance=1e-6)
     trimesh = p.infer_geometry(tolerance=1e-6, edge="tin")
     full_rect = p.infer_geometry(tolerance=1e-6, edge="full_rect")
 
+    assert math.isclose(default.edge.area(), 5.5, abs_tol=1e-12)
     assert math.isclose(trimesh.edge.area(), 5.5, abs_tol=1e-12)
     assert math.isclose(full_rect.edge.area(), 9.0, abs_tol=1e-12)
 

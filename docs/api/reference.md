@@ -91,7 +91,7 @@ and percentiles (`.p10`, `.p50`, `.p90`).
 
 | Member | Description |
 | --- | --- |
-| `PointSet.bbox` / `.infer_geometry(...)` / `.to_surface(grid_geom)` | Bounds; strict regular-grid geometry inference with default `trimesh` point edge; grid points onto an explicit geometry. |
+| `PointSet.bbox` / `.infer_geometry(...)` / `.to_surface(grid_geom)` | Bounds; strict regular-grid geometry inference with default `concave_hull` point edge; grid points onto an explicit geometry. |
 | `PointSet.to_structured_surface(...)` | Promote topology-bearing points (`column`/`row`) to `StructuredMeshSurface` while preserving explicit shifted XY nodes. |
 | `PointSet.x` / `.y` / `.z` / `.<attr>` | Column objects for same-point-set calculations; assign with `points.new_attr = ...`. |
 | `GridGeometry.edge` | Edge polygon carried by inferred geometry, or a rectangular footprint for plain geometries. |

@@ -196,10 +196,12 @@ impl PointSet {
     /// Infer a regular grid geometry from the points. Raises `ValueError` when
     /// the point cloud is not grid-like within `tolerance`.
     ///
-    /// `edge` controls `geometry.edge`: `"trimesh"`/`"tin"` (default;
-    /// triangulated point footprint), `"occupied"` (tight grid-oriented
-    /// rectangle over all point XYs), `"convex_hull"`, or `"full_rect"`.
-    #[pyo3(signature = (tolerance = 1e-3, edge = "trimesh"))]
+    /// `edge` controls `geometry.edge`: `"concave_hull"` (default;
+    /// topology-aware outer footprint when column/row exist, otherwise
+    /// triangulated point footprint), `"trimesh"`/`"tin"`, `"occupied"`
+    /// (tight grid-oriented rectangle over all point XYs), `"convex_hull"`,
+    /// or `"full_rect"`.
+    #[pyo3(signature = (tolerance = 1e-3, edge = "concave_hull"))]
     fn infer_geometry(&self, py: Python<'_>, tolerance: f64, edge: &str) -> PyResult<GridGeometry> {
         let edge = parse_geometry_edge(edge)?;
         self.with(py, |p| {
@@ -226,7 +228,7 @@ impl PointSet {
 
     /// Promote topology-bearing points (`column`/`row` attributes) to a
     /// structured mesh surface with explicit XY at every logical node.
-    #[pyo3(signature = (tolerance = 1e-3, edge = "occupied"))]
+    #[pyo3(signature = (tolerance = 1e-3, edge = "concave_hull"))]
     fn to_structured_surface(
         &self,
         py: Python<'_>,
@@ -286,12 +288,14 @@ fn parse_geometry_edge(s: &str) -> PyResult<GeometryEdge> {
         .replace([' ', '-'], "_")
         .as_str()
     {
+        "concave_hull" | "concavehull" | "concave" | "alpha" | "alpha_shape" | "outer"
+        | "default" => Ok(GeometryEdge::ConcaveHull),
         "trimesh" | "tin" | "triangulated" | "triangulated_mesh" => Ok(GeometryEdge::Trimesh),
         "occupied" => Ok(GeometryEdge::Occupied),
         "convex_hull" | "convexhull" | "hull" => Ok(GeometryEdge::ConvexHull),
         "full_rect" | "fullrect" | "rect" | "rectangle" => Ok(GeometryEdge::FullRect),
         other => Err(PyValueError::new_err(format!(
-            "unknown geometry edge '{other}' (expected 'trimesh', 'occupied', 'convex_hull', or 'full_rect')"
+            "unknown geometry edge '{other}' (expected 'concave_hull', 'trimesh', 'occupied', 'convex_hull', or 'full_rect')"
         ))),
     }
 }

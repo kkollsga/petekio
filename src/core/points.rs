@@ -37,6 +37,9 @@ pub enum GridMethod {
 /// Edge polygon to attach when inferring a grid geometry from points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeometryEdge {
+    /// Concave outer footprint: topology-aware occupied-cell edge when
+    /// `column`/`row` exist, otherwise a triangulated point-cloud hull.
+    ConcaveHull,
     /// Tight grid-oriented rectangle over the occupied point XY footprint.
     Occupied,
     /// Exterior boundary of the locally connected point triangulation.
@@ -305,7 +308,7 @@ impl PointSet {
     /// [`infer_geometry_with_edge`](Self::infer_geometry_with_edge) when the
     /// caller also needs the modelling edge polygon.
     pub fn infer_geometry(&self, tolerance: f64) -> Result<GridGeometry> {
-        self.infer_geometry_with_edge(tolerance, GeometryEdge::Trimesh)
+        self.infer_geometry_with_edge(tolerance, GeometryEdge::ConcaveHull)
             .map(|(geom, _edge)| geom)
     }
 
@@ -326,6 +329,9 @@ impl PointSet {
             })?,
         };
         let edge_polygon = match edge {
+            GeometryEdge::ConcaveHull => {
+                concave_edge_from_points(&self.coords, &self.attrs, Some(&geom))?
+            }
             GeometryEdge::Occupied => occupied_rect_from_points(&self.coords, &geom)?,
             GeometryEdge::Trimesh => triangulated_edge_from_points(&self.coords, Some(&geom))?,
             GeometryEdge::FullRect => PolygonSet::from_grid_geometry(&geom),
@@ -538,6 +544,74 @@ fn occupied_rect_from_points(coords: &[[f64; 3]], geom: &GridGeometry) -> Result
         to_xy(max_u, max_v),
         to_xy(min_u, max_v),
     ]]))
+}
+
+fn concave_edge_from_points(
+    coords: &[[f64; 3]],
+    attrs: &IndexMap<String, Vec<f64>>,
+    nominal_geometry: Option<&GridGeometry>,
+) -> Result<PolygonSet> {
+    topology_occupied_edge_from_points(coords, attrs)
+        .or_else(|_| triangulated_edge_from_points(coords, nominal_geometry))
+        .or_else(|_| {
+            let pts = coords
+                .iter()
+                .filter(|c| c[0].is_finite() && c[1].is_finite())
+                .map(|c| [c[0], c[1]])
+                .collect();
+            PolygonSet::convex_hull_xy(pts).ok_or_else(|| {
+                GeoError::GeometryInference(
+                    "concave hull edge requires at least three non-collinear points".into(),
+                )
+            })
+        })
+}
+
+fn topology_occupied_edge_from_points(
+    coords: &[[f64; 3]],
+    attrs: &IndexMap<String, Vec<f64>>,
+) -> Result<PolygonSet> {
+    let indexed = topology_indexed_points(coords, attrs)?;
+    if indexed.len() < 4 {
+        return Err(GeoError::GeometryInference(
+            "topology-aware concave hull requires at least four indexed points".into(),
+        ));
+    }
+
+    let min_col = indexed.iter().map(|p| p.col).min().unwrap();
+    let max_col = indexed.iter().map(|p| p.col).max().unwrap();
+    let min_row = indexed.iter().map(|p| p.row).min().unwrap();
+    let max_row = indexed.iter().map(|p| p.row).max().unwrap();
+    if max_col <= min_col || max_row <= min_row {
+        return Err(GeoError::GeometryInference(
+            "column/row attributes do not span a two-dimensional concave hull".into(),
+        ));
+    }
+
+    let ncol = (max_col - min_col + 1) as usize;
+    let nrow = (max_row - min_row + 1) as usize;
+    let mut x = Array2::from_elem((ncol, nrow), f64::NAN);
+    let mut y = Array2::from_elem((ncol, nrow), f64::NAN);
+    let mut occupied = vec![false; ncol * nrow];
+
+    for p in indexed {
+        let i = (p.col - min_col) as usize;
+        let j = (p.row - min_row) as usize;
+        let slot = i + j * ncol;
+        if occupied[slot] {
+            return Err(GeoError::GeometryInference(format!(
+                "multiple points map to topology node column={}, row={}",
+                p.col, p.row
+            )));
+        }
+        occupied[slot] = true;
+        x[[i, j]] = p.x;
+        y[[i, j]] = p.y;
+    }
+
+    occupied_edge_from_node_arrays(&x, &y, None)
+        .or_else(|_| perimeter_edge_from_node_arrays(&x, &y))
+        .or_else(|_| convex_hull_from_node_arrays(&x, &y))
 }
 
 fn triangulated_edge_from_points(
@@ -764,6 +838,9 @@ fn structured_edge(
     edge: GeometryEdge,
 ) -> Result<PolygonSet> {
     match edge {
+        GeometryEdge::ConcaveHull => occupied_edge_from_node_arrays(x, y, values)
+            .or_else(|_| triangulated_edge_from_node_arrays(x, y, values, nominal_geometry))
+            .or_else(|_| convex_hull_from_node_arrays(x, y)),
         GeometryEdge::ConvexHull => convex_hull_from_node_arrays(x, y),
         GeometryEdge::Trimesh => triangulated_edge_from_node_arrays(x, y, values, nominal_geometry),
         GeometryEdge::FullRect => nominal_geometry
@@ -1583,7 +1660,7 @@ mod tests {
     }
 
     #[test]
-    fn trimesh_edge_tracks_concave_point_footprint() {
+    fn concave_hull_edge_uses_topology_occupied_cells_by_default() {
         let mut coords = Vec::new();
         let mut columns = Vec::new();
         let mut rows = Vec::new();
@@ -1602,6 +1679,9 @@ mod tests {
         attrs.insert("row".to_string(), rows);
         let p = PointSet::from_parts(coords, attrs);
 
+        let (_, default_edge) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::ConcaveHull)
+            .unwrap();
         let (_, trimesh) = p
             .infer_geometry_with_edge(1e-6, GeometryEdge::Trimesh)
             .unwrap();
@@ -1612,7 +1692,9 @@ mod tests {
             .infer_geometry_with_edge(1e-6, GeometryEdge::FullRect)
             .unwrap();
 
+        approx::assert_relative_eq!(default_edge.area(), 5.0, epsilon = 1e-12);
         approx::assert_relative_eq!(trimesh.area(), 5.5, epsilon = 1e-12);
+        assert!(trimesh.area() > default_edge.area());
         assert!(hull.area() > trimesh.area());
         approx::assert_relative_eq!(full_rect.area(), 9.0, epsilon = 1e-12);
     }
@@ -1666,6 +1748,9 @@ mod tests {
         }
         let p = PointSet::from_coords(coords);
 
+        let (_, default_edge) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::ConcaveHull)
+            .unwrap();
         let (_, trimesh) = p
             .infer_geometry_with_edge(1e-6, GeometryEdge::Trimesh)
             .unwrap();
@@ -1673,6 +1758,7 @@ mod tests {
             .infer_geometry_with_edge(1e-6, GeometryEdge::FullRect)
             .unwrap();
 
+        approx::assert_relative_eq!(default_edge.area(), 5.5, epsilon = 1e-12);
         approx::assert_relative_eq!(trimesh.area(), 5.5, epsilon = 1e-12);
         approx::assert_relative_eq!(full_rect.area(), 9.0, epsilon = 1e-12);
     }

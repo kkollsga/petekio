@@ -39,7 +39,7 @@ attributes), EarthVision/Petrel point grids, or RMS/IRAP plain `X Y Z`.
 ```python
 pts = geo.load_points("picks", "picks.geojson")
 pts.bbox
-geom = pts.infer_geometry()                    # default edge="trimesh"
+geom = pts.infer_geometry()                    # default edge="concave_hull"
 grid = pts.to_surface(grid_geom)               # or grid scattered points onto an explicit model grid
 mesh = pts.to_structured_surface()             # topology-bearing points, explicit shifted XY nodes
 ```
@@ -69,11 +69,13 @@ affine grid. EarthVision/Petrel exports that carry `column` and `row` fields can
 also be promoted with `to_structured_surface(...)`; that keeps the logical
 row/column topology while preserving each node's actual XY coordinate. This is
 the right home for Petrel surfaces that are locally shifted around faults.
-`edge="trimesh"` is the default point footprint: the exterior boundary of the
-locally connected point triangulation. `edge="occupied"` is the tight
-grid-oriented rectangle that covers all point XYs. `edge="full_rect"` is the
-inferred regular geometry rectangle, and `edge="convex_hull"` is intentionally
-broader for envelope/QC comparison.
+`edge="concave_hull"` is the default point footprint: it uses the outer
+occupied-cell footprint when `column`/`row` topology exists, and falls back to
+the locally connected point triangulation otherwise. `edge="trimesh"` is still
+available explicitly for triangulated-boundary QC. `edge="occupied"` is the
+tight grid-oriented rectangle that covers all point XYs. `edge="full_rect"` is
+the inferred regular geometry rectangle, and `edge="convex_hull"` is
+intentionally broader for envelope/QC comparison.
 
 During `Project.import_data(...)`, same-stem Petrel IRAP point exports are
 enriched from matching EarthVision topology files when both are present.

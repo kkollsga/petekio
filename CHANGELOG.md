@@ -6,6 +6,20 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Changed
+- `PointSet.infer_geometry(...)` now defaults to `edge="concave_hull"`. When
+  `column`/`row` topology exists, the edge traces the outer occupied-cell
+  footprint using the actual point XY nodes; without topology it falls back to
+  the triangulated point-cloud boundary.
+- `PointSet.to_structured_surface(...)` now uses the same `edge="concave_hull"`
+  default, keeping point-derived regular geometries and structured mesh surfaces
+  on one public edge vocabulary.
+- Updated docs for point-derived surfaces to make the distinction explicit:
+  point sets render as points, inferred geometries render clipped regular grid
+  lines, and structured surfaces preserve locally shifted Petrel nodes.
+- Updated dependency floors to `petektools>=0.2.7,<0.3` for the viewer
+  point/geometry rendering fix.
+
 ## [0.3.7] - 2026-07-08
 
 ### Added

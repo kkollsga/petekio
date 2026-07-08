@@ -4,10 +4,11 @@
 //! and `core::surface`.
 
 use crate::core::surface::Surface;
-use crate::foundation::{BBox, GridGeometry, Result};
+use crate::foundation::{BBox, GeoError, GridGeometry, HasHistory, OperationHistory, Result};
 use crate::io::PolygonData;
 use geo::prelude::*;
 use geo::{Coord, LineString, Point, Polygon};
+use indexmap::IndexMap;
 use ndarray::Array2;
 use std::path::Path;
 
@@ -17,6 +18,10 @@ use std::path::Path;
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct PolygonSet {
     polys: Vec<Polygon<f64>>,
+    #[serde(default)]
+    attrs: IndexMap<String, Vec<f64>>,
+    #[serde(default)]
+    history: OperationHistory,
 }
 
 impl PolygonSet {
@@ -34,7 +39,11 @@ impl PolygonSet {
                 Polygon::new(LineString::new(coords), Vec::new())
             })
             .collect();
-        PolygonSet { polys }
+        PolygonSet {
+            polys,
+            attrs: IndexMap::new(),
+            history: OperationHistory::from_entry("polygons.from_rings"),
+        }
     }
 
     pub(crate) fn from_polygon_data(data: PolygonData) -> PolygonSet {
@@ -55,7 +64,9 @@ impl PolygonSet {
             .into_iter()
             .map(|(x, y)| [x, y, 0.0])
             .collect::<Vec<_>>();
-        PolygonSet::from_rings(vec![ring])
+        let mut out = PolygonSet::from_rings(vec![ring]);
+        out.history = OperationHistory::from_entry("polygons.from_grid_geometry");
+        out
     }
 
     /// Convex hull of XY points as a polygon set. Returns `None` for degenerate
@@ -66,21 +77,33 @@ impl PolygonSet {
             return None;
         }
         let ring = hull.into_iter().map(|p| [p[0], p[1], 0.0]).collect();
-        Some(PolygonSet::from_rings(vec![ring]))
+        let mut out = PolygonSet::from_rings(vec![ring]);
+        out.history = OperationHistory::from_entry("polygons.convex_hull_xy");
+        Some(out)
     }
 
     /// Load polygons from a GeoJSON file (`Polygon`/`MultiPolygon`/`LineString`
     /// features; each ring becomes one polygon).
     pub fn load_geojson(path: impl AsRef<Path>) -> Result<PolygonSet> {
         let data = crate::io::vector::load_polygon_rings_geojson(path.as_ref())?;
-        Ok(PolygonSet::from_polygon_data(data))
+        let mut out = PolygonSet::from_polygon_data(data);
+        out.history = OperationHistory::from_entry(format!(
+            "polygons.load_geojson(path={})",
+            path.as_ref().display()
+        ));
+        Ok(out)
     }
 
     /// Load polygons from an IRAP/RMS plain `X Y Z` file (rings separated by the
     /// `999.0` sentinel).
     pub fn load_irap_polygons(path: impl AsRef<Path>) -> Result<PolygonSet> {
         let data = crate::io::xyz::load_polygons(path.as_ref())?;
-        Ok(PolygonSet::from_polygon_data(data))
+        let mut out = PolygonSet::from_polygon_data(data);
+        out.history = OperationHistory::from_entry(format!(
+            "polygons.load_irap_polygons(path={})",
+            path.as_ref().display()
+        ));
+        Ok(out)
     }
 
     /// Load polygons from a CPS-3 lines file (`.CPS3lines`) — polyline blocks
@@ -88,13 +111,23 @@ impl PolygonSet {
     /// outlines, fault polygons, and model-edge rings.
     pub fn load_cps3_lines(path: impl AsRef<Path>) -> Result<PolygonSet> {
         let data = crate::io::cps3::load_cps3_lines(path.as_ref())?;
-        Ok(PolygonSet::from_polygon_data(data))
+        let mut out = PolygonSet::from_polygon_data(data);
+        out.history = OperationHistory::from_entry(format!(
+            "polygons.load_cps3_lines(path={})",
+            path.as_ref().display()
+        ));
+        Ok(out)
     }
 
     /// Load polygons from an ESRI shapefile (pass the `.shp` path).
     pub fn load_shapefile(path: impl AsRef<Path>) -> Result<PolygonSet> {
         let data = crate::io::vector::load_polygon_rings_shapefile(path.as_ref())?;
-        Ok(PolygonSet::from_polygon_data(data))
+        let mut out = PolygonSet::from_polygon_data(data);
+        out.history = OperationHistory::from_entry(format!(
+            "polygons.load_shapefile(path={})",
+            path.as_ref().display()
+        ));
+        Ok(out)
     }
 
     /// Whether `(x, y)` is inside any polygon. Uses `geo`'s `Contains`, which
@@ -105,9 +138,58 @@ impl PolygonSet {
         self.polys.iter().any(|poly| poly.contains(&p))
     }
 
+    /// Number of polygons in the set.
+    pub fn len(&self) -> usize {
+        self.polys.len()
+    }
+
+    /// Whether the set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.polys.is_empty()
+    }
+
     /// Total unsigned area of all polygons (summed; overlaps double-count).
     pub fn area(&self) -> f64 {
         self.polys.iter().map(|p| p.unsigned_area()).sum()
+    }
+
+    /// Unsigned area of each polygon, aligned 1:1 with this set's rows.
+    pub fn area_values(&self) -> Vec<f64> {
+        self.polys.iter().map(|p| p.unsigned_area()).collect()
+    }
+
+    /// A named attribute column, if present.
+    pub fn attr(&self, name: &str) -> Option<&[f64]> {
+        self.attrs.get(name).map(Vec::as_slice)
+    }
+
+    /// Set (or replace) a named attribute column. The column must be aligned
+    /// 1:1 with this polygon set's rows.
+    pub fn set_attr(&mut self, name: &str, values: Vec<f64>) -> Result<()> {
+        if values.len() != self.polys.len() {
+            return Err(GeoError::Parse(format!(
+                "polygon attribute '{name}' has {} rows, expected {}",
+                values.len(),
+                self.polys.len()
+            )));
+        }
+        self.attrs.insert(name.to_string(), values);
+        self.record_history(format!("polygons.set_attr(name={name})"));
+        Ok(())
+    }
+
+    /// The names of all attribute columns, in insertion order.
+    pub fn attr_names(&self) -> Vec<&str> {
+        self.attrs.keys().map(String::as_str).collect()
+    }
+
+    /// Human-readable operation history for this polygon set.
+    pub fn history(&self) -> &[String] {
+        self.history.entries()
+    }
+
+    pub(crate) fn record_history(&mut self, entry: impl Into<String>) {
+        self.history.push(entry.into());
     }
 
     /// The exterior ring vertices of each polygon, as `[x, y, z]` with `z = 0.0`
@@ -165,7 +247,22 @@ impl PolygonSet {
                 }
             }
         }
-        Surface::from_values_unchecked(geom.clone(), out)
+        let mut clipped = Surface::from_values_unchecked(geom.clone(), out);
+        let mut history = surface.operation_history().clone();
+        history.extend_prefixed("mask", &self.history);
+        history.push("polygons.clip(surface)".to_string());
+        clipped.set_history(history);
+        clipped
+    }
+}
+
+impl HasHistory for PolygonSet {
+    fn operation_history(&self) -> &OperationHistory {
+        &self.history
+    }
+
+    fn operation_history_mut(&mut self) -> &mut OperationHistory {
+        &mut self.history
     }
 }
 

@@ -389,6 +389,13 @@ impl Sidetrack {
         self.logs.push(log);
     }
 
+    /// Drop logs matching `mnemonic` case-insensitively. Used by calculated-log
+    /// assignment when the caller explicitly requests overwrite.
+    pub fn retain_logs_except(&mut self, mnemonic: &str) {
+        self.logs
+            .retain(|l| !l.mnemonic.eq_ignore_ascii_case(mnemonic));
+    }
+
     /// Add formation tops, keeping the set sorted ascending by MD (so the next
     /// top resolves an interval base).
     pub fn add_tops(&mut self, tops: Vec<Top>) {

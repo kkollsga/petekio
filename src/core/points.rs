@@ -9,7 +9,9 @@
 //! kernels themselves were lifted from petekIO 0.2.0 and are held at parity.
 
 use crate::core::{PolygonSet, Surface};
-use crate::foundation::{BBox, GeoError, GridGeometry, Point3, Result, Stats};
+use crate::foundation::{
+    BBox, GeoError, GridGeometry, HasHistory, OperationHistory, Point3, Result, Stats,
+};
 use crate::io::PointData;
 use indexmap::IndexMap;
 use petektools::{grid as pt_grid, grid_min_curvature_seeded, GridMethod as PtGridMethod};
@@ -56,10 +58,12 @@ pub(crate) type AerialEntry = GeomWithData<[f64; 2], usize>;
 
 /// Scattered points with attribute columns. Coordinates are stored as `[x, y,
 /// z]`; each attribute is a `f64` column aligned 1:1 with `coords`.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct PointSet {
     pub(crate) coords: Vec<[f64; 3]>,
     pub(crate) attrs: IndexMap<String, Vec<f64>>,
+    #[serde(default)]
+    history: OperationHistory,
 }
 
 impl PointSet {
@@ -67,7 +71,11 @@ impl PointSet {
     /// attribute column must match `coords.len()` (callers within the crate
     /// guarantee this).
     pub(crate) fn from_parts(coords: Vec<[f64; 3]>, attrs: IndexMap<String, Vec<f64>>) -> PointSet {
-        PointSet { coords, attrs }
+        PointSet {
+            coords,
+            attrs,
+            history: OperationHistory::new(),
+        }
     }
 
     pub(crate) fn from_point_data(data: PointData) -> PointSet {
@@ -78,7 +86,9 @@ impl PointSet {
     /// Build an in-memory `PointSet` from `[x, y, z]` coordinates (no named
     /// attributes) — construct scattered points directly, without a file.
     pub fn from_coords(coords: Vec<[f64; 3]>) -> PointSet {
-        PointSet::from_parts(coords, IndexMap::new())
+        let mut out = PointSet::from_parts(coords, IndexMap::new());
+        out.history = OperationHistory::from_entry("points.from_coords");
+        out
     }
 
     /// Read a headered CSV, taking X/Y/Z from the named columns. Every other
@@ -86,12 +96,13 @@ impl PointSet {
     /// with any non-numeric cell are skipped. Rows with a non-numeric X/Y/Z are
     /// an error (readers validate on load).
     pub fn load_csv(path: impl AsRef<Path>, x: &str, y: &str, z: &str) -> Result<PointSet> {
-        Ok(PointSet::from_point_data(crate::io::csv_points::load(
-            path.as_ref(),
-            x,
-            y,
-            z,
-        )?))
+        let mut out =
+            PointSet::from_point_data(crate::io::csv_points::load(path.as_ref(), x, y, z)?);
+        out.history = OperationHistory::from_entry(format!(
+            "points.load_csv(path={})",
+            path.as_ref().display()
+        ));
+        Ok(out)
     }
 
     /// Load point features from a GeoJSON file. Each feature's numeric
@@ -99,18 +110,25 @@ impl PointSet {
     /// numeric property names, NaN-filling features that lack one); string and
     /// other non-numeric properties are ignored.
     pub fn load_geojson(path: impl AsRef<Path>) -> Result<PointSet> {
-        Ok(PointSet::from_point_data(
-            crate::io::vector::load_point_set_geojson(path.as_ref())?,
-        ))
+        let mut out =
+            PointSet::from_point_data(crate::io::vector::load_point_set_geojson(path.as_ref())?);
+        out.history = OperationHistory::from_entry(format!(
+            "points.load_geojson(path={})",
+            path.as_ref().display()
+        ));
+        Ok(out)
     }
 
     /// Load scattered points from an IRAP/RMS plain `X Y Z` file. No named
     /// attributes (the format carries none). Format-sniffed: a foreign header
     /// (EarthVision grid / CPS-3 / LAS) is rejected with `GeoError::Format`.
     pub fn load_irap_points(path: impl AsRef<Path>) -> Result<PointSet> {
-        Ok(PointSet::from_point_data(crate::io::xyz::load_points(
-            path.as_ref(),
-        )?))
+        let mut out = PointSet::from_point_data(crate::io::xyz::load_points(path.as_ref())?);
+        out.history = OperationHistory::from_entry(format!(
+            "points.load_irap_points(path={})",
+            path.as_ref().display()
+        ));
+        Ok(out)
     }
 
     /// Load plain IRAP/RMS `X Y Z` points and transfer Petrel `column`/`row`
@@ -124,9 +142,14 @@ impl PointSet {
     ) -> Result<PointSet> {
         let points = crate::io::xyz::load_points(path.as_ref())?;
         let topology = crate::io::earthvision::load_earthvision_grid(topology_path.as_ref())?;
-        Ok(PointSet::from_point_data(
-            points.with_topology_from_ordered_subset(&topology, 1e-3)?,
-        ))
+        let mut out =
+            PointSet::from_point_data(points.with_topology_from_ordered_subset(&topology, 1e-3)?);
+        out.history = OperationHistory::from_entry(format!(
+            "points.load_irap_points_with_topology(path={}, topology_path={})",
+            path.as_ref().display(),
+            topology_path.as_ref().display()
+        ));
+        Ok(out)
     }
 
     /// Load scattered points from an EarthVision grid ASCII file
@@ -135,9 +158,14 @@ impl PointSet {
     /// when present, are preserved as attributes so geometry inference can use
     /// the exported grid topology instead of guessing from XY alone.
     pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<PointSet> {
-        Ok(PointSet::from_point_data(
-            crate::io::earthvision::load_earthvision_grid(path.as_ref())?,
-        ))
+        let mut out = PointSet::from_point_data(crate::io::earthvision::load_earthvision_grid(
+            path.as_ref(),
+        )?);
+        out.history = OperationHistory::from_entry(format!(
+            "points.load_earthvision_grid(path={})",
+            path.as_ref().display()
+        ));
+        Ok(out)
     }
 
     /// Number of points.
@@ -174,12 +202,47 @@ impl PointSet {
             .iter()
             .map(|(name, col)| (name.clone(), keep.iter().map(|&i| col[i]).collect()))
             .collect();
-        PointSet::from_parts(coords, attrs)
+        let mut out = PointSet::from_parts(coords, attrs);
+        out.history = self.history_with("points.filter");
+        out
     }
 
     /// A named attribute column, if present.
     pub fn attr(&self, name: &str) -> Option<&[f64]> {
         self.attrs.get(name).map(Vec::as_slice)
+    }
+
+    /// Set (or replace) a named attribute column. The column must be aligned
+    /// 1:1 with this point set's rows.
+    pub fn set_attr(&mut self, name: &str, values: Vec<f64>) -> Result<()> {
+        if values.len() != self.coords.len() {
+            return Err(GeoError::Parse(format!(
+                "point attribute '{name}' has {} rows, expected {}",
+                values.len(),
+                self.coords.len()
+            )));
+        }
+        self.attrs.insert(name.to_string(), values);
+        self.record_history(format!("points.set_attr(name={name})"));
+        Ok(())
+    }
+
+    /// The names of all attribute columns, in insertion order.
+    pub fn attr_names(&self) -> Vec<&str> {
+        self.attrs.keys().map(String::as_str).collect()
+    }
+
+    /// Human-readable operation history for this point set.
+    pub fn history(&self) -> &[String] {
+        self.history.entries()
+    }
+
+    pub(crate) fn history_with(&self, entry: impl Into<String>) -> OperationHistory {
+        self.history.with_entry(entry)
+    }
+
+    pub(crate) fn record_history(&mut self, entry: impl Into<String>) {
+        self.history.push(entry.into());
     }
 
     /// NaN-skipping statistics over a named attribute column, or `None` if the
@@ -282,7 +345,11 @@ impl PointSet {
     /// `Surface`. See `dev-docs/designs/gridding-method.md`.
     pub fn to_surface(&self, geom: GridGeometry, method: GridMethod) -> Result<Surface> {
         let values = pt_grid(&self.coords, &geom.to_lattice(), method.to_petektools())?;
-        Surface::new(geom, values)
+        let mut out = Surface::new(geom, values)?;
+        let mut history = self.history.clone();
+        history.push(format!("points.to_surface(method={method:?})"));
+        out.set_history(history);
+        Ok(out)
     }
 
     /// Warm-started minimum-curvature re-grid onto `prior`'s lattice, relaxing
@@ -297,7 +364,12 @@ impl PointSet {
             &prior.geom.to_lattice(),
             Some(prior.values()),
         )?;
-        Surface::new(prior.geom.clone(), values)
+        let mut out = Surface::new(prior.geom.clone(), values)?;
+        let mut history = self.history.clone();
+        history.extend_prefixed("prior", prior.operation_history());
+        history.push("points.regrid_min_curvature(prior)".to_string());
+        out.set_history(history);
+        Ok(out)
     }
 
     /// Build an areal R*-tree over the points' XY, payloaded with their index.
@@ -309,6 +381,16 @@ impl PointSet {
             .map(|(i, c)| GeomWithData::new([c[0], c[1]], i))
             .collect();
         RTree::bulk_load(entries)
+    }
+}
+
+impl HasHistory for PointSet {
+    fn operation_history(&self) -> &OperationHistory {
+        &self.history
+    }
+
+    fn operation_history_mut(&mut self) -> &mut OperationHistory {
+        &mut self.history
     }
 }
 

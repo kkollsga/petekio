@@ -6,6 +6,30 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-08
+
+### Added
+- Added calculated-log assignment across project wells with
+  `project.wells.assign_log(...)`, strict same-basis arithmetic by default,
+  explicit output bases through `basis=logs.<curve>`, and operand-local
+  resampling through `.to_basis(..., interpolation=...)`.
+- Added point and polygon column calculations. Point sets expose coordinate and
+  attribute columns such as `points.z` and `points.PHIE`; polygon sets expose
+  `polygons.area` and numeric attributes. Container-to-container arithmetic is
+  intentionally unsupported.
+- Added standardized operation history across surfaces, points, polygons, logs,
+  and generated views/objects. Derived objects preserve source history and label
+  secondary contributors with role prefixes such as `rhs.*`, `mask.*`, and
+  `prior.*`.
+
+### Changed
+- Imported logs are now documented and treated as MD/value curves on a bore,
+  independent of their source LAS file after import. Curves from separate files
+  can combine directly when their MD vectors match.
+- The Python wheel now depends on `petektools>=0.2.5,<0.3` so calculated-log
+  resampling uses the shared Rust `interp1d` kernel, including natural-cubic
+  spline support.
+
 ## [0.3.5] - 2026-07-08
 
 ### Changed

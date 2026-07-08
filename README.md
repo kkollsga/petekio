@@ -120,7 +120,7 @@ column.
 | Domain | What you get |
 | --- | --- |
 | **Surfaces** | IRAP-classic load, sample/resample (bilinear), edge polygons, arithmetic, stats, `area_below` volumetrics, gridding from scattered points (minimum-curvature) |
-| **Wells** | Positioned `.wellpath` trajectories (MD preserved; minimum-curvature interpolation), multi-bore (sidetracks), LAS logs with mnemonic aliasing, Petrel well-tops, per-zone stats, field-wide lithostratigraphic ordering |
+| **Wells** | Positioned `.wellpath` trajectories (MD preserved; minimum-curvature interpolation), multi-bore (sidetracks), imported logs stored as MD/value pairs with mnemonic aliasing, Petrel well-tops, per-zone stats, field-wide lithostratigraphic ordering |
 | **Points / polygons** | IRAP / GeoJSON / CSV load, strict regular-grid geometry inference, clip, point-to-surface gridding |
 | **Project** | `GeoData` substrate — import raw data once, broadcast across the collection; views are read-only filtered subsets; compact `.pproj` load/save |
 
@@ -150,7 +150,8 @@ design + build roadmap live in [`SPEC.md`](SPEC.md).
 - **A manager substrate** (`GeoData`): load once, operations broadcast across the
   collection — no per-item loops.
 - **Domain objects carry their operations** (arithmetic, filters, interpolation,
-  stats) — fluent and chainable; immutable (ops return new objects).
+  stats) and expose `history()` for generated objects — fluent and chainable;
+  immutable (ops return new objects).
 - **Algorithms are isolated, QC-able kernels** grouped by discipline (e.g. the
   minimum-curvature survey, the cross-well stratigraphic merge) — pure and
   type-light.

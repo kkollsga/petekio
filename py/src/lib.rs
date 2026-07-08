@@ -107,7 +107,9 @@ fn _petekio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<surface::Surface>()?;
     m.add_class::<surface::AttrAccessor>()?;
     m.add_class::<points::PointSet>()?;
+    m.add_class::<points::PointColumn>()?;
     m.add_class::<points::PolygonSet>()?;
+    m.add_class::<points::PolygonColumn>()?;
     m.add_class::<trajectory::Trajectory>()?;
     m.add_class::<well::Well>()?;
     m.add_class::<well::Sidetrack>()?;

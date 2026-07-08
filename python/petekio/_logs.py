@@ -12,6 +12,7 @@ from ._petekio import canonical_mnemonic
 _COMPARISONS = {">", ">=", "<", "<=", "==", "!="}
 _COMPOSITION = {"and", "or", "not"}
 _TESTS = {"is_finite", "is_null", "not_null"}
+_ARITHMETIC = {"+", "-", "*", "/"}
 
 
 class Logs:
@@ -160,7 +161,33 @@ class Logs:
         return {key: tuple(values) for key, values in index.items()}
 
 
-class LogChannel:
+class _LogArithmeticMixin:
+    def __add__(self, other: Any) -> "LogExpression":
+        return LogExpression("+", (self, _coerce_log_operand(other)))
+
+    def __radd__(self, other: Any) -> "LogExpression":
+        return LogExpression("+", (_coerce_log_operand(other), self))
+
+    def __sub__(self, other: Any) -> "LogExpression":
+        return LogExpression("-", (self, _coerce_log_operand(other)))
+
+    def __rsub__(self, other: Any) -> "LogExpression":
+        return LogExpression("-", (_coerce_log_operand(other), self))
+
+    def __mul__(self, other: Any) -> "LogExpression":
+        return LogExpression("*", (self, _coerce_log_operand(other)))
+
+    def __rmul__(self, other: Any) -> "LogExpression":
+        return LogExpression("*", (_coerce_log_operand(other), self))
+
+    def __truediv__(self, other: Any) -> "LogExpression":
+        return LogExpression("/", (self, _coerce_log_operand(other)))
+
+    def __rtruediv__(self, other: Any) -> "LogExpression":
+        return LogExpression("/", (_coerce_log_operand(other), self))
+
+
+class LogChannel(_LogArithmeticMixin):
     """Lazy reference to one log channel, optionally filtered by a predicate."""
 
     def __init__(
@@ -202,6 +229,14 @@ class LogChannel:
 
     def not_null(self) -> "LogPredicate":
         return LogPredicate("not_null", (self,))
+
+    def to_basis(
+        self,
+        basis: "LogChannel | LogBasis",
+        *,
+        interpolation: str = "linear",
+    ) -> "LogBasis":
+        return LogBasis(self, basis=basis, interpolation=interpolation)
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -248,6 +283,79 @@ class LogChannel:
         if self.filter is not None:
             base += f".where({self.filter!r})"
         return base
+
+
+class LogExpression(_LogArithmeticMixin):
+    """Lazy arithmetic expression over log channels/scalars."""
+
+    def __init__(self, op: str, operands: tuple[Any, Any]) -> None:
+        if op not in _ARITHMETIC:
+            raise ValueError(f"unsupported log arithmetic operator {op!r}")
+        self.op = op
+        self.operands = operands
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "log_expression",
+            "op": self.op,
+            "operands": [_operand_to_dict(operand) for operand in self.operands],
+        }
+
+    as_dict = to_dict
+
+    def __bool__(self) -> bool:
+        raise TypeError("LogExpression objects are lazy expressions; assign or resolve them")
+
+    def __repr__(self) -> str:
+        return f"({self.operands[0]!r} {self.op} {self.operands[1]!r})"
+
+
+class LogBasis(_LogArithmeticMixin):
+    """Lazy log operand explicitly resampled to another log/basis."""
+
+    def __init__(
+        self,
+        source: LogChannel,
+        *,
+        basis: "LogChannel | LogBasis",
+        interpolation: str = "linear",
+    ) -> None:
+        if not isinstance(source, LogChannel):
+            raise TypeError("LogBasis source must be a LogChannel")
+        if not isinstance(basis, (LogChannel, LogBasis)):
+            raise TypeError("LogBasis basis must be a LogChannel or LogBasis")
+        self.source = source
+        self.basis = basis
+        self.interpolation = _normalise_interpolation(interpolation)
+
+    @property
+    def requested(self) -> str:
+        return self.source.requested
+
+    @property
+    def mnemonic(self) -> str:
+        return self.source.mnemonic
+
+    def to_basis(
+        self,
+        basis: "LogChannel | LogBasis",
+        *,
+        interpolation: str = "linear",
+    ) -> "LogBasis":
+        return LogBasis(self.source, basis=basis, interpolation=interpolation)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "log_basis",
+            "source": self.source.to_dict(),
+            "basis": self.basis.to_dict(),
+            "interpolation": self.interpolation,
+        }
+
+    as_dict = to_dict
+
+    def __repr__(self) -> str:
+        return f"{self.source!r}.to_basis({self.basis!r}, interpolation={self.interpolation!r})"
 
 
 class LogPredicate:
@@ -328,6 +436,16 @@ def _coerce_operand(value: Any) -> Any:
     )
 
 
+def _coerce_log_operand(value: Any) -> Any:
+    if isinstance(value, (LogChannel, LogExpression, LogBasis)):
+        return value
+    if isinstance(value, Real):
+        return float(value)
+    raise TypeError(
+        "log arithmetic supports numeric scalars and log channels/expressions only"
+    )
+
+
 def _coerce_predicate(value: Any) -> "LogPredicate":
     if isinstance(value, LogPredicate):
         return value
@@ -335,9 +453,31 @@ def _coerce_predicate(value: Any) -> "LogPredicate":
 
 
 def _operand_to_dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, (LogChannel, LogPredicate)):
+    if isinstance(value, (LogChannel, LogPredicate, LogExpression, LogBasis)):
         return value.to_dict()
     return {"kind": "scalar", "value": value}
+
+
+def _normalise_interpolation(name: str) -> str:
+    n = str(name).strip().casefold().replace("-", "_")
+    aliases = {
+        "closest": "nearest",
+        "nearest": "nearest",
+        "linear": "linear",
+        "previous": "previous",
+        "prev": "previous",
+        "ffill": "previous",
+        "next": "next",
+        "bfill": "next",
+        "spline": "spline",
+        "cubic": "spline",
+    }
+    if n not in aliases:
+        raise ValueError(
+            "unknown log interpolation "
+            f"{name!r} (expected nearest, linear, previous, next, or spline)"
+        )
+    return aliases[n]
 
 
 def _clean_name(name: str) -> str:

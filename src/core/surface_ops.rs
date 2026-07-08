@@ -3,46 +3,60 @@
 //! `Surface` (immutable ops); `NaN` (undefined) propagates throughout.
 
 use super::Surface;
-use crate::foundation::{GeoError, Result};
+use crate::foundation::{GeoError, HasHistory, Result};
 use ndarray::Zip;
 use std::ops::{Add, Div, Mul, Sub};
 
 impl Surface {
-    fn map_unary(&self, f: impl Fn(f64) -> f64) -> Surface {
-        Surface::from_values_unchecked(self.geom.clone(), self.values().mapv(f))
+    fn map_unary(&self, op: &str, f: impl Fn(f64) -> f64) -> Surface {
+        let mut out = Surface::from_values_unchecked(self.geom.clone(), self.values().mapv(f));
+        out.set_history(self.history_with(format!("surface.{op}()")));
+        out
+    }
+
+    fn map_scalar(&self, op: &str, rhs: f64, f: impl Fn(f64, f64) -> f64) -> Surface {
+        let mut out =
+            Surface::from_values_unchecked(self.geom.clone(), self.values().mapv(|v| f(v, rhs)));
+        out.set_history(self.history_with(format!("surface.{op}_scalar({rhs})")));
+        out
     }
 
     /// Natural log of the primary layer (new surface).
     pub fn ln(&self) -> Surface {
-        self.map_unary(f64::ln)
+        self.map_unary("ln", f64::ln)
     }
     /// Base-10 log.
     pub fn log10(&self) -> Surface {
-        self.map_unary(f64::log10)
+        self.map_unary("log10", f64::log10)
     }
     /// Exponential `e^v`.
     pub fn exp(&self) -> Surface {
-        self.map_unary(f64::exp)
+        self.map_unary("exp", f64::exp)
     }
     /// Square root.
     pub fn sqrt(&self) -> Surface {
-        self.map_unary(f64::sqrt)
+        self.map_unary("sqrt", f64::sqrt)
     }
     /// Absolute value.
     pub fn abs(&self) -> Surface {
-        self.map_unary(f64::abs)
+        self.map_unary("abs", f64::abs)
     }
     /// Raise each node to the power `n`.
     pub fn powf(&self, n: f64) -> Surface {
-        self.map_unary(move |v| v.powf(n))
+        self.map_scalar("powf", n, |v, n| v.powf(n))
     }
     /// Clamp each node to a lower bound (`NaN` stays `NaN`).
     pub fn clamp_min(&self, lo: f64) -> Surface {
-        self.map_unary(move |v| v.clamp(lo, f64::INFINITY))
+        self.map_scalar("clamp_min", lo, |v, lo| v.clamp(lo, f64::INFINITY))
     }
     /// Clamp each node to `[lo, hi]` (`NaN` stays `NaN`).
     pub fn clamp(&self, lo: f64, hi: f64) -> Surface {
-        self.map_unary(move |v| v.clamp(lo, hi))
+        let mut out = Surface::from_values_unchecked(
+            self.geom.clone(),
+            self.values().mapv(|v| v.clamp(lo, hi)),
+        );
+        out.set_history(self.history_with(format!("surface.clamp({lo}, {hi})")));
+        out
     }
 
     fn binary(&self, other: &Surface, f: impl Fn(f64, f64) -> f64, op: &str) -> Result<Surface> {
@@ -54,7 +68,12 @@ impl Surface {
         let values = Zip::from(self.values())
             .and(other.values())
             .map_collect(|&a, &b| f(a, b));
-        Ok(Surface::from_values_unchecked(self.geom.clone(), values))
+        let mut out = Surface::from_values_unchecked(self.geom.clone(), values);
+        let mut history = self.operation_history().clone();
+        history.extend_prefixed("rhs", other.operation_history());
+        history.push(format!("surface.{op}(surface)"));
+        out.set_history(history);
+        Ok(out)
     }
 
     /// Node-wise sum with another surface (equal geometry required).
@@ -77,7 +96,9 @@ impl Surface {
     /// `base - top`, optionally clamped at zero (negative thickness → 0).
     pub fn thickness(top: &Surface, base: &Surface, clamp_zero: bool) -> Result<Surface> {
         let t = base.minus(top)?;
-        Ok(if clamp_zero { t.clamp_min(0.0) } else { t })
+        let mut out = if clamp_zero { t.clamp_min(0.0) } else { t };
+        out.record_history(format!("surface.thickness(clamp_zero={clamp_zero})"));
+        Ok(out)
     }
 }
 
@@ -87,7 +108,7 @@ macro_rules! scalar_op {
         impl $trait<f64> for &Surface {
             type Output = Surface;
             fn $method(self, rhs: f64) -> Surface {
-                self.map_unary(move |v| $f(v, rhs))
+                self.map_scalar(stringify!($method), rhs, $f)
             }
         }
     };

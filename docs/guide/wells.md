@@ -44,6 +44,56 @@ bore.mnemonics()                 # curve names, in insertion order
 bore.log_stats("PHIE").mean      # whole-bore NaN-skipping stats
 ```
 
+### Calculated logs and basis alignment
+
+After import, LAS files are no longer modelling containers. Each imported curve
+is a standalone log on a bore with its own `md` and `values` arrays. Log
+arithmetic is strict by default: two curves can be combined directly only when
+they are on the same bore and have identical MD sampling. If sampling differs,
+declare the output basis or resample an operand explicitly.
+
+```python
+logs = project.wells.logs
+
+# Strict: PHIE and NetSand must already share MD sampling on each bore.
+project.wells.assign_log("PHIE_NET", logs.PHIE * logs.NetSand)
+
+# Output basis is PHIE; non-basis operands are resampled to PHIE.
+project.wells.assign_log(
+    "PHIE_NET",
+    logs.PHIE * logs.NetSand,
+    basis=logs.PHIE,
+    interpolation="previous",
+)
+
+# Operand-local resampling wins and makes the expression self-contained.
+project.wells.assign_log(
+    "PHIE_NET",
+    logs.PHIE * logs.NetSand.to_basis(logs.PHIE, interpolation="spline"),
+)
+```
+
+Supported interpolation names are `nearest`/`closest`, `linear`,
+`previous`/`ffill`, `next`/`bfill`, and `spline`/`cubic`. When the
+`petektools` wheel is installed, resampling delegates to its Rust `interp1d`
+kernel; `spline` means a natural cubic spline.
+
+`assign_log` runs across all wells/bores that contain the required logs. Missing
+logs are skipped and reported; basis mismatches or duplicate output names raise.
+The result is a small report:
+
+```python
+result = project.wells.assign_log("BVPHI", logs.PHIE * (1 - logs.SW))
+result.summary()
+result.created
+result.skipped
+```
+
+The calculation basis is the curve's MD vector on a bore, not the input file it
+came from. Curves imported from separate files can combine directly when their
+MD vectors match; curves from the same file still fail if their sampling differs
+after normalization.
+
 ## Tops and zones
 
 `load_well_tops` loads a multi-well Petrel well-tops file and routes each

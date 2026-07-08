@@ -71,6 +71,8 @@ def test_surface_scalar_operators():
     g = petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 3, 3)
     s = petekio.Surface.constant(g, 5.0)
     assert (s + 10.0).stats().mean == 15.0
+    assert "surface.constant(value=5" in s.history()[0]
+    assert any("surface.add_scalar" in h for h in (s + 10.0).history())
     assert (s - 2.0).stats().mean == 3.0
     assert (s * 2.0).stats().mean == 10.0
     assert (s / 5.0).stats().mean == 1.0
@@ -87,7 +89,10 @@ def test_surface_surface_operators_and_mismatch():
     thick = (base - top).clamp_min(0.0)
     assert thick.stats().mean == 30.0
     # named forms agree with operators
-    assert base.minus(top).stats().mean == 30.0
+    minus = base.minus(top)
+    assert minus.stats().mean == 30.0
+    assert any("rhs.surface.constant(value=100" in h for h in minus.history())
+    assert any("surface.minus(surface)" in h for h in minus.history())
     # thickness staticmethod (base - top)
     assert petekio.Surface.thickness(top, base).stats().mean == 30.0
     # geometry mismatch raises
@@ -148,11 +153,13 @@ def test_surface_attr_access():
     s = petekio.Surface.constant(g, 1.0)
     seismic = petekio.Surface.constant(g, 7.0)
     s.set_attr("seismic", seismic)
+    assert any("surface.set_attr(name=seismic)" in h for h in s.history())
     assert "seismic" in s.attr
     assert s.attr_names() == ["seismic"]
     # indexed access promotes to a Surface
     promoted = s.attr["seismic"]
     assert promoted.stats().mean == 7.0
+    assert any("surface.as_attr_surface(name=seismic)" in h for h in promoted.history())
     # ln() on the promoted attribute works (returns a Surface, not ndarray)
     assert math.isclose(s.attr["seismic"].ln().stats().mean, math.log(7.0))
     # call form too
@@ -177,6 +184,8 @@ def test_stats_fields():
 def test_pointset_geojson():
     p = petekio.PointSet.load_geojson(POINTS_GEOJSON)
     assert len(p) == 3
+    assert p.xy() == [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)]
+    assert p.xyz() == [(0.0, 0.0, 10.0), (10.0, 0.0, 20.0), (0.0, 10.0, 30.0)]
     poro = p.attr("poro")
     assert poro == [0.10, 0.20, 0.30]
     assert p.attr("missing") is None
@@ -189,11 +198,31 @@ def test_pointset_geojson():
     assert p.nearest(9.0, 1.0) == 1
 
 
+def test_pointset_column_math_and_assignment():
+    p = petekio.PointSet.load_geojson(POINTS_GEOJSON)
+    assert "points.load_geojson" in p.history()[0]
+    assert p.z.values() == [10.0, 20.0, 30.0]
+    shifted = p.z + 2.0
+    assert shifted.values() == [12.0, 22.0, 32.0]
+    p.depth_plus_y = p.z + p.y
+    assert p.attr("depth_plus_y") == [10.0, 20.0, 40.0]
+    p.set_attr("double_poro", p.poro * 2.0)
+    assert any("points.set_attr(name=double_poro)" in h for h in p.history())
+    assert p.attr_names() == ["poro", "depth_plus_y", "double_poro"]
+    assert p.attr("double_poro") == [0.2, 0.4, 0.6]
+    with pytest.raises(AttributeError):
+        p.z = shifted
+    with pytest.raises(TypeError):
+        _ = p + p
+
+
 def test_pointset_to_surface():
     p = petekio.PointSet.load_geojson(POINTS_GEOJSON)
     g = petekio.GridGeometry(0.0, 0.0, 5.0, 5.0, 3, 3)
     surf = p.to_surface(g, "idw")
     assert surf.ncol == 3 and surf.nrow == 3
+    assert "points.load_geojson" in surf.history()[0]
+    assert any("points.to_surface(method=InverseDistance)" in h for h in surf.history())
     # nearest method also valid
     surf2 = p.to_surface(g, "nearest")
     assert surf2.stats().count > 0
@@ -271,10 +300,30 @@ def test_pointset_infer_geometry_rejects_scattered_points():
 def test_polygonset_geojson():
     poly = petekio.PolygonSet.load_geojson(SQUARE_GEOJSON)
     assert math.isclose(poly.area(), 1.0)
+    assert math.isclose(poly.total_area(), 1.0)
     assert poly.contains(0.5, 0.5)
     assert not poly.contains(2.0, 2.0)
     b = poly.bbox()
     assert b.xmin == 0.0 and b.xmax == 1.0
+
+
+def test_polygonset_column_math_and_assignment():
+    poly = petekio.PolygonSet.from_rings([
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]],
+    ])
+    assert len(poly) == 2
+    assert poly.area.values() == [1.0, 2.0]
+    assert math.isclose(poly.area(), 3.0)
+    poly.ntg = [0.5, 0.25]
+    poly.net_area = poly.area * poly.ntg
+    assert any("polygons.set_attr(name=net_area)" in h for h in poly.history())
+    assert poly.attr("net_area") == [0.5, 0.5]
+    assert poly.attr_names() == ["ntg", "net_area"]
+    with pytest.raises(AttributeError):
+        poly.area = [3.0, 4.0]
+    with pytest.raises(TypeError):
+        _ = poly + poly
 
 
 def test_polygonset_clip():
@@ -285,6 +334,8 @@ def test_polygonset_clip():
     # only nodes strictly inside the unit square keep their value
     assert clipped.stats().count >= 1
     assert clipped.stats().count <= s.stats().count
+    assert any("mask.polygons.load_geojson" in h for h in clipped.history())
+    assert any("polygons.clip(surface)" in h for h in clipped.history())
 
 
 # --------------------------------------------------------------------------

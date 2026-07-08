@@ -243,10 +243,10 @@ mod tests {
     fn points_round_trip() {
         let mut attrs = IndexMap::new();
         attrs.insert("poro".to_string(), vec![0.2, f64::NAN, 0.3]);
-        let pts = PointSet {
-            coords: vec![[0.0, 0.0, 100.0], [1.0, 1.0, 110.0], [2.0, 2.0, 120.0]],
+        let pts = PointSet::from_parts(
+            vec![[0.0, 0.0, 100.0], [1.0, 1.0, 110.0], [2.0, 2.0, 120.0]],
             attrs,
-        };
+        );
         let p = tmp("pts");
         pts.save(&p).unwrap();
         let back = PointSet::load(&p).unwrap();
@@ -264,10 +264,10 @@ mod tests {
     fn points_export_geojson_and_csv_round_trip() {
         let mut attrs = IndexMap::new();
         attrs.insert("poro".to_string(), vec![0.2, f64::NAN, 0.3]);
-        let pts = PointSet {
-            coords: vec![[1.0, 2.0, 100.0], [3.0, 4.0, 110.0], [5.0, 6.0, 120.0]],
+        let pts = PointSet::from_parts(
+            vec![[1.0, 2.0, 100.0], [3.0, 4.0, 110.0], [5.0, 6.0, 120.0]],
             attrs,
-        };
+        );
         // GeoJSON round-trip (NaN → null → NaN).
         let g = tmp_ext("pts_gj", "geojson");
         pts.export_geojson(&g).unwrap();

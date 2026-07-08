@@ -22,7 +22,7 @@ and in its own domain.
   interpreted domain objects out.
 - **A substrate, not a grab-bag.** Load a project once into a `GeoData`;
   operations broadcast across the whole collection. Immutable, strictly layered,
-  fluent.
+  fluent, with `history()` on generated domain objects.
 - **Rust core, thin Python.** Fast and embeddable, with PyO3 bindings that mirror
   the Rust API.
 

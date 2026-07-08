@@ -132,6 +132,11 @@ impl Surface {
             .map_err(to_pyerr)
     }
 
+    /// Human-readable operation history for this surface.
+    fn history(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.with(py, |s| s.history().to_vec())
+    }
+
     /// Bilinear sample at world `(x, y)`; `None` outside the grid or near an
     /// undefined node.
     fn sample(&self, py: Python<'_>, x: f64, y: f64) -> PyResult<Option<f64>> {

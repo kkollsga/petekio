@@ -233,7 +233,11 @@ impl Interval {
 
 pub enum LogKind { Log, Core }                            // continuous log vs core-derived
 pub struct Log { pub mnemonic: String, pub unit: String /* kind, md, values private */ }
-impl Log { pub fn kind(&self) -> LogKind; pub fn with_kind(self, kind: LogKind) -> Log; }
+impl Log {
+    pub fn kind(&self) -> LogKind;
+    pub fn with_kind(self, kind: LogKind) -> Log;
+    pub fn history(&self) -> &[String];
+}
 pub struct LogView<'a> { /* a possibly interval-clipped / filtered view */ }
 impl<'a> LogView<'a> {
     pub fn stats(&self) -> Stats;                            // the `well.brent.ntg` result
@@ -243,6 +247,7 @@ impl<'a> LogView<'a> {
     pub fn resample(&self, step: f64) -> Log;                // onto a regular grid of spacing `step`
     pub fn resample_onto(&self, targets: &[f64]) -> Vec<f64>; // onto arbitrary ASCENDING targets (O(n+k) merge-walk; NaN out-of-span)
     pub fn values(&self) -> &[f64];
+    pub fn history(&self) -> &[String];
     pub fn md(&self) -> &[f64];
 }
 ```

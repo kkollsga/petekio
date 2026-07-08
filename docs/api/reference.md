@@ -80,8 +80,36 @@ and percentiles (`.p10`, `.p50`, `.p90`).
 | Member | Description |
 | --- | --- |
 | `PointSet.bbox` / `.infer_geometry(...)` / `.to_surface(grid_geom)` | Bounds; strict regular-grid geometry inference; grid points onto an explicit geometry. |
+| `PointSet.x` / `.y` / `.z` / `.<attr>` | Column objects for same-point-set calculations; assign with `points.new_attr = ...`. |
 | `GridGeometry.edge` | Edge polygon carried by inferred geometry, or a rectangular footprint for plain geometries. |
 | `PolygonSet.rings` | The constituent rings. |
+| `PolygonSet.area` / `.<attr>` | Per-polygon column objects; `polygons.area()` remains total area, `polygons.total_area()` is explicit. |
+
+## Calculated logs
+
+| Member | Description |
+| --- | --- |
+| `project.wells.assign_log(name, expr)` | Assign a calculated log across wells/bores. Strict by default: log operands must share MD sampling. |
+| `basis=logs.PHIE` | Output basis; other operands are resampled to PHIE using `interpolation=`. |
+| `logs.NetSand.to_basis(logs.PHIE, interpolation="spline")` | Operand-local resampling. Interpolation: `nearest`, `linear`, `previous`, `next`, `spline` plus aliases. `spline` uses the shared `petektools` natural-cubic kernel when available. |
+
+Imported LAS files do not remain calculation frames. A log's basis is its own MD
+vector on the bore.
+
+## Operation history
+
+All value-bearing domain objects use the same underlying operation-history
+container. Python exposes it as an ordered `list[str]` through `.history()`.
+When an object is derived from another object, inherited entries are preserved;
+secondary contributors are role-prefixed, for example `rhs.*`, `mask.*`, or
+`prior.*`.
+
+| Member | Description |
+| --- | --- |
+| `surface.history()` | Human-readable source/operation entries for surface loads, math, resampling, attributes, gridding, and clipping. |
+| `points.history()` | Point-set load/create/filter/attribute history. Generated surfaces inherit the point history. |
+| `polygons.history()` | Polygon load/create/attribute history. Clipped surfaces include the mask history. |
+| `log.history()` | Log creation/assignment and view operations. Logs are stored as MD/value arrays; source files are not retained as calculation frames. |
 
 ## Trajectory (standalone)
 

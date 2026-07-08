@@ -11,7 +11,7 @@
 //! arbitrary subset, so the view stores [`Cow`] and switches to owned storage
 //! when it can no longer be a single contiguous slice.
 
-use crate::foundation::{GeoError, Result, Stats};
+use crate::foundation::{GeoError, HasHistory, OperationHistory, Result, Stats};
 use crate::io::{LogCurveData, LogData};
 use ndarray::Array1;
 use std::borrow::Cow;
@@ -42,6 +42,8 @@ pub struct Log {
     md: Array1<f64>,
     /// Sample values aligned to `md`; `NaN` = undefined. Private.
     values: Array1<f64>,
+    #[serde(default)]
+    history: OperationHistory,
 }
 
 impl Log {
@@ -68,6 +70,7 @@ impl Log {
             kind: LogKind::Log,
             md: Array1::from(md),
             values: Array1::from(values),
+            history: OperationHistory::from_entry("log.new"),
         })
     }
 
@@ -137,7 +140,16 @@ impl Log {
 
     /// A borrowed view over the whole log.
     pub fn view(&self) -> LogView<'_> {
-        LogView::borrowed(self.md_slice(), self.values_slice())
+        LogView::borrowed_with_history(self.md_slice(), self.values_slice(), self.history.clone())
+    }
+
+    /// Human-readable operation history for this log.
+    pub fn history(&self) -> &[String] {
+        self.history.entries()
+    }
+
+    pub fn record_history(&mut self, entry: impl Into<String>) {
+        self.history.push(entry.into());
     }
 
     /// A borrowed view clipped to the half-open MD window `[top_md, base_md)`.
@@ -149,7 +161,22 @@ impl Log {
         let lo = md.partition_point(|&m| m < top_md);
         let hi = md.partition_point(|&m| m < base_md);
         let hi = hi.max(lo);
-        LogView::borrowed(&md[lo..hi], &self.values_slice()[lo..hi])
+        LogView::borrowed_with_history(
+            &md[lo..hi],
+            &self.values_slice()[lo..hi],
+            self.history
+                .with_entry(format!("log.clip(top_md={top_md}, base_md={base_md})")),
+        )
+    }
+}
+
+impl HasHistory for Log {
+    fn operation_history(&self) -> &OperationHistory {
+        &self.history
+    }
+
+    fn operation_history_mut(&mut self) -> &mut OperationHistory {
+        &mut self.history
     }
 }
 
@@ -161,14 +188,19 @@ impl Log {
 pub struct LogView<'a> {
     md: Cow<'a, [f64]>,
     values: Cow<'a, [f64]>,
+    history: OperationHistory,
 }
 
 impl<'a> LogView<'a> {
-    /// A zero-copy view borrowing `md`/`values` slices.
-    pub(crate) fn borrowed(md: &'a [f64], values: &'a [f64]) -> LogView<'a> {
+    pub(crate) fn borrowed_with_history(
+        md: &'a [f64],
+        values: &'a [f64],
+        history: OperationHistory,
+    ) -> LogView<'a> {
         LogView {
             md: Cow::Borrowed(md),
             values: Cow::Borrowed(values),
+            history,
         }
     }
 
@@ -200,7 +232,13 @@ impl<'a> LogView<'a> {
         LogView {
             md: Cow::Owned(md),
             values: Cow::Owned(values),
+            history: self.history.with_entry("log_view.filter"),
         }
+    }
+
+    /// Human-readable operation history for this view.
+    pub fn history(&self) -> &[String] {
+        self.history.entries()
     }
 
     /// Linearly interpolated value at measured depth `md`, or `None` outside
@@ -237,6 +275,9 @@ impl<'a> LogView<'a> {
                 kind: LogKind::Log,
                 md: Array1::from(Vec::new()),
                 values: Array1::from(Vec::new()),
+                history: self
+                    .history
+                    .with_entry(format!("log.resample(step={step})")),
             };
         }
         let (lo, hi) = (m[0], m[m.len() - 1]);
@@ -274,6 +315,9 @@ impl<'a> LogView<'a> {
             kind: LogKind::Log,
             md: Array1::from(md),
             values: Array1::from(values),
+            history: self
+                .history
+                .with_entry(format!("log.resample(step={step})")),
         }
     }
 
@@ -322,6 +366,16 @@ impl<'a> LogView<'a> {
     /// The view's measured depths.
     pub fn md(&self) -> &[f64] {
         &self.md
+    }
+}
+
+impl<'a> HasHistory for LogView<'a> {
+    fn operation_history(&self) -> &OperationHistory {
+        &self.history
+    }
+
+    fn operation_history_mut(&mut self) -> &mut OperationHistory {
+        &mut self.history
     }
 }
 

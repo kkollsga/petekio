@@ -8,6 +8,7 @@ and user-facing inventory, while all loaded subsurface data remains in the Rust
 from __future__ import annotations
 
 import json
+import math
 import re
 import shlex
 from collections.abc import Iterable, Iterator, Mapping
@@ -312,6 +313,97 @@ class _ProjectWellsView:
             return self[well_id]
         except KeyError:
             return default
+
+    def assign_log(
+        self,
+        name: str,
+        expr: Any,
+        *,
+        basis: Any = None,
+        interpolation: str = "linear",
+        overwrite: bool = False,
+    ) -> "AssignLogResult":
+        """Assign a calculated log across wells/bores.
+
+        Without ``basis=`` every log operand must already share the same MD
+        sampling. With ``basis=logs.PHIE``, all non-basis operands are resampled
+        to PHIE's MD sampling using ``interpolation`` unless they already declared
+        their own ``.to_basis(...)``.
+        """
+
+        from ._logs import LogChannel, LogExpression, LogBasis, _normalise_interpolation
+
+        if not isinstance(expr, (LogChannel, LogExpression, LogBasis)):
+            raise TypeError("assign_log expr must be a logs.* channel or log arithmetic expression")
+        if basis is not None and not isinstance(basis, (LogChannel, LogBasis)):
+            raise TypeError("assign_log basis must be a logs.* channel or .to_basis(...) expression")
+        default_interpolation = _normalise_interpolation(interpolation)
+        output = _clean_log_name(name)
+        if not output:
+            raise ValueError("assigned log name cannot be empty")
+
+        created: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+
+        for well_id in self._names:
+            well = self._project.well(well_id)
+            if well is None:
+                skipped.append({"well": well_id, "reason": "missing_well"})
+                continue
+            bores = _call_names(well, "bores") or [""]
+            for bore in bores:
+                sidetrack = well.sidetrack(bore)
+                if sidetrack is None:
+                    skipped.append({"well": well_id, "bore": bore, "reason": "missing_bore"})
+                    continue
+                try:
+                    target_md = None
+                    if basis is not None:
+                        target_md = _eval_log_operand(
+                            basis,
+                            sidetrack,
+                            target_md=None,
+                            default_interpolation=default_interpolation,
+                        ).md
+                    series = _eval_log_operand(
+                        expr,
+                        sidetrack,
+                        target_md=target_md,
+                        default_interpolation=default_interpolation,
+                    )
+                    if sidetrack.log(output) is not None and not overwrite:
+                        raise ValueError(f"log '{output}' already exists on this bore")
+                    sidetrack.assign_log(output, series.md, series.values, overwrite=overwrite)
+                    created.append({
+                        "well": well_id,
+                        "bore": bore,
+                        "log": output,
+                        "samples": len(series.md),
+                    })
+                except _MissingLog as exc:
+                    skipped.append({
+                        "well": well_id,
+                        "bore": bore,
+                        "reason": "missing_log",
+                        "log": exc.mnemonic,
+                    })
+                except Exception as exc:
+                    failed.append({
+                        "well": well_id,
+                        "bore": bore,
+                        "reason": type(exc).__name__,
+                        "message": str(exc),
+                    })
+
+        result = AssignLogResult(created=created, skipped=skipped, failed=failed)
+        if failed:
+            first = failed[0]
+            raise ValueError(
+                f"assign_log failed for {len(failed)} bore(s); first failure "
+                f"{first.get('well')}/{first.get('bore')}: {first.get('message')}"
+            )
+        return result
 
     def __getattr__(self, name: str) -> Any:
         well_id = _well_attr_lookup(name, self._names)
@@ -765,6 +857,204 @@ def _log_source_cache_key(source: Any) -> str:
         else:
             data = repr(source)
     return json.dumps(data, sort_keys=True, separators=(",", ":"), default=repr)
+
+
+@dataclass
+class AssignLogResult:
+    """Result report returned by ``project.wells.assign_log``."""
+
+    created: list[dict[str, Any]]
+    skipped: list[dict[str, Any]]
+    failed: list[dict[str, Any]]
+
+    def summary(self) -> dict[str, int]:
+        return {
+            "created": len(self.created),
+            "skipped": len(self.skipped),
+            "failed": len(self.failed),
+        }
+
+    def to_dataframe(self) -> Any:
+        import pandas as pd
+
+        rows = (
+            [{"status": "created", **row} for row in self.created]
+            + [{"status": "skipped", **row} for row in self.skipped]
+            + [{"status": "failed", **row} for row in self.failed]
+        )
+        return pd.DataFrame(rows)
+
+    def __repr__(self) -> str:
+        s = self.summary()
+        return f"AssignLogResult(created={s['created']}, skipped={s['skipped']}, failed={s['failed']})"
+
+
+@dataclass
+class _LogSeries:
+    md: list[float]
+    values: list[float]
+
+
+class _MissingLog(Exception):
+    def __init__(self, mnemonic: str) -> None:
+        super().__init__(f"missing log '{mnemonic}'")
+        self.mnemonic = mnemonic
+
+
+def _clean_log_name(name: str) -> str:
+    if not isinstance(name, str):
+        raise TypeError(f"log name must be a string, got {type(name).__name__}")
+    return name.strip()
+
+
+def _eval_log_operand(
+    operand: Any,
+    sidetrack: Any,
+    *,
+    target_md: list[float] | None,
+    default_interpolation: str,
+) -> _LogSeries:
+    from ._logs import LogBasis, LogChannel, LogExpression
+
+    if isinstance(operand, (int, float)) and not isinstance(operand, bool):
+        if target_md is None:
+            raise ValueError("scalar-only log expressions need an explicit basis")
+        return _LogSeries(list(target_md), [float(operand)] * len(target_md))
+
+    if isinstance(operand, LogChannel):
+        if operand.filter is not None:
+            raise ValueError("log arithmetic does not yet support filtered log channels")
+        series = _read_log_series(sidetrack, operand.mnemonic)
+        if target_md is not None and not _same_md(series.md, target_md):
+            series = _resample_series(series, target_md, default_interpolation)
+        return series
+
+    if isinstance(operand, LogBasis):
+        basis_series = _eval_log_operand(
+            operand.basis,
+            sidetrack,
+            target_md=None,
+            default_interpolation=default_interpolation,
+        )
+        source = _read_log_series(sidetrack, operand.source.mnemonic)
+        return _resample_series(source, basis_series.md, operand.interpolation)
+
+    if isinstance(operand, LogExpression):
+        left = _eval_log_operand(
+            operand.operands[0],
+            sidetrack,
+            target_md=target_md,
+            default_interpolation=default_interpolation,
+        )
+        right = _eval_log_operand(
+            operand.operands[1],
+            sidetrack,
+            target_md=target_md,
+            default_interpolation=default_interpolation,
+        )
+        if target_md is not None and not _same_md(left.md, target_md):
+            left = _resample_series(left, target_md, default_interpolation)
+        if target_md is not None and not _same_md(right.md, target_md):
+            right = _resample_series(right, target_md, default_interpolation)
+        if not _same_md(left.md, right.md):
+            raise ValueError(
+                "log basis mismatch: operands have different MD sampling; "
+                "pass basis=logs.<curve> or use .to_basis(logs.<curve>, interpolation=...)"
+            )
+        return _LogSeries(
+            left.md,
+            [_apply_log_op(operand.op, a, b) for a, b in zip(left.values, right.values, strict=True)],
+        )
+
+    raise TypeError(f"unsupported log expression operand {type(operand).__name__}")
+
+
+def _read_log_series(sidetrack: Any, mnemonic: str) -> _LogSeries:
+    log = sidetrack.log(mnemonic)
+    if log is None:
+        raise _MissingLog(mnemonic)
+    values, md = log.values_md()
+    return _LogSeries(list(md), list(values))
+
+
+def _same_md(a: list[float], b: list[float]) -> bool:
+    return len(a) == len(b) and all(x == y for x, y in zip(a, b, strict=True))
+
+
+def _apply_log_op(op: str, a: float, b: float) -> float:
+    if op == "+":
+        return a + b
+    if op == "-":
+        return a - b
+    if op == "*":
+        return a * b
+    if op == "/":
+        return a / b
+    raise ValueError(f"unsupported log arithmetic operator {op!r}")
+
+
+def _resample_series(series: _LogSeries, target_md: list[float], interpolation: str) -> _LogSeries:
+    try:
+        import petektools as _pt  # type: ignore
+    except Exception:
+        _pt = None
+    if _pt is not None and hasattr(_pt, "interp1d"):
+        values = list(_pt.interp1d(series.md, series.values, target_md, interpolation))
+        return _LogSeries(list(target_md), values)
+    values = [_interp_at(series.md, series.values, md, interpolation) for md in target_md]
+    return _LogSeries(list(target_md), values)
+
+
+def _interp_at(md: list[float], values: list[float], x: float, method: str) -> float:
+    if not md or x < md[0] or x > md[-1] or math.isnan(x):
+        return math.nan
+    import bisect
+
+    i = bisect.bisect_left(md, x)
+    if i < len(md) and md[i] == x:
+        return values[i]
+    if method == "nearest":
+        if i <= 0:
+            return values[0]
+        if i >= len(md):
+            return values[-1]
+        return values[i - 1] if abs(x - md[i - 1]) <= abs(md[i] - x) else values[i]
+    if method == "previous":
+        return values[max(0, i - 1)]
+    if method == "next":
+        return values[min(i, len(values) - 1)]
+    if i <= 0 or i >= len(md):
+        return math.nan
+    if method == "linear":
+        return _linear_interp(md[i - 1], values[i - 1], md[i], values[i], x)
+    if method == "spline":
+        return _cubic_interp(md, values, i, x)
+    raise ValueError(f"unsupported interpolation {method!r}")
+
+
+def _linear_interp(x0: float, y0: float, x1: float, y1: float, x: float) -> float:
+    span = x1 - x0
+    if span <= 0:
+        return y0
+    t = (x - x0) / span
+    return y0 + (y1 - y0) * t
+
+
+def _cubic_interp(md: list[float], values: list[float], i: int, x: float) -> float:
+    if i < 2 or i + 1 >= len(md):
+        return _linear_interp(md[i - 1], values[i - 1], md[i], values[i], x)
+    x0, x1, x2, x3 = md[i - 2], md[i - 1], md[i], md[i + 1]
+    y0, y1, y2, y3 = values[i - 2], values[i - 1], values[i], values[i + 1]
+    if x2 == x1:
+        return y1
+    t = (x - x1) / (x2 - x1)
+    m1 = (y2 - y0) / (x2 - x0) * (x2 - x1) if x2 != x0 else y2 - y1
+    m2 = (y3 - y1) / (x3 - x1) * (x2 - x1) if x3 != x1 else y2 - y1
+    h00 = 2 * t**3 - 3 * t**2 + 1
+    h10 = t**3 - 2 * t**2 + t
+    h01 = -2 * t**3 + 3 * t**2
+    h11 = t**3 - t**2
+    return h00 * y1 + h10 * m1 + h01 * y2 + h11 * m2
 
 
 def _copy_positioned_logs(wells: list[dict[str, Any]]) -> list[dict[str, Any]]:

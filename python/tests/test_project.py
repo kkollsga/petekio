@@ -23,6 +23,22 @@ def _las() -> str:
     )
 
 
+def _las_curves(curves: list[tuple[str, str]], rows: list[tuple[float, ...]]) -> str:
+    curve_lines = [" DEPT.M : Measured depth"]
+    for mnemonic, unit in curves:
+        curve_lines.append(f" {mnemonic}.{unit} :")
+    ascii_rows = [" ".join(str(v) for v in row) for row in rows]
+    return (
+        "~Version\n VERS. 2.0 :\n WRAP. NO :\n"
+        "~Well\n STRT.M 100.0 :\n STOP.M 120.0 :\n STEP.M 10.0 :\n NULL. -999.25 :\n"
+        "~Curve\n"
+        + "\n".join(curve_lines)
+        + "\n~ASCII\n"
+        + "\n".join(ascii_rows)
+        + "\n"
+    )
+
+
 def _petrel_tops(well: str = "99/9-1") -> str:
     return (
         "# Petrel well tops\nVERSION 2\nBEGIN HEADER\n"
@@ -130,6 +146,98 @@ def test_project_import_accepts_petekio_import_settings(tmp_path):
     assert inv["crs"] == "EPSG:32631"
     assert inv["aliases"] == {"por": ["PHIE_2025"]}
     assert project.well("99/9-1").log("por").stats().count == 3
+
+
+def test_project_wells_assign_log_strict_same_basis(tmp_path):
+    root = tmp_path / "Data"
+    _write(
+        root / "Wells" / "99_9-1_A_logs.las",
+        _las_curves(
+            [("PHIE", "v/v"), ("NetSand", "v/v")],
+            [(100.0, 0.20, 1.0), (110.0, 0.25, 0.0), (120.0, 0.30, 1.0)],
+        ),
+    )
+    project = petekio.Project.import_data(root)
+    logs = project.wells.logs
+
+    result = project.wells.assign_log("PHIE_NET", logs.PHIE * logs.NetSand)
+
+    assert result.summary() == {"created": 1, "skipped": 0, "failed": 0}
+    out = project.well("99/9-1").log("PHIE_NET")
+    assert out.md() == [100.0, 110.0, 120.0]
+    assert out.values() == [0.20, 0.0, 0.30]
+    assert any("sidetrack.assign_log(name=PHIE_NET)" in h for h in out.history())
+    with pytest.raises(ValueError, match="already exists"):
+        project.wells.assign_log("PHIE_NET", logs.PHIE * logs.NetSand)
+
+
+def test_project_wells_assign_log_requires_or_declares_basis(tmp_path):
+    root = tmp_path / "Data"
+    _write(
+        root / "Wells" / "99_9-1_A_phi.las",
+        _las_curves(
+            [("PHIE", "v/v")],
+            [(100.0, 0.20), (110.0, 0.25), (120.0, 0.30)],
+        ),
+    )
+    _write(
+        root / "Wells" / "99_9-1_A_net.las",
+        _las_curves(
+            [("NetSand", "v/v")],
+            [(100.0, 1.0), (115.0, 0.0), (130.0, 1.0)],
+        ),
+    )
+    project = petekio.Project.import_data(root)
+    logs = project.wells.logs
+
+    with pytest.raises(ValueError, match="basis mismatch"):
+        project.wells.assign_log("PHIE_NET_STRICT", logs.PHIE * logs.NetSand)
+
+    result = project.wells.assign_log(
+        "PHIE_NET",
+        logs.PHIE * logs.NetSand,
+        basis=logs.PHIE,
+        interpolation="previous",
+    )
+    assert result.summary()["created"] == 1
+    out = project.well("99/9-1").log("PHIE_NET")
+    assert out.md() == [100.0, 110.0, 120.0]
+    assert out.values() == [0.20, 0.25, 0.0]
+
+    project.wells.assign_log(
+        "PHIE_NET_SPLINE",
+        logs.PHIE * logs.NetSand.to_basis(logs.PHIE, interpolation="spline"),
+    )
+    spline = project.well("99/9-1").log("PHIE_NET_SPLINE")
+    assert spline.md() == [100.0, 110.0, 120.0]
+    assert len(spline.values()) == 3
+
+
+def test_project_wells_assign_log_ignores_las_file_boundaries_after_import(tmp_path):
+    root = tmp_path / "Data"
+    _write(
+        root / "Wells" / "99_9-1_A_phi.las",
+        _las_curves(
+            [("PHIE", "v/v")],
+            [(100.0, 0.20), (110.0, 0.25), (120.0, 0.30)],
+        ),
+    )
+    _write(
+        root / "Wells" / "99_9-1_A_net.las",
+        _las_curves(
+            [("NetSand", "v/v")],
+            [(100.0, 1.0), (110.0, 0.0), (120.0, 1.0)],
+        ),
+    )
+    project = petekio.Project.import_data(root)
+    logs = project.wells.logs
+
+    result = project.wells.assign_log("PHIE_NET", logs.PHIE * logs.NetSand)
+
+    assert result.summary() == {"created": 1, "skipped": 0, "failed": 0}
+    out = project.well("99/9-1").log("PHIE_NET")
+    assert out.md() == [100.0, 110.0, 120.0]
+    assert out.values() == [0.20, 0.0, 0.30]
 
 
 def test_project_import_accepts_settings_mapping_aliases_and_crs(tmp_path):

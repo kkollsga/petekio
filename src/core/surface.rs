@@ -4,7 +4,7 @@
 //! This module covers construction, IO, and access. Math/sampling/statistics
 //! land in later phases.
 
-use crate::foundation::{GeoError, GridGeometry, Result};
+use crate::foundation::{GeoError, GridGeometry, HasHistory, OperationHistory, Result};
 use crate::io::SurfaceData;
 use indexmap::IndexMap;
 use ndarray::Array2;
@@ -19,6 +19,8 @@ pub struct Surface {
     pub geom: GridGeometry,
     values: Array2<f64>,
     attributes: IndexMap<String, Array2<f64>>,
+    #[serde(default)]
+    history: OperationHistory,
 }
 
 impl Surface {
@@ -30,6 +32,7 @@ impl Surface {
             geom,
             values,
             attributes: IndexMap::new(),
+            history: OperationHistory::from_entry("surface.new"),
         })
     }
 
@@ -39,6 +42,7 @@ impl Surface {
             geom,
             values,
             attributes,
+            history: OperationHistory::from_entry("surface.import"),
         }
     }
 
@@ -50,6 +54,7 @@ impl Surface {
             geom,
             values,
             attributes: IndexMap::new(),
+            history: OperationHistory::new(),
         }
     }
 
@@ -60,13 +65,19 @@ impl Surface {
             geom,
             values,
             attributes: IndexMap::new(),
+            history: OperationHistory::from_entry(format!("surface.constant(value={value})")),
         }
     }
 
     /// Load an IRAP-classic (ROXAR ASCII) surface — the first supported format.
     pub fn load_irap_classic(path: impl AsRef<Path>) -> Result<Surface> {
         let data = crate::io::irap::load_irap_classic(path.as_ref())?;
-        Ok(Surface::from_surface_data(data))
+        let mut out = Surface::from_surface_data(data);
+        out.history = OperationHistory::from_entry(format!(
+            "surface.load_irap_classic(path={})",
+            path.as_ref().display()
+        ));
+        Ok(out)
     }
 
     /// Load a CPS-3 regular grid (`.CPS3grid`) — `FS*` header + row-major z, the
@@ -74,7 +85,12 @@ impl Surface {
     /// [`crate::io::cps3`]).
     pub fn load_cps3_grid(path: impl AsRef<Path>) -> Result<Surface> {
         let data = crate::io::cps3::load_cps3_grid(path.as_ref())?;
-        Ok(Surface::from_surface_data(data))
+        let mut out = Surface::from_surface_data(data);
+        out.history = OperationHistory::from_entry(format!(
+            "surface.load_cps3_grid(path={})",
+            path.as_ref().display()
+        ));
+        Ok(out)
     }
 
     /// Write this surface's primary layer as IRAP-classic ASCII.
@@ -97,6 +113,7 @@ impl Surface {
     pub fn set_attr(&mut self, name: &str, values: Array2<f64>) -> Result<()> {
         check_shape(&self.geom, &values, "Surface::set_attr")?;
         self.attributes.insert(name.to_string(), values);
+        self.record_history(format!("surface.set_attr(name={name})"));
         Ok(())
     }
 
@@ -112,7 +129,25 @@ impl Surface {
             geom: self.geom.clone(),
             values: a.clone(),
             attributes: IndexMap::new(),
+            history: self.history_with(format!("surface.as_attr_surface(name={name})")),
         })
+    }
+
+    /// Human-readable operation history for this surface.
+    pub fn history(&self) -> &[String] {
+        self.history.entries()
+    }
+
+    pub(crate) fn history_with(&self, entry: impl Into<String>) -> OperationHistory {
+        self.history.with_entry(entry)
+    }
+
+    pub(crate) fn record_history(&mut self, entry: impl Into<String>) {
+        self.history.push(entry.into());
+    }
+
+    pub(crate) fn set_history(&mut self, history: impl Into<OperationHistory>) {
+        self.history = history.into();
     }
 
     /// Bilinear sample of the primary layer at world `(x, y)`. Single-homed on
@@ -171,11 +206,27 @@ impl Surface {
             &target.to_lattice(),
             petektools::ResampleMethod::Bilinear,
         )?;
-        Ok(Surface {
+        let mut out = Surface {
             geom: target.clone(),
             values,
             attributes: IndexMap::new(),
-        })
+            history: OperationHistory::new(),
+        };
+        out.set_history(self.history_with(format!(
+            "surface.resample(ncol={}, nrow={})",
+            target.ncol, target.nrow
+        )));
+        Ok(out)
+    }
+}
+
+impl HasHistory for Surface {
+    fn operation_history(&self) -> &OperationHistory {
+        &self.history
+    }
+
+    fn operation_history_mut(&mut self) -> &mut OperationHistory {
+        &mut self.history
     }
 }
 

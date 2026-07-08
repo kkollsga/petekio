@@ -11,7 +11,7 @@
 use crate::geodata::GeoData;
 use crate::specs::NetSettings;
 use crate::stats::Stats;
-use petekio::Well as RsWell;
+use petekio::{Log as RsLog, Well as RsWell};
 use pyo3::exceptions::{PyAttributeError, PyImportError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -508,6 +508,21 @@ impl Sidetrack {
             f(st)
         })
     }
+
+    fn mutate<R>(
+        &self,
+        py: Python<'_>,
+        f: impl FnOnce(&mut petekio::Sidetrack) -> PyResult<R>,
+    ) -> PyResult<R> {
+        let well = self.well.borrow(py);
+        let mut geo = well.geo.borrow_mut(py);
+        let rw = geo
+            .inner
+            .well_mut(&well.id)
+            .ok_or_else(|| PyValueError::new_err(format!("no well '{}'", well.id)))?;
+        let st = rw.sidetrack_mut(&self.label);
+        f(st)
+    }
 }
 
 #[pymethods]
@@ -555,6 +570,35 @@ impl Sidetrack {
             top_name: None,
             bore: Some(self.label.clone()),
         }))
+    }
+
+    /// Add a calculated log on this bore. Raises unless `overwrite=True` when a
+    /// curve with the same mnemonic already exists on this bore.
+    #[pyo3(signature = (mnemonic, md, values, unit = "", overwrite = false))]
+    fn assign_log(
+        &self,
+        py: Python<'_>,
+        mnemonic: &str,
+        md: Vec<f64>,
+        values: Vec<f64>,
+        unit: &str,
+        overwrite: bool,
+    ) -> PyResult<()> {
+        self.mutate(py, |s| {
+            if s.log(mnemonic).is_some() && !overwrite {
+                return Err(PyValueError::new_err(format!(
+                    "log '{mnemonic}' already exists on this bore"
+                )));
+            }
+            let mut log = RsLog::new(mnemonic, unit, md, values)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            log.record_history(format!("sidetrack.assign_log(name={mnemonic})"));
+            if overwrite {
+                s.retain_logs_except(mnemonic);
+            }
+            s.add_log(log);
+            Ok(())
+        })
     }
 
     /// Fluid-contact picks on this bore as `(name, md)` rows.
@@ -804,6 +848,11 @@ impl LogView {
     /// The view's values as a `list[float]`.
     fn values(&self, py: Python<'_>) -> PyResult<Vec<f64>> {
         self.resolve(py, |v| Ok(v.values().to_vec()))
+    }
+
+    /// Human-readable operation history for the source log/view.
+    fn history(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.resolve(py, |v| Ok(v.history().to_vec()))
     }
 
     /// The view's measured depths as a `list[float]`.

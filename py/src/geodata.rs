@@ -62,6 +62,21 @@ impl GeoData {
         Ok(PointSet::view(slf.clone().unbind(), name.to_string()))
     }
 
+    /// Load an IRAP/RMS point set, using a matching EarthVision grid export for
+    /// Petrel `column`/`row` topology.
+    fn load_points_with_topology(
+        slf: Bound<'_, Self>,
+        name: &str,
+        path: &str,
+        topology_path: &str,
+    ) -> PyResult<PointSet> {
+        slf.borrow_mut()
+            .inner
+            .load_points_with_topology(name, path, topology_path)
+            .map_err(to_pyerr)?;
+        Ok(PointSet::view(slf.clone().unbind(), name.to_string()))
+    }
+
     /// Load a polygon set from `path` (extension-dispatched) under `name`,
     /// returning a view.
     fn load_polygons(slf: Bound<'_, Self>, name: &str, path: &str) -> PyResult<PolygonSet> {
@@ -81,6 +96,16 @@ impl GeoData {
             .then(|| Surface::view(slf.clone().unbind(), name.to_string()))
     }
 
+    /// Rename a stored surface.
+    fn rename_surface(&mut self, old: &str, new: &str) -> PyResult<()> {
+        self.inner.rename_surface(old, new).map_err(to_pyerr)
+    }
+
+    /// Delete a stored surface. Returns whether anything was removed.
+    fn delete_surface(&mut self, name: &str) -> bool {
+        self.inner.delete_surface(name)
+    }
+
     /// The point set stored under `name` (view), or `None`.
     fn points(slf: Bound<'_, Self>, name: &str) -> Option<PointSet> {
         slf.borrow()
@@ -90,6 +115,16 @@ impl GeoData {
             .then(|| PointSet::view(slf.clone().unbind(), name.to_string()))
     }
 
+    /// Rename a stored point set.
+    fn rename_points(&mut self, old: &str, new: &str) -> PyResult<()> {
+        self.inner.rename_points(old, new).map_err(to_pyerr)
+    }
+
+    /// Delete a stored point set. Returns whether anything was removed.
+    fn delete_points(&mut self, name: &str) -> bool {
+        self.inner.delete_points(name)
+    }
+
     /// The polygon set stored under `name` (view), or `None`.
     fn polygons(slf: Bound<'_, Self>, name: &str) -> Option<PolygonSet> {
         slf.borrow()
@@ -97,6 +132,16 @@ impl GeoData {
             .polygons(name)
             .is_some()
             .then(|| PolygonSet::view(slf.clone().unbind(), name.to_string()))
+    }
+
+    /// Rename a stored polygon set.
+    fn rename_polygons(&mut self, old: &str, new: &str) -> PyResult<()> {
+        self.inner.rename_polygons(old, new).map_err(to_pyerr)
+    }
+
+    /// Delete a stored polygon set. Returns whether anything was removed.
+    fn delete_polygons(&mut self, name: &str) -> bool {
+        self.inner.delete_polygons(name)
     }
 
     /// Load a well from `files` (a per-well directory or single file) under
@@ -252,6 +297,16 @@ impl GeoData {
             .well(id)
             .is_some()
             .then(|| Well::view(slf.clone().unbind(), id.to_string()))
+    }
+
+    /// Rename a stored well.
+    fn rename_well(&mut self, old: &str, new: &str) -> PyResult<()> {
+        self.inner.rename_well(old, new).map_err(to_pyerr)
+    }
+
+    /// Delete a stored well. Returns whether anything was removed.
+    fn delete_well(&mut self, id: &str) -> bool {
+        self.inner.delete_well(id)
     }
 
     /// All surfaces in insertion order, as cheap views (no grid copy).

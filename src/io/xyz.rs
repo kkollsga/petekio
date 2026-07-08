@@ -6,6 +6,7 @@
 //! `#`/`!` comment lines are skipped. Imports only from `foundation`.
 
 use crate::foundation::{GeoError, Result};
+use crate::io::{PointData, PolygonData};
 use std::path::Path;
 
 /// The polygon ring separator / undefined sentinel in RMS `.pol` files.
@@ -88,7 +89,7 @@ pub(crate) fn foreign_point_format(text: &str) -> Option<&'static str> {
 /// (EarthVision grid, CPS-3, LAS) is rejected with a typed [`GeoError::Format`]
 /// naming the detected format, rather than mis-parsing its header into wrong
 /// coordinates.
-pub fn load_points(path: &Path) -> Result<Vec<[f64; 3]>> {
+pub fn load_points(path: &Path) -> Result<PointData> {
     // Decode permissively (Petrel/EarthVision exports may be Latin-1) so the
     // sniff and parse never choke on a stray non-UTF-8 byte in a name/comment.
     let text = crate::io::decode_latin1(&std::fs::read(path)?);
@@ -107,12 +108,12 @@ pub fn load_points(path: &Path) -> Result<Vec<[f64; 3]>> {
             out.push(p);
         }
     }
-    Ok(out)
+    Ok(PointData::from_coords(out))
 }
 
 /// Read polygons: consecutive `X Y Z` lines form one ring; a `999.0` separator
 /// line closes the current ring and starts the next. Empty rings are dropped.
-pub fn load_polygons(path: &Path) -> Result<Vec<Vec<[f64; 3]>>> {
+pub fn load_polygons(path: &Path) -> Result<PolygonData> {
     let text = std::fs::read_to_string(path)?;
     let mut rings: Vec<Vec<[f64; 3]>> = Vec::new();
     let mut current: Vec<[f64; 3]> = Vec::new();
@@ -129,7 +130,7 @@ pub fn load_polygons(path: &Path) -> Result<Vec<Vec<[f64; 3]>>> {
     if !current.is_empty() {
         rings.push(current);
     }
-    Ok(rings)
+    Ok(PolygonData::from_rings(rings))
 }
 
 #[cfg(test)]
@@ -152,8 +153,9 @@ mod tests {
             "petekio_plain_points.xyz",
             "# a comment\n1.0 2.0 -100.0\n3.0 4.0 -110.0\n",
         );
-        let pts = load_points(&p).unwrap();
+        let (pts, attrs) = load_points(&p).unwrap().into_parts();
         assert_eq!(pts, vec![[1.0, 2.0, -100.0], [3.0, 4.0, -110.0]]);
+        assert!(attrs.is_empty());
     }
 
     #[test]

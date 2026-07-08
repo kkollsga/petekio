@@ -1,8 +1,7 @@
 //! CPS-3 ASCII readers — the regular **grid** and the **polyline/polygon** form.
 //!
-//! Both are Petrel/GeoGraphix exports. This module returns primitives (a
-//! geometry + value grid, or rings of `[x, y, z]`); `core::Surface` /
-//! `core::PolygonSet` build the domain objects. Imports only from `foundation`.
+//! Both are Petrel/GeoGraphix exports. This module returns canonical imported
+//! payloads; `core::Surface` / `core::PolygonSet` build the domain objects.
 //!
 //! **CPS-3 grid** (`.CPS3grid`): an `FS*` header block then a `->` marker line,
 //! followed by whitespace-separated z values in **row-major** order. Header
@@ -35,12 +34,12 @@
 //! vertices. Each block becomes one ring.
 
 use crate::foundation::{GeoError, GridGeometry, Result};
-use crate::io::{is_null_sentinel, DEFAULT_NULL_1E30};
+use crate::io::{is_null_sentinel, PolygonData, SurfaceData, DEFAULT_NULL_1E30};
 use ndarray::Array2;
 use std::path::Path;
 
-/// Read a CPS-3 regular grid into a geometry + value grid (nulls → `NaN`).
-pub fn load_cps3_grid(path: &Path) -> Result<(GridGeometry, Array2<f64>)> {
+/// Read a CPS-3 regular grid into canonical imported surface data.
+pub fn load_cps3_grid(path: &Path) -> Result<SurfaceData> {
     let text = crate::io::decode_latin1(&std::fs::read(path)?);
     parse_cps3_grid(&text)
 }
@@ -52,7 +51,7 @@ fn header_nums(line: &str) -> Vec<f64> {
         .collect()
 }
 
-fn parse_cps3_grid(text: &str) -> Result<(GridGeometry, Array2<f64>)> {
+fn parse_cps3_grid(text: &str) -> Result<SurfaceData> {
     let (mut xmin, mut xmax, mut ymin, mut ymax) = (None, None, None, None);
     let (mut nrow, mut ncol): (Option<usize>, Option<usize>) = (None, None);
     let (mut xinc, mut yinc): (Option<f64>, Option<f64>) = (None, None);
@@ -155,13 +154,13 @@ fn parse_cps3_grid(text: &str) -> Result<(GridGeometry, Array2<f64>)> {
         rotation_deg: 0.0,
         yflip: false,
     };
-    Ok((geom, grid))
+    SurfaceData::new(geom, grid)
 }
 
 /// Read CPS-3 polyline blocks into rings of `[x, y, z]`. Each `->` marker starts
 /// a new block; its subsequent `x y z` lines are the ring vertices. Header
 /// (`FF*`/`FS*`) lines and any line before the first `->` are ignored.
-pub fn load_cps3_lines(path: &Path) -> Result<Vec<Vec<[f64; 3]>>> {
+pub fn load_cps3_lines(path: &Path) -> Result<PolygonData> {
     let text = crate::io::decode_latin1(&std::fs::read(path)?);
     let mut rings: Vec<Vec<[f64; 3]>> = Vec::new();
     let mut cur: Option<Vec<[f64; 3]>> = None;
@@ -193,7 +192,7 @@ pub fn load_cps3_lines(path: &Path) -> Result<Vec<Vec<[f64; 3]>>> {
     if let Some(r) = cur {
         rings.push(r);
     }
-    Ok(rings)
+    Ok(PolygonData::from_rings(rings))
 }
 
 #[cfg(test)]
@@ -226,7 +225,8 @@ FSXINC 10 10
 5 6
 ";
         let p = write("petekio_cps3_grid.CPS3grid", body);
-        let (geom, v) = load_cps3_grid(&p).unwrap();
+        let (geom, v, attrs) = load_cps3_grid(&p).unwrap().into_parts();
+        assert!(attrs.is_empty());
         assert_eq!((geom.ncol, geom.nrow), (2, 3));
         assert!(!geom.yflip);
         // node (i=col, j=row): value[[i,j]] = z[row=j][col=i]
@@ -258,7 +258,7 @@ FFATTR ...
 310.0 410.0 -62.0
 ";
         let p = write("petekio_cps3_lines.CPS3lines", body);
-        let rings = load_cps3_lines(&p).unwrap();
+        let rings = load_cps3_lines(&p).unwrap().into_rings();
         assert_eq!(rings.len(), 2);
         assert_eq!(rings[0].len(), 3);
         assert_eq!(rings[0][0], [100.0, 200.0, -50.0]);

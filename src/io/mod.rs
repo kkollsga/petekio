@@ -53,9 +53,18 @@ pub mod earthvision;
 pub mod serial;
 pub mod irap;
 pub mod las;
+pub(crate) mod log_data;
 pub mod petrel_tops;
+pub(crate) mod point_data;
+pub(crate) mod polygon_data;
+pub(crate) mod surface_data;
 pub mod tops;
 pub mod vector;
 pub mod vector_write;
 pub mod wellpath;
 pub mod xyz;
+
+pub(crate) use log_data::{LogCurveData, LogData};
+pub(crate) use point_data::{normalize_attr_name, PointData};
+pub(crate) use polygon_data::PolygonData;
+pub(crate) use surface_data::SurfaceData;

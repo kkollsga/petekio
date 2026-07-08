@@ -1,10 +1,17 @@
 # Projects & persistence
 
-A `GeoData` project saves to a single **`.pproj`** file — an efficient, structured
+A project saves to a single **`.pproj`** file — an efficient, structured
 container (not human-readable) that is easy to **split, merge, and tag-filter**
-for sharing with teammates.
+for sharing with teammates. Raw vendor folders are imported with
+`Project.import_data(...)`; `Project.load(...)` and `Project.save(...)` are for
+the compact `.pproj` format only.
 
 ```python
+project = petekio.Project.import_data("Data")
+project.save("field.pproj")
+project = petekio.Project.load("field.pproj")
+
+geo = project.geodata
 geo.set_owner("kk")
 geo.set_tags(["field-a", "gate-0"])          # project-level tags
 geo.save("field.pproj")                     # atomic whole-project write

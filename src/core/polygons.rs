@@ -5,6 +5,7 @@
 
 use crate::core::surface::Surface;
 use crate::foundation::{BBox, GridGeometry, Result};
+use crate::io::PolygonData;
 use geo::prelude::*;
 use geo::{Coord, LineString, Point, Polygon};
 use ndarray::Array2;
@@ -34,6 +35,10 @@ impl PolygonSet {
             })
             .collect();
         PolygonSet { polys }
+    }
+
+    pub(crate) fn from_polygon_data(data: PolygonData) -> PolygonSet {
+        PolygonSet::from_rings(data.into_rings())
     }
 
     /// Build the rectangular footprint of a grid geometry from its corner nodes.
@@ -67,29 +72,29 @@ impl PolygonSet {
     /// Load polygons from a GeoJSON file (`Polygon`/`MultiPolygon`/`LineString`
     /// features; each ring becomes one polygon).
     pub fn load_geojson(path: impl AsRef<Path>) -> Result<PolygonSet> {
-        let rings = crate::io::vector::load_polygon_rings_geojson(path.as_ref())?;
-        Ok(PolygonSet::from_rings(rings))
+        let data = crate::io::vector::load_polygon_rings_geojson(path.as_ref())?;
+        Ok(PolygonSet::from_polygon_data(data))
     }
 
     /// Load polygons from an IRAP/RMS plain `X Y Z` file (rings separated by the
     /// `999.0` sentinel).
     pub fn load_irap_polygons(path: impl AsRef<Path>) -> Result<PolygonSet> {
-        let rings = crate::io::xyz::load_polygons(path.as_ref())?;
-        Ok(PolygonSet::from_rings(rings))
+        let data = crate::io::xyz::load_polygons(path.as_ref())?;
+        Ok(PolygonSet::from_polygon_data(data))
     }
 
     /// Load polygons from a CPS-3 lines file (`.CPS3lines`) — polyline blocks
     /// each introduced by a `->` marker (see [`crate::io::cps3`]). Structure
     /// outlines, fault polygons, and model-edge rings.
     pub fn load_cps3_lines(path: impl AsRef<Path>) -> Result<PolygonSet> {
-        let rings = crate::io::cps3::load_cps3_lines(path.as_ref())?;
-        Ok(PolygonSet::from_rings(rings))
+        let data = crate::io::cps3::load_cps3_lines(path.as_ref())?;
+        Ok(PolygonSet::from_polygon_data(data))
     }
 
     /// Load polygons from an ESRI shapefile (pass the `.shp` path).
     pub fn load_shapefile(path: impl AsRef<Path>) -> Result<PolygonSet> {
-        let rings = crate::io::vector::load_polygon_rings_shapefile(path.as_ref())?;
-        Ok(PolygonSet::from_rings(rings))
+        let data = crate::io::vector::load_polygon_rings_shapefile(path.as_ref())?;
+        Ok(PolygonSet::from_polygon_data(data))
     }
 
     /// Whether `(x, y)` is inside any polygon. Uses `geo`'s `Contains`, which

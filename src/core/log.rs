@@ -12,6 +12,7 @@
 //! when it can no longer be a single contiguous slice.
 
 use crate::foundation::{GeoError, Result, Stats};
+use crate::io::{LogCurveData, LogData};
 use ndarray::Array1;
 use std::borrow::Cow;
 use std::path::Path;
@@ -86,23 +87,32 @@ impl Log {
     /// file's index (depth) curve as its MD. NULL samples arrive as `f64::NAN`.
     pub fn load_las_all(path: impl AsRef<Path>) -> Result<Vec<Log>> {
         let d = crate::io::las::load(path.as_ref())?;
-        let md = d.index;
-        d.curves
-            .into_iter()
-            .map(|c| Log::new(c.mnemonic, c.unit, md.clone(), c.values))
-            .collect()
+        Log::from_log_data(d)
     }
 
     /// Load a single curve `mnemonic` (case-insensitive) from a LAS file.
     /// `Err(NotFound)` if the file has no such curve.
     pub fn load_las(path: impl AsRef<Path>, mnemonic: &str) -> Result<Log> {
         let d = crate::io::las::load(path.as_ref())?;
+        let md = d.md;
         let c = d
             .curves
             .into_iter()
             .find(|c| c.mnemonic.eq_ignore_ascii_case(mnemonic))
             .ok_or_else(|| GeoError::NotFound(format!("LAS curve '{mnemonic}'")))?;
-        Log::new(c.mnemonic, c.unit, d.index, c.values)
+        Log::from_log_curve(md, c)
+    }
+
+    pub(crate) fn from_log_data(data: LogData) -> Result<Vec<Log>> {
+        let md = data.md;
+        data.curves
+            .into_iter()
+            .map(|curve| Log::from_log_curve(md.clone(), curve))
+            .collect()
+    }
+
+    pub(crate) fn from_log_curve(md: Vec<f64>, curve: LogCurveData) -> Result<Log> {
+        Log::new(curve.mnemonic, curve.unit, md, curve.values)
     }
 
     /// Number of samples.

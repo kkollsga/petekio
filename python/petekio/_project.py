@@ -1,4 +1,4 @@
-"""Project-level raw-tree loading facade for petekIO.
+"""Project-level raw-tree import and compact-project loading facade for petekIO.
 
 `Project` is intentionally a Python facade over `GeoData`: it owns scan metadata
 and user-facing inventory, while all loaded subsurface data remains in the Rust
@@ -21,7 +21,7 @@ from ._petekio import FormatKind, GeoData, IngestSpec, detect
 
 SKIP_UNSUPPORTED_FORMAT = "unsupported_format"
 SKIP_AMBIGUOUS_GEOJSON = "ambiguous_geojson"
-SKIP_LOAD_ERROR = "load_error"
+SKIP_IMPORT_ERROR = "import_error"
 
 
 @dataclass(frozen=True)
@@ -31,12 +31,12 @@ class _FileRecord:
 
 
 @dataclass(frozen=True)
-class LoadSettings:
-    """Project loading settings owned by petekIO.
+class ImportSettings:
+    """Project import settings owned by petekIO.
 
-    ``Project.load(..., settings=LoadSettings(...))`` is the notebook-facing
-    form. The explicit ``aliases=``, ``crs=``, and mapping-style ``settings=``
-    arguments remain supported for compatibility with earlier examples.
+    ``Project.import_data(..., settings=ImportSettings(...))`` is the
+    notebook-facing form for raw source trees. ``Project.load(...)`` is reserved
+    for compact ``.pproj`` files.
     """
 
     crs: str | None = None
@@ -52,88 +52,142 @@ class LoadSettings:
 
 
 class _NamedCollection:
-    """List-like project names with optional lookup by name."""
+    """Folder-aware project names with optional lookup by name."""
 
-    def __init__(self, names: Iterable[str], getter):
-        self._names = list(names)
+    def __init__(self, names: Iterable[str], getter, *, prefix: str = ""):
+        self._names = [_normalise_project_path(name) for name in names]
         self._getter = getter
+        self._prefix = _normalise_project_path(prefix)
 
     def __len__(self) -> int:
-        return len(self._names)
+        return len(self._visible_names())
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._names)
+        return iter(self._visible_names())
 
     def __contains__(self, name: object) -> bool:
-        return isinstance(name, str) and _resolve_collection_name(name, self._names) is not None
+        return isinstance(name, str) and (
+            _resolve_collection_name(name, self._names, prefix=self._prefix) is not None
+            or _resolve_collection_folder(name, self._names, prefix=self._prefix) is not None
+        )
 
     def __getitem__(self, name: int | slice | str) -> Any:
         if isinstance(name, (int, slice)):
-            return self._names[name]
-        resolved = _resolve_collection_name(name, self._names)
-        if resolved is None:
-            raise KeyError(name)
-        value = self._getter(resolved)
-        if value is None:
-            raise KeyError(resolved)
-        return value
+            return self._visible_names()[name]
+        resolved = _resolve_collection_name(name, self._names, prefix=self._prefix)
+        if resolved is not None:
+            value = self._getter(resolved)
+            if value is None:
+                raise KeyError(resolved)
+            return value
+        folder = _resolve_collection_folder(name, self._names, prefix=self._prefix)
+        if folder is not None:
+            return self._descend(folder)
+        raise KeyError(name)
 
     def __call__(self, name: str) -> Any:
-        resolved = _resolve_collection_name(name, self._names)
+        resolved = _resolve_collection_name(name, self._names, prefix=self._prefix)
         return None if resolved is None else self._getter(resolved)
 
     def get(self, name: str, default: Any = None) -> Any:
-        resolved = _resolve_collection_name(name, self._names)
+        resolved = _resolve_collection_name(name, self._names, prefix=self._prefix)
         if resolved is None:
             return default
         value = self._getter(resolved)
         return default if value is None else value
 
     def names(self) -> list[str]:
+        return self._visible_names()
+
+    def all_names(self) -> list[str]:
         return list(self._names)
 
+    def folders(self) -> list[str]:
+        return [name for name in self._visible_names() if name.endswith("/")]
+
+    def objects(self) -> list[str]:
+        return [name for name in self._visible_names() if not name.endswith("/")]
+
     def values(self) -> list[Any]:
-        return [self._getter(name) for name in self._names]
+        return [self._getter(name) for name in self._object_names_at_prefix()]
 
     def items(self) -> list[tuple[str, Any]]:
-        return [(name, self._getter(name)) for name in self._names]
+        return [(name.rsplit("/", 1)[-1], self._getter(name)) for name in self._object_names_at_prefix()]
+
+    def _visible_names(self) -> list[str]:
+        return _visible_collection_names(self._names, self._prefix)
+
+    def _object_names_at_prefix(self) -> list[str]:
+        return [
+            name
+            for name in self._names
+            if _relative_to_project_prefix(name, self._prefix) is not None
+            and "/" not in _relative_to_project_prefix(name, self._prefix)
+        ]
+
+    def _descend(self, prefix: str) -> "_NamedCollection":
+        return _NamedCollection(self._names, self._getter, prefix=prefix)
+
+    def __getattr__(self, name: str) -> Any:
+        folder = _resolve_collection_folder(name, self._names, prefix=self._prefix)
+        if folder is not None:
+            return self._descend(folder)
+        resolved = _resolve_collection_name(name, self._names, prefix=self._prefix)
+        if resolved is not None:
+            value = self._getter(resolved)
+            if value is not None:
+                return value
+        raise AttributeError(name)
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, _NamedCollection):
-            return self._names == other._names
+            return self._visible_names() == other._visible_names()
         if isinstance(other, list):
-            return self._names == other
+            return self._visible_names() == other
         return False
 
     def __repr__(self) -> str:
-        return repr(self._names)
+        return repr(self._visible_names())
 
     __str__ = __repr__
 
 
 class _TopsCollection:
-    """List-like top-set names with DataFrame lookup by set name."""
+    """Folder-aware top-set names with DataFrame lookup by set name."""
 
-    def __init__(self, names: Iterable[str], rows_by_name: Mapping[str, list[dict[str, Any]]]):
-        self._names = list(names)
+    def __init__(
+        self,
+        names: Iterable[str],
+        rows_by_name: Mapping[str, list[dict[str, Any]]],
+        *,
+        prefix: str = "",
+    ):
+        self._names = [_normalise_project_path(name) for name in names]
         self._rows_by_name = {str(name): list(rows) for name, rows in rows_by_name.items()}
+        self._prefix = _normalise_project_path(prefix)
 
     def __len__(self) -> int:
-        return len(self._names)
+        return len(self._visible_names())
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._names)
+        return iter(self._visible_names())
 
     def __contains__(self, name: object) -> bool:
-        return isinstance(name, str) and _resolve_collection_name(name, self._names) is not None
+        return isinstance(name, str) and (
+            _resolve_collection_name(name, self._names, prefix=self._prefix) is not None
+            or _resolve_collection_folder(name, self._names, prefix=self._prefix) is not None
+        )
 
     def __getitem__(self, name: int | slice | str) -> Any:
         if isinstance(name, (int, slice)):
-            return self._names[name]
-        resolved = _resolve_collection_name(name, self._names)
-        if resolved is None:
-            raise KeyError(name)
-        return _dataframe(self._rows_by_name.get(resolved, []))
+            return self._visible_names()[name]
+        resolved = _resolve_collection_name(name, self._names, prefix=self._prefix)
+        if resolved is not None:
+            return _dataframe(self._rows_by_name.get(resolved, []))
+        folder = _resolve_collection_folder(name, self._names, prefix=self._prefix)
+        if folder is not None:
+            return self._descend(folder)
+        raise KeyError(name)
 
     def get(self, name: str, default: Any = None) -> Any:
         try:
@@ -142,20 +196,49 @@ class _TopsCollection:
             return default
 
     def names(self) -> list[str]:
+        return self._visible_names()
+
+    def all_names(self) -> list[str]:
         return list(self._names)
 
     def items(self) -> list[tuple[str, Any]]:
-        return [(name, self[name]) for name in self._names]
+        return [
+            (name.rsplit("/", 1)[-1], _dataframe(self._rows_by_name.get(name, [])))
+            for name in self._object_names_at_prefix()
+        ]
+
+    def _visible_names(self) -> list[str]:
+        return _visible_collection_names(self._names, self._prefix)
+
+    def _object_names_at_prefix(self) -> list[str]:
+        return [
+            name
+            for name in self._names
+            if _relative_to_project_prefix(name, self._prefix) is not None
+            and "/" not in _relative_to_project_prefix(name, self._prefix)
+        ]
+
+    def _descend(self, prefix: str) -> "_TopsCollection":
+        return _TopsCollection(self._names, self._rows_by_name, prefix=prefix)
+
+    def __getattr__(self, name: str) -> Any:
+        folder = _resolve_collection_folder(name, self._names, prefix=self._prefix)
+        if folder is not None:
+            return self._descend(folder)
+        resolved = _resolve_collection_name(name, self._names, prefix=self._prefix)
+        if resolved is not None:
+            return _dataframe(self._rows_by_name.get(resolved, []))
+        raise AttributeError(name)
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, _TopsCollection):
-            return self._names == other._names
+            return self._visible_names() == other._visible_names()
         if isinstance(other, list):
-            return self._names == other
+            return self._visible_names() == other
         return False
 
     def __repr__(self) -> str:
-        return repr(self._names)
+        return repr(self._visible_names())
 
     __str__ = __repr__
 
@@ -250,7 +333,7 @@ class _ProjectWellsView:
 
 
 class Project:
-    """Canonical Python project-loading facade, thin over `GeoData`."""
+    """Canonical Python project facade, thin over `GeoData`."""
 
     def __init__(
         self,
@@ -276,34 +359,48 @@ class Project:
         self._log_resolution_cache: dict[str, list[dict[str, Any]]] = {}
 
     @classmethod
-    def load(
+    def load(cls, path: str | Path) -> "Project":
+        """Load a compact `.pproj` project.
+
+        Raw Petrel-style source trees are imported with
+        [`Project.import_data`](Project.import_data); `load` is intentionally
+        reserved for the compact save/load format.
+        """
+
+        src = Path(path)
+        if src.suffix.lower() != ".pproj":
+            raise ValueError(
+                f"Project.load: expected a compact .pproj file, got '{src}'. "
+                "Use Project.import_data(...) for raw source folders/files."
+            )
+        geo = GeoData.open(str(src))
+        return cls(
+            geo,
+            source=src,
+            inventory=cls._inventory_from_pproj(src),
+            tops_tables={},
+        )
+
+    @classmethod
+    def import_data(
         cls,
         path: str | Path,
         aliases: Mapping[str, Any] | None = None,
         crs: str | None = None,
-        settings: Mapping[str, Any] | LoadSettings | None = None,
+        settings: Mapping[str, Any] | ImportSettings | None = None,
     ) -> "Project":
-        """Load a `.pproj` or recursively ingest a raw Petrel-style directory."""
+        """Import a raw Petrel-style source directory into a `Project`."""
 
         src = Path(path)
-        aliases, crs, settings_dict = _coerce_load_settings(
+        aliases, crs, settings_dict = _coerce_import_settings(
             aliases=aliases,
             crs=crs,
             settings=settings,
         )
-        if src.suffix.lower() == ".pproj":
-            geo = GeoData.open(str(src))
-            return cls(
-                geo,
-                source=src,
-                aliases=aliases,
-                crs=crs,
-                settings=settings_dict,
-                inventory=cls._inventory_from_pproj(src),
-                tops_tables={},
-            )
         if not src.is_dir():
-            raise ValueError(f"Project.load: expected a .pproj file or directory, got '{src}'")
+            raise ValueError(
+                f"Project.import_data: expected a raw source directory, got '{src}'"
+            )
 
         unit = settings_dict.get("unit", settings_dict.get("units", "m"))
         geo = GeoData(unit=unit)
@@ -345,6 +442,14 @@ class Project:
             tops_tables=tops_tables,
         )
 
+    def save(self, path: str | Path) -> None:
+        """Save this project to the compact `.pproj` format."""
+
+        dst = Path(path)
+        if dst.suffix.lower() != ".pproj":
+            raise ValueError(f"Project.save: expected a .pproj path, got '{dst}'")
+        self._geo.save(str(dst))
+
     @property
     def geodata(self) -> GeoData:
         """The underlying `GeoData` substrate."""
@@ -360,6 +465,12 @@ class Project:
     @property
     def surfaces(self) -> _NamedCollection:
         return _NamedCollection(self._inventory.get("surfaces", []), self._geo.surface)
+
+    @property
+    def structures(self) -> _NamedCollection:
+        """Alias for structural surfaces, with the same folder-aware view."""
+
+        return self.surfaces
 
     @property
     def points(self) -> _NamedCollection:
@@ -396,6 +507,111 @@ class Project:
 
     def well(self, well_id: str) -> Any:
         return self._geo.well(well_id)
+
+    def rename(self, kind: str, old: str, new: str) -> None:
+        """Rename a project object of `kind` to `new`.
+
+        `kind` accepts singular/plural forms: surface(s), point(s),
+        polygon(s), well(s), and top(s).
+        """
+
+        self._rename_object(_project_kind_key(kind), old, new)
+
+    def delete(self, kind: str, name: str) -> None:
+        """Delete a project object of `kind`."""
+
+        self._delete_object(_project_kind_key(kind), name)
+
+    def rename_surface(self, old: str, new: str) -> None:
+        self._rename_object("surfaces", old, new)
+
+    def delete_surface(self, name: str) -> None:
+        self._delete_object("surfaces", name)
+
+    def rename_points(self, old: str, new: str) -> None:
+        self._rename_object("points", old, new)
+
+    def delete_points(self, name: str) -> None:
+        self._delete_object("points", name)
+
+    def rename_polygons(self, old: str, new: str) -> None:
+        self._rename_object("polygons", old, new)
+
+    def delete_polygons(self, name: str) -> None:
+        self._delete_object("polygons", name)
+
+    def rename_well(self, old: str, new: str) -> None:
+        self._rename_object("wells", old, new)
+
+    def delete_well(self, name: str) -> None:
+        self._delete_object("wells", name)
+
+    def rename_tops(self, old: str, new: str) -> None:
+        self._rename_object("tops", old, new)
+
+    def delete_tops(self, name: str) -> None:
+        self._delete_object("tops", name)
+
+    def _rename_object(self, key: str, old: str, new: str) -> None:
+        names = list(self._inventory.get(key, []))
+        resolved = _resolve_collection_name(old, names)
+        if resolved is None:
+            raise KeyError(old)
+        new_name = _normalise_project_path(new)
+        if not new_name:
+            raise ValueError("new project object name cannot be empty")
+        if new_name != resolved and new_name in names:
+            raise ValueError(f"{key[:-1]} '{new_name}' already exists")
+
+        if key == "surfaces":
+            self._geo.rename_surface(resolved, new_name)
+        elif key == "points":
+            self._geo.rename_points(resolved, new_name)
+        elif key == "polygons":
+            self._geo.rename_polygons(resolved, new_name)
+        elif key == "wells":
+            self._geo.rename_well(resolved, new_name)
+            self._log_resolution_cache.clear()
+        elif key == "tops":
+            self._tops_tables[new_name] = self._tops_tables.pop(resolved, [])
+        else:
+            raise ValueError(f"unsupported project object kind {key!r}")
+
+        self._replace_inventory_name(key, resolved, new_name)
+
+    def _delete_object(self, key: str, name: str) -> None:
+        names = list(self._inventory.get(key, []))
+        resolved = _resolve_collection_name(name, names)
+        if resolved is None:
+            raise KeyError(name)
+
+        if key == "surfaces":
+            removed = self._geo.delete_surface(resolved)
+        elif key == "points":
+            removed = self._geo.delete_points(resolved)
+        elif key == "polygons":
+            removed = self._geo.delete_polygons(resolved)
+        elif key == "wells":
+            removed = self._geo.delete_well(resolved)
+            self._log_resolution_cache.clear()
+        elif key == "tops":
+            removed = resolved in self._tops_tables or resolved in names
+            self._tops_tables.pop(resolved, None)
+        else:
+            raise ValueError(f"unsupported project object kind {key!r}")
+        if not removed:
+            raise KeyError(resolved)
+        self._remove_inventory_name(key, resolved)
+
+    def _replace_inventory_name(self, key: str, old: str, new: str) -> None:
+        items = list(self._inventory.get(key, []))
+        self._inventory[key] = [new if item == old else item for item in items]
+
+    def _remove_inventory_name(self, key: str, name: str) -> None:
+        self._inventory[key] = [item for item in self._inventory.get(key, []) if item != name]
+        counts = dict(self._inventory.get("counts", {}))
+        counts[key] = len(self._inventory[key])
+        self._inventory["counts"] = counts
 
     def inventory(self) -> dict[str, Any]:
         """Return a notebook-friendly inventory with counts, names, and skips."""
@@ -561,16 +777,16 @@ def _copy_positioned_logs(wells: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _coerce_load_settings(
+def _coerce_import_settings(
     *,
     aliases: Mapping[str, Any] | None,
     crs: str | None,
-    settings: Mapping[str, Any] | LoadSettings | None,
+    settings: Mapping[str, Any] | ImportSettings | None,
 ) -> tuple[Mapping[str, Any] | None, str | None, dict[str, Any]]:
     settings_aliases: Mapping[str, Any] | None = None
     settings_crs: str | None = None
 
-    if isinstance(settings, LoadSettings):
+    if isinstance(settings, ImportSettings):
         settings_dict = settings.to_mapping()
         settings_aliases = settings.aliases
         settings_crs = settings.crs
@@ -581,13 +797,13 @@ def _coerce_load_settings(
         raw_aliases = settings_dict.pop("aliases", None)
         if raw_aliases is not None:
             if not isinstance(raw_aliases, Mapping):
-                raise TypeError("Project.load settings['aliases'] must be a mapping")
+                raise TypeError("Project.import_data settings['aliases'] must be a mapping")
             settings_aliases = raw_aliases
         raw_crs = settings_dict.pop("crs", None)
         if raw_crs is not None:
             settings_crs = str(raw_crs)
     else:
-        raise TypeError("Project.load settings must be a mapping or LoadSettings")
+        raise TypeError("Project.import_data settings must be a mapping or ImportSettings")
 
     return (
         aliases if aliases is not None else settings_aliases,
@@ -608,8 +824,38 @@ def _normalise_aliases(aliases: Mapping[str, Any] | None) -> dict[str, str]:
             for raw in value:
                 out[str(raw)] = canonical
         else:
-            raise TypeError("Project.load aliases values must be strings or iterables of strings")
+            raise TypeError(
+                "Project.import_data aliases values must be strings or iterables of strings"
+            )
     return out
+
+
+def _project_kind_key(kind: str) -> str:
+    token = _lookup_token(kind)
+    aliases = {
+        "surface": "surfaces",
+        "surfaces": "surfaces",
+        "structure": "surfaces",
+        "structures": "surfaces",
+        "point": "points",
+        "points": "points",
+        "pointset": "points",
+        "pointsets": "points",
+        "polygon": "polygons",
+        "polygons": "polygons",
+        "polygonset": "polygons",
+        "polygonsets": "polygons",
+        "well": "wells",
+        "wells": "wells",
+        "top": "tops",
+        "tops": "tops",
+        "topset": "tops",
+        "topsets": "tops",
+    }
+    try:
+        return aliases[token]
+    except KeyError as exc:
+        raise ValueError(f"unsupported project object kind {kind!r}") from exc
 
 
 def _well_attr_lookup(attr: str, well_ids: Iterable[str]) -> str | None:
@@ -619,22 +865,99 @@ def _well_attr_lookup(attr: str, well_ids: Iterable[str]) -> str | None:
     return None
 
 
-def _resolve_collection_name(name: str, names: Iterable[str]) -> str | None:
-    names_list = list(names)
-    if name in names_list:
+def _normalise_project_path(name: str | Path) -> str:
+    parts = [part.strip() for part in str(name).replace("\\", "/").split("/") if part.strip()]
+    return "/".join(parts)
+
+
+def _join_project_path(prefix: str, name: str) -> str:
+    prefix = _normalise_project_path(prefix)
+    name = _normalise_project_path(name)
+    if not prefix:
         return name
+    if not name:
+        return prefix
+    return f"{prefix}/{name}"
+
+
+def _relative_to_project_prefix(name: str, prefix: str) -> str | None:
+    name = _normalise_project_path(name)
+    prefix = _normalise_project_path(prefix)
+    if not prefix:
+        return name
+    marker = f"{prefix}/"
+    if name.startswith(marker):
+        return name[len(marker) :]
+    return None
+
+
+def _visible_collection_names(names: Iterable[str], prefix: str = "") -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        rel = _relative_to_project_prefix(name, prefix)
+        if not rel:
+            continue
+        child = rel.split("/", 1)[0]
+        visible = f"{child}/" if "/" in rel else child
+        if visible not in seen:
+            seen.add(visible)
+            out.append(visible)
+    return out
+
+
+def _resolve_collection_folder(
+    name: str,
+    names: Iterable[str],
+    *,
+    prefix: str = "",
+) -> str | None:
     token = _lookup_token(name)
-    matches = [candidate for candidate in names_list if _lookup_token(candidate) == token]
-    if len(matches) == 1:
-        return matches[0]
+    matches: list[str] = []
+    for visible in _visible_collection_names(names, prefix):
+        if not visible.endswith("/"):
+            continue
+        folder = visible[:-1]
+        if folder == name or _lookup_token(folder) == token:
+            matches.append(_join_project_path(prefix, folder))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _resolve_collection_name(
+    name: str,
+    names: Iterable[str],
+    *,
+    prefix: str = "",
+) -> str | None:
+    names_list = [_normalise_project_path(candidate) for candidate in names]
+    requested = _normalise_project_path(name)
+    scoped = _join_project_path(prefix, requested)
+    for candidate in (requested, scoped):
+        if candidate in names_list:
+            return candidate
+
+    token = _lookup_token(name)
+    immediate_matches = []
+    for candidate in names_list:
+        rel = _relative_to_project_prefix(candidate, prefix)
+        if rel is not None and "/" not in rel and _lookup_token(rel) == token:
+            immediate_matches.append(candidate)
+    if len(immediate_matches) == 1:
+        return immediate_matches[0]
+
     leaf_matches = [
         candidate
         for candidate in names_list
-        if _lookup_token(str(candidate).rsplit(".", 1)[-1]) == token
+        if _lookup_token(_collection_leaf_name(candidate)) == token
     ]
     if len(leaf_matches) == 1:
         return leaf_matches[0]
     return None
+
+
+def _collection_leaf_name(name: str) -> str:
+    leaf = _normalise_project_path(name).rsplit("/", 1)[-1]
+    return leaf.rsplit(".", 1)[-1]
 
 
 def _lookup_token(value: str) -> str:
@@ -833,7 +1156,7 @@ def _scan(root: Path) -> tuple[list[_FileRecord], list[Path], list[dict[str, str
         try:
             kind = detect(str(path))
         except Exception as exc:
-            skipped.append(_skip(root, path, SKIP_LOAD_ERROR, str(exc)))
+            skipped.append(_skip(root, path, SKIP_IMPORT_ERROR, str(exc)))
             continue
         if kind == FormatKind.CrsMetaXml:
             sidecars.append(path)
@@ -873,7 +1196,7 @@ def _load_wells(
         try:
             geo.load_well(well_id, **kwargs)
         except Exception as exc:
-            skipped.append(_skip(root, files, SKIP_LOAD_ERROR, f"load_well {well_id}: {exc}"))
+            skipped.append(_skip(root, files, SKIP_IMPORT_ERROR, f"load_well {well_id}: {exc}"))
             continue
         inventory["wells"].append(well_id)
         if files.is_dir() and files != root:
@@ -898,13 +1221,13 @@ def _load_petrel_tops(
         try:
             geo.load_well_tops(str(rec.path))
         except Exception as exc:
-            skipped.append(_skip(root, rec.path, SKIP_LOAD_ERROR, f"load_well_tops: {exc}"))
+            skipped.append(_skip(root, rec.path, SKIP_IMPORT_ERROR, f"load_well_tops: {exc}"))
             continue
         inventory["tops"].append(name)
         try:
             tables[name] = _parse_petrel_tops_table(rec.path)
         except Exception as exc:
-            skipped.append(_skip(root, rec.path, SKIP_LOAD_ERROR, f"parse_well_tops: {exc}"))
+            skipped.append(_skip(root, rec.path, SKIP_IMPORT_ERROR, f"parse_well_tops: {exc}"))
             tables[name] = []
     return tables
 
@@ -920,6 +1243,11 @@ def _load_surfaces_points_polygons(
 ) -> None:
     loaded_paths = {r.path for r in records if r.kind in (FormatKind.Las, FormatKind.WellPath)}
     stem_counts = _spatial_stem_counts(records, ignored_dirs=ignored_dirs, loaded_paths=loaded_paths)
+    earthvision_topology = _earthvision_topology_by_stem(
+        records,
+        ignored_dirs=ignored_dirs,
+        loaded_paths=loaded_paths,
+    )
     for rec in records:
         if rec.path in loaded_paths or rec.kind in (FormatKind.CrsMetaXml, FormatKind.PetrelTops):
             continue
@@ -940,13 +1268,47 @@ def _load_surfaces_points_polygons(
                 geo.load_surface(name, str(rec.path))
                 inventory["surfaces"].append(name)
             elif role == "points":
-                geo.load_points(name, str(rec.path))
+                topology = (
+                    earthvision_topology.get(rec.path.stem.casefold())
+                    if rec.kind == FormatKind.IrapClassicPoints
+                    else None
+                )
+                if topology is not None:
+                    try:
+                        geo.load_points_with_topology(name, str(rec.path), str(topology.path))
+                    except Exception:
+                        geo.load_points(name, str(rec.path))
+                else:
+                    geo.load_points(name, str(rec.path))
                 inventory["points"].append(name)
             elif role == "polygons":
                 geo.load_polygons(name, str(rec.path))
                 inventory["polygons"].append(name)
         except Exception as exc:
-            skipped.append(_skip(root, rec.path, SKIP_LOAD_ERROR, f"load_{role}: {exc}"))
+            skipped.append(_skip(root, rec.path, SKIP_IMPORT_ERROR, f"load_{role}: {exc}"))
+
+
+def _earthvision_topology_by_stem(
+    records: list[_FileRecord],
+    *,
+    ignored_dirs: set[Path],
+    loaded_paths: set[Path],
+) -> dict[str, _FileRecord]:
+    by_stem: dict[str, _FileRecord] = {}
+    ambiguous: set[str] = set()
+    for rec in records:
+        if rec.path in loaded_paths or rec.kind != FormatKind.EarthVisionGrid:
+            continue
+        if _inside_any(rec.path, ignored_dirs):
+            continue
+        key = rec.path.stem.casefold()
+        if key in by_stem:
+            ambiguous.add(key)
+            continue
+        by_stem[key] = rec
+    for key in ambiguous:
+        by_stem.pop(key, None)
+    return by_stem
 
 
 def _spatial_stem_counts(
@@ -1110,8 +1472,7 @@ def _inside_any(path: Path, dirs: set[Path]) -> bool:
 
 def _name_for(root: Path, path: Path) -> str:
     rel = path.relative_to(root)
-    stem = rel.with_suffix("").as_posix()
-    return stem.replace("/", ".")
+    return rel.with_suffix("").as_posix()
 
 
 def _asset_name_for(

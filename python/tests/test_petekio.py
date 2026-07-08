@@ -227,6 +227,37 @@ def test_pointset_infer_geometry_and_edge_options():
     assert petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 3, 3).edge.area() == 400.0
 
 
+def test_earthvision_pointset_infer_geometry_uses_column_row(tmp_path):
+    path = tmp_path / "petrel_surface.EarthVisionGrid"
+    path.write_text(
+        """# Type: scattered data
+# Field: 1 x
+# Field: 2 y
+# Field: 3 z meters
+# Field: 4 column
+# Field: 5 row
+# Grid_size: 3 x 2
+# End:
+100.0 200.0 -50.0 1 1
+110.0 200.0 -51.0 2 1
+110.0 200.0 -51.0 3 1
+100.0 210.0 -52.0 1 2
+110.0 210.0 -53.0 2 2
+120.0 210.0 -54.0 3 2
+""",
+        encoding="utf-8",
+    )
+    p = petekio.PointSet.load_earthvision_grid(str(path))
+    assert p.attr("column") == [1.0, 2.0, 3.0, 1.0, 2.0, 3.0]
+    assert p.attr("row") == [1.0, 1.0, 1.0, 2.0, 2.0, 2.0]
+
+    geom = p.infer_geometry(tolerance=1e-3, edge="convex_hull")
+    assert geom.ncol == 3
+    assert geom.nrow == 2
+    assert math.isclose(geom.xinc, 10.0, abs_tol=1e-9)
+    assert math.isclose(geom.yinc, 10.0, abs_tol=1e-9)
+
+
 def test_pointset_infer_geometry_rejects_scattered_points():
     p = petekio.PointSet.from_xyz(
         [0.0, 11.0, 3.0, 19.0, 7.0],

@@ -499,14 +499,19 @@ impl Cube {
 ```python
 import petekio
 
-project = petekio.Project.load("Data", aliases={
+project = petekio.Project.import_data("Data", aliases={
     "por": ["PHIE", "PORO", "PorE_BC"],   # canonical -> raw names is accepted
 })
 project.inventory()                       # counts + loaded names + stable skipped reasons
 project.surfaces["Top reservoir"]         # named access over the underlying GeoData
 project.well("15/9-A1")
 project.geodata                           # the underlying GeoData substrate
-pproj_project = petekio.Project.load("field.pproj")  # delegates to GeoData.open
+project.rename_surface("Top reservoir", "structure/top agat")
+project.surfaces.structure.top_agat       # folder view + unique leaf lookup
+project.surfaces.all_names()              # canonical names with folders
+project.delete_surface("structure/top agat")
+project.save("field.pproj")               # compact .pproj write
+pproj_project = petekio.Project.load("field.pproj")  # compact .pproj read
 
 geo = petekio.GeoData(unit="ft")
 geo.load_surface("top", "top.irap")       # or top.CPS3grid (CPS-3 grid)

@@ -1,11 +1,11 @@
 //! Vector IO via `geozero` — GeoJSON (points + polygons) and ESRI shapefile
 //! (polygons). Wraps `geozero`'s streaming `FeatureProcessor` so that GeoJSON
 //! `properties{}` are carried into PointSet attribute columns (`to_geo()` would
-//! drop them). Imports only from `foundation` (+ `io::csv_points` for the
-//! shared `LoadedPoints` type).
+//! drop them). Imports only from `foundation` plus the shared imported-point
+//! payload.
 
 use crate::foundation::{GeoError, Result};
-use crate::io::csv_points::LoadedPoints;
+use crate::io::{PointData, PolygonData};
 use geozero::error::Result as GzResult;
 use geozero::{ColumnValue, CoordDimensions, FeatureProcessor, GeomProcessor, PropertyProcessor};
 use indexmap::{IndexMap, IndexSet};
@@ -53,7 +53,7 @@ struct PointCollector {
 }
 
 impl PointCollector {
-    fn into_parts(self) -> LoadedPoints {
+    fn into_point_data(self) -> Result<PointData> {
         let mut attrs: IndexMap<String, Vec<f64>> = IndexMap::new();
         for k in &self.keys {
             let col = self
@@ -63,7 +63,7 @@ impl PointCollector {
                 .collect();
             attrs.insert(k.clone(), col);
         }
-        (self.coords, attrs)
+        PointData::new(self.coords, attrs)
     }
 }
 
@@ -146,31 +146,31 @@ impl PropertyProcessor for RingCollector {}
 impl FeatureProcessor for RingCollector {}
 
 /// Load point features (with numeric attributes) from a GeoJSON file.
-pub fn load_point_set_geojson(path: &Path) -> Result<LoadedPoints> {
+pub fn load_point_set_geojson(path: &Path) -> Result<PointData> {
     let reader = BufReader::new(File::open(path)?);
     let mut c = PointCollector::default();
     geozero::geojson::read_geojson(reader, &mut c)
         .map_err(|e| GeoError::Parse(format!("GeoJSON points: {e}")))?;
-    Ok(c.into_parts())
+    c.into_point_data()
 }
 
 /// Load polygon rings from a GeoJSON file.
-pub fn load_polygon_rings_geojson(path: &Path) -> Result<Vec<Vec<[f64; 3]>>> {
+pub fn load_polygon_rings_geojson(path: &Path) -> Result<PolygonData> {
     let reader = BufReader::new(File::open(path)?);
     let mut c = RingCollector::default();
     geozero::geojson::read_geojson(reader, &mut c)
         .map_err(|e| GeoError::Parse(format!("GeoJSON polygons: {e}")))?;
-    Ok(c.rings)
+    Ok(PolygonData::from_rings(c.rings))
 }
 
 /// Load polygon rings from an ESRI shapefile (the `.shp` path; `.shx`/`.dbf` are
 /// picked up alongside it if present, but geometry alone is read here).
-pub fn load_polygon_rings_shapefile(path: &Path) -> Result<Vec<Vec<[f64; 3]>>> {
+pub fn load_polygon_rings_shapefile(path: &Path) -> Result<PolygonData> {
     let reader = geozero::shp::ShpReader::from_path(path)
         .map_err(|e| GeoError::Parse(format!("shapefile: {e}")))?;
     let mut c = RingCollector::default();
     for shape in reader.iter_geometries(&mut c) {
         shape.map_err(|e| GeoError::Parse(format!("shapefile: {e}")))?;
     }
-    Ok(c.rings)
+    Ok(PolygonData::from_rings(c.rings))
 }

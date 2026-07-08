@@ -58,21 +58,26 @@ pip install petekio
 
 ## Quickstart (Python)
 
-Load a project once, then read interpreted results — no parsing or interpolation
-in your own code:
+Import raw source data once, then read interpreted results — no parsing or
+interpolation in your own code. Save/load is reserved for compact `.pproj`
+projects:
 
 ```python
 import petekio
 
-project = petekio.Project.load(
+project = petekio.Project.import_data(
     "Data",
-    settings=petekio.LoadSettings(
+    settings=petekio.ImportSettings(
         crs="EPSG:32631",
         aliases={"por": ["PHIE", "PORO"]},
     ),
 )
 project.inventory()
 geo = project.geodata
+project.rename_surface("Top reservoir", "structure/top agat")
+project.surfaces.structure.top_agat
+project.save("field.pproj")
+project = petekio.Project.load("field.pproj")
 
 # Or build the same substrate manually:
 geo = petekio.GeoData(unit="m")
@@ -117,7 +122,7 @@ column.
 | **Surfaces** | IRAP-classic load, sample/resample (bilinear), edge polygons, arithmetic, stats, `area_below` volumetrics, gridding from scattered points (minimum-curvature) |
 | **Wells** | Positioned `.wellpath` trajectories (MD preserved; minimum-curvature interpolation), multi-bore (sidetracks), LAS logs with mnemonic aliasing, Petrel well-tops, per-zone stats, field-wide lithostratigraphic ordering |
 | **Points / polygons** | IRAP / GeoJSON / CSV load, strict regular-grid geometry inference, clip, point-to-surface gridding |
-| **Project** | `GeoData` substrate — load once, broadcast across the collection; views are read-only filtered subsets |
+| **Project** | `GeoData` substrate — import raw data once, broadcast across the collection; views are read-only filtered subsets; compact `.pproj` load/save |
 
 ## Built in gates
 

@@ -10,6 +10,7 @@
 
 use crate::core::{PolygonSet, Surface};
 use crate::foundation::{BBox, GeoError, GridGeometry, Point3, Result, Stats};
+use crate::io::PointData;
 use indexmap::IndexMap;
 use petektools::{grid as pt_grid, grid_min_curvature_seeded, GridMethod as PtGridMethod};
 use rstar::primitives::GeomWithData;
@@ -69,6 +70,11 @@ impl PointSet {
         PointSet { coords, attrs }
     }
 
+    pub(crate) fn from_point_data(data: PointData) -> PointSet {
+        let (coords, attrs) = data.into_parts();
+        PointSet::from_parts(coords, attrs)
+    }
+
     /// Build an in-memory `PointSet` from `[x, y, z]` coordinates (no named
     /// attributes) — construct scattered points directly, without a file.
     pub fn from_coords(coords: Vec<[f64; 3]>) -> PointSet {
@@ -80,8 +86,12 @@ impl PointSet {
     /// with any non-numeric cell are skipped. Rows with a non-numeric X/Y/Z are
     /// an error (readers validate on load).
     pub fn load_csv(path: impl AsRef<Path>, x: &str, y: &str, z: &str) -> Result<PointSet> {
-        let (coords, attrs) = crate::io::csv_points::load(path.as_ref(), x, y, z)?;
-        Ok(PointSet::from_parts(coords, attrs))
+        Ok(PointSet::from_point_data(crate::io::csv_points::load(
+            path.as_ref(),
+            x,
+            y,
+            z,
+        )?))
     }
 
     /// Load point features from a GeoJSON file. Each feature's numeric
@@ -89,24 +99,45 @@ impl PointSet {
     /// numeric property names, NaN-filling features that lack one); string and
     /// other non-numeric properties are ignored.
     pub fn load_geojson(path: impl AsRef<Path>) -> Result<PointSet> {
-        let (coords, attrs) = crate::io::vector::load_point_set_geojson(path.as_ref())?;
-        Ok(PointSet::from_parts(coords, attrs))
+        Ok(PointSet::from_point_data(
+            crate::io::vector::load_point_set_geojson(path.as_ref())?,
+        ))
     }
 
     /// Load scattered points from an IRAP/RMS plain `X Y Z` file. No named
     /// attributes (the format carries none). Format-sniffed: a foreign header
     /// (EarthVision grid / CPS-3 / LAS) is rejected with `GeoError::Format`.
     pub fn load_irap_points(path: impl AsRef<Path>) -> Result<PointSet> {
-        let coords = crate::io::xyz::load_points(path.as_ref())?;
-        Ok(PointSet::from_parts(coords, IndexMap::new()))
+        Ok(PointSet::from_point_data(crate::io::xyz::load_points(
+            path.as_ref(),
+        )?))
+    }
+
+    /// Load plain IRAP/RMS `X Y Z` points and transfer Petrel `column`/`row`
+    /// topology from a matching EarthVision grid export. This is intentionally
+    /// a project-loader helper: the IRAP file owns the returned coordinates,
+    /// while `topology_path` contributes only grid indices for exact geometry
+    /// inference.
+    pub fn load_irap_points_with_topology(
+        path: impl AsRef<Path>,
+        topology_path: impl AsRef<Path>,
+    ) -> Result<PointSet> {
+        let points = crate::io::xyz::load_points(path.as_ref())?;
+        let topology = crate::io::earthvision::load_earthvision_grid(topology_path.as_ref())?;
+        Ok(PointSet::from_point_data(
+            points.with_topology_from_ordered_subset(&topology, 1e-3)?,
+        ))
     }
 
     /// Load scattered points from an EarthVision grid ASCII file
     /// (`.EarthVisionGrid`) — `x y z` nodes with a directive header; null nodes
-    /// dropped (see [`crate::io::earthvision`]). No named attributes.
+    /// dropped (see [`crate::io::earthvision`]). Petrel `column`/`row` fields,
+    /// when present, are preserved as attributes so geometry inference can use
+    /// the exported grid topology instead of guessing from XY alone.
     pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<PointSet> {
-        let coords = crate::io::earthvision::load_earthvision_grid(path.as_ref())?;
-        Ok(PointSet::from_parts(coords, IndexMap::new()))
+        Ok(PointSet::from_point_data(
+            crate::io::earthvision::load_earthvision_grid(path.as_ref())?,
+        ))
     }
 
     /// Number of points.
@@ -219,7 +250,13 @@ impl PointSet {
         tolerance: f64,
         edge: GeometryEdge,
     ) -> Result<(GridGeometry, PolygonSet)> {
-        let geom = infer_grid_geometry_from_coords(&self.coords, tolerance)?;
+        let geom = match infer_grid_geometry_from_index_attrs(&self.coords, &self.attrs, tolerance)?
+        {
+            Some(geom) => geom,
+            None => infer_grid_geometry_from_coords(&self.coords, tolerance).map_err(|err| {
+                add_xy_only_inference_hint(err, &self.coords, &self.attrs, tolerance)
+            })?,
+        };
         let edge_polygon = match edge {
             GeometryEdge::Occupied | GeometryEdge::FullRect => {
                 PolygonSet::from_grid_geometry(&geom)
@@ -373,6 +410,205 @@ fn infer_grid_geometry_from_coords(coords: &[[f64; 3]], tolerance: f64) -> Resul
         )));
     }
     Ok(geom)
+}
+
+fn infer_grid_geometry_from_index_attrs(
+    coords: &[[f64; 3]],
+    attrs: &IndexMap<String, Vec<f64>>,
+    tolerance: f64,
+) -> Result<Option<GridGeometry>> {
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        return Err(GeoError::GeometryInference(
+            "tolerance must be a finite positive number".into(),
+        ));
+    }
+    let Some(columns) = find_attr(attrs, &["column", "col"]) else {
+        return Ok(None);
+    };
+    let Some(rows) = find_attr(attrs, &["row"]) else {
+        return Ok(None);
+    };
+    if columns.len() != coords.len() || rows.len() != coords.len() {
+        return Err(GeoError::GeometryInference(
+            "column/row attributes must match point count".into(),
+        ));
+    }
+
+    let mut indexed = Vec::new();
+    for (idx, c) in coords.iter().enumerate() {
+        if !c[0].is_finite() || !c[1].is_finite() {
+            continue;
+        }
+        let Some(col) = integer_attr(columns[idx], "column")? else {
+            continue;
+        };
+        let Some(row) = integer_attr(rows[idx], "row")? else {
+            continue;
+        };
+        indexed.push((col, row, c[0], c[1]));
+    }
+    if indexed.len() < 4 {
+        return Err(GeoError::GeometryInference(
+            "column/row geometry inference requires at least four indexed points".into(),
+        ));
+    }
+
+    let min_col = indexed.iter().map(|p| p.0).min().unwrap();
+    let max_col = indexed.iter().map(|p| p.0).max().unwrap();
+    let min_row = indexed.iter().map(|p| p.1).min().unwrap();
+    let max_row = indexed.iter().map(|p| p.1).max().unwrap();
+    if max_col <= min_col || max_row <= min_row {
+        return Err(GeoError::GeometryInference(
+            "column/row attributes do not span a two-dimensional grid".into(),
+        ));
+    }
+
+    let mut by_index = std::collections::BTreeMap::new();
+    for (col, row, x, y) in &indexed {
+        by_index.entry((*col, *row)).or_insert((*x, *y));
+    }
+
+    let mut i_dx = Vec::new();
+    let mut i_dy = Vec::new();
+    let mut j_dx = Vec::new();
+    let mut j_dy = Vec::new();
+    for ((col, row), (x, y)) in &by_index {
+        if let Some((nx, ny)) = by_index.get(&(*col + 1, *row)) {
+            let dx = nx - x;
+            let dy = ny - y;
+            if dx.hypot(dy) > tolerance {
+                i_dx.push(dx);
+                i_dy.push(dy);
+            }
+        }
+        if let Some((nx, ny)) = by_index.get(&(*col, *row + 1)) {
+            let dx = nx - x;
+            let dy = ny - y;
+            if dx.hypot(dy) > tolerance {
+                j_dx.push(dx);
+                j_dy.push(dy);
+            }
+        }
+    }
+
+    let (Some(m_i_dx), Some(m_i_dy), Some(m_j_dx), Some(m_j_dy)) = (
+        median_unsorted(&i_dx),
+        median_unsorted(&i_dy),
+        median_unsorted(&j_dx),
+        median_unsorted(&j_dy),
+    ) else {
+        return Err(GeoError::GeometryInference(
+            "column/row attributes are present, but adjacent indexed nodes are too sparse to infer spacing".into(),
+        ));
+    };
+
+    let e1 = unit([m_i_dx, m_i_dy])?;
+    let xinc = m_i_dx.hypot(m_i_dy);
+    let perp = [-e1[1], e1[0]];
+    let row_projection = m_j_dx * perp[0] + m_j_dy * perp[1];
+    if row_projection.abs() <= tolerance {
+        return Err(GeoError::GeometryInference(
+            "column/row attributes imply a degenerate row spacing".into(),
+        ));
+    }
+    let yinc = row_projection.abs();
+    let yflip = row_projection < 0.0;
+    let ysign = if yflip { -1.0 } else { 1.0 };
+
+    let mut origins_x = Vec::with_capacity(indexed.len());
+    let mut origins_y = Vec::with_capacity(indexed.len());
+    for (col, row, x, y) in indexed {
+        let i = (col - min_col) as f64;
+        let j = (row - min_row) as f64;
+        origins_x.push(x - i * xinc * e1[0] - j * yinc * ysign * perp[0]);
+        origins_y.push(y - i * xinc * e1[1] - j * yinc * ysign * perp[1]);
+    }
+    let xori = median_unsorted(&origins_x)
+        .ok_or_else(|| GeoError::GeometryInference("could not infer indexed grid origin".into()))?;
+    let yori = median_unsorted(&origins_y)
+        .ok_or_else(|| GeoError::GeometryInference("could not infer indexed grid origin".into()))?;
+
+    Ok(Some(GridGeometry {
+        xori,
+        yori,
+        xinc,
+        yinc,
+        ncol: (max_col - min_col + 1) as usize,
+        nrow: (max_row - min_row + 1) as usize,
+        rotation_deg: e1[1].atan2(e1[0]).to_degrees(),
+        yflip,
+    }))
+}
+
+fn find_attr<'a>(attrs: &'a IndexMap<String, Vec<f64>>, names: &[&str]) -> Option<&'a [f64]> {
+    attrs.iter().find_map(|(key, values)| {
+        let normalized = crate::io::normalize_attr_name(key);
+        names
+            .iter()
+            .any(|name| normalized == *name)
+            .then_some(values.as_slice())
+    })
+}
+
+fn integer_attr(value: f64, name: &str) -> Result<Option<isize>> {
+    if value.is_nan() {
+        return Ok(None);
+    }
+    if !value.is_finite() {
+        return Err(GeoError::GeometryInference(format!(
+            "{name} attribute contains a non-finite value"
+        )));
+    }
+    let rounded = value.round();
+    if (value - rounded).abs() > 1e-6 {
+        return Err(GeoError::GeometryInference(format!(
+            "{name} attribute contains non-integer grid indices"
+        )));
+    }
+    Ok(Some(rounded as isize))
+}
+
+fn median_unsorted(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    median(&sorted)
+}
+
+fn add_xy_only_inference_hint(
+    err: GeoError,
+    coords: &[[f64; 3]],
+    attrs: &IndexMap<String, Vec<f64>>,
+    tolerance: f64,
+) -> GeoError {
+    let GeoError::GeometryInference(message) = err else {
+        return err;
+    };
+    let has_index_attrs =
+        find_attr(attrs, &["column", "col"]).is_some() || find_attr(attrs, &["row"]).is_some();
+    if has_index_attrs || !has_duplicate_xy(coords, tolerance) {
+        return GeoError::GeometryInference(message);
+    }
+    GeoError::GeometryInference(format!(
+        "{message}; duplicate XY nodes were found and no column/row topology attributes are available. Petrel surface point exports can lose grid topology in plain IRAP-points form; use an EarthVisionGrid export or a point file carrying column/row when exact geometry inference is required"
+    ))
+}
+
+fn has_duplicate_xy(coords: &[[f64; 3]], tolerance: f64) -> bool {
+    let scale = 1.0 / tolerance.max(1e-9);
+    let mut seen = std::collections::HashSet::new();
+    for c in coords {
+        if !c[0].is_finite() || !c[1].is_finite() {
+            continue;
+        }
+        let key = ((c[0] * scale).round() as i64, (c[1] * scale).round() as i64);
+        if !seen.insert(key) {
+            return true;
+        }
+    }
+    false
 }
 
 fn neighbour_vectors(pts: &[[f64; 2]], tolerance: f64) -> Vec<[f64; 2]> {
@@ -597,6 +833,53 @@ mod tests {
         assert_eq!(geom.nrow, source.nrow);
         approx::assert_relative_eq!(geom.rotation_deg, source.rotation_deg, epsilon = 1e-9);
         approx::assert_relative_eq!(edge.area(), (4.0 * 37.0) * (3.0 * 83.0), epsilon = 1e-6);
+    }
+
+    #[test]
+    fn infer_geometry_uses_explicit_column_row_topology() {
+        let source = GridGeometry {
+            xori: 1000.0,
+            yori: 2000.0,
+            xinc: 50.0,
+            yinc: 25.0,
+            ncol: 4,
+            nrow: 3,
+            rotation_deg: 35.0,
+            yflip: false,
+        };
+        let mut coords = Vec::new();
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        for j in 0..source.nrow {
+            for i in 0..source.ncol {
+                let (mut x, mut y) = source.node_xy(i, j);
+                if i == 2 && j == 1 {
+                    x += 3.0;
+                    y -= 2.0;
+                }
+                coords.push([x, y, 1000.0 + i as f64 + j as f64]);
+                columns.push((i + 1) as f64);
+                rows.push((j + 1) as f64);
+            }
+        }
+        // A repeated XY node can happen in Petrel point exports around collapsed
+        // or clipped grid nodes. With column/row present, topology still wins.
+        coords[2] = coords[1];
+
+        let mut attrs = IndexMap::new();
+        attrs.insert("column".to_string(), columns);
+        attrs.insert("row".to_string(), rows);
+        let p = PointSet::from_parts(coords, attrs);
+        let (geom, edge) = p
+            .infer_geometry_with_edge(1e-3, GeometryEdge::ConvexHull)
+            .unwrap();
+
+        assert_eq!(geom.ncol, source.ncol);
+        assert_eq!(geom.nrow, source.nrow);
+        approx::assert_relative_eq!(geom.xinc, source.xinc, epsilon = 1e-9);
+        approx::assert_relative_eq!(geom.yinc, source.yinc, epsilon = 1e-9);
+        approx::assert_relative_eq!(geom.rotation_deg, source.rotation_deg, epsilon = 1e-9);
+        assert!(edge.area() > 0.0);
     }
 
     #[test]

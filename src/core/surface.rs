@@ -5,6 +5,7 @@
 //! land in later phases.
 
 use crate::foundation::{GeoError, GridGeometry, Result};
+use crate::io::SurfaceData;
 use indexmap::IndexMap;
 use ndarray::Array2;
 use std::path::Path;
@@ -32,6 +33,15 @@ impl Surface {
         })
     }
 
+    pub(crate) fn from_surface_data(data: SurfaceData) -> Surface {
+        let (geom, values, attributes) = data.into_parts();
+        Surface {
+            geom,
+            values,
+            attributes,
+        }
+    }
+
     /// Build a surface from a geometry + values without shape validation, for
     /// internal callers (operations) that already guarantee the shape. No
     /// attributes are carried over.
@@ -55,24 +65,16 @@ impl Surface {
 
     /// Load an IRAP-classic (ROXAR ASCII) surface — the first supported format.
     pub fn load_irap_classic(path: impl AsRef<Path>) -> Result<Surface> {
-        let (geom, values) = crate::io::irap::load_irap_classic(path.as_ref())?;
-        Ok(Surface {
-            geom,
-            values,
-            attributes: IndexMap::new(),
-        })
+        let data = crate::io::irap::load_irap_classic(path.as_ref())?;
+        Ok(Surface::from_surface_data(data))
     }
 
     /// Load a CPS-3 regular grid (`.CPS3grid`) — `FS*` header + row-major z, the
     /// `1.0E+30`-family null → `NaN`, north-to-south node ordering (see
     /// [`crate::io::cps3`]).
     pub fn load_cps3_grid(path: impl AsRef<Path>) -> Result<Surface> {
-        let (geom, values) = crate::io::cps3::load_cps3_grid(path.as_ref())?;
-        Ok(Surface {
-            geom,
-            values,
-            attributes: IndexMap::new(),
-        })
+        let data = crate::io::cps3::load_cps3_grid(path.as_ref())?;
+        Ok(Surface::from_surface_data(data))
     }
 
     /// Write this surface's primary layer as IRAP-classic ASCII.

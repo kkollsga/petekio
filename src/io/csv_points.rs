@@ -4,18 +4,16 @@
 //! column becomes a `f64` attribute column **iff** all its cells parse as
 //! numbers; a column with any non-numeric cell is silently dropped (it is text
 //! metadata, not data). Rows with a non-numeric X/Y/Z are an error (readers
-//! validate on load). Imports only from `foundation`.
+//! validate on load). Imports only from `foundation` plus the shared
+//! imported-point payload.
 
 use crate::foundation::{GeoError, Result};
+use crate::io::PointData;
 use indexmap::IndexMap;
 use std::path::Path;
 
-/// Parsed XYZ coordinates plus named `f64` attribute columns (aligned 1:1).
-pub type LoadedPoints = (Vec<[f64; 3]>, IndexMap<String, Vec<f64>>);
-
-/// Read XYZ + attribute columns. Returns `(coords, attrs)` where each attribute
-/// column is aligned 1:1 with `coords`.
-pub fn load(path: &Path, x: &str, y: &str, z: &str) -> Result<LoadedPoints> {
+/// Read XYZ + attribute columns into the standard imported-point payload.
+pub fn load(path: &Path, x: &str, y: &str, z: &str) -> Result<PointData> {
     let mut rdr =
         csv::Reader::from_path(path).map_err(|e| crate::io::csv_error("points CSV", e))?;
     let headers: Vec<String> = rdr
@@ -71,7 +69,7 @@ pub fn load(path: &Path, x: &str, y: &str, z: &str) -> Result<LoadedPoints> {
             attrs.insert(headers[col].clone(), buf);
         }
     }
-    Ok((coords, attrs))
+    PointData::new(coords, attrs)
 }
 
 #[cfg(test)]

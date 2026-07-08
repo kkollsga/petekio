@@ -10,6 +10,10 @@ The pipeline is the point:
 
 **ingest → normalize → validate → interpret → characterise**
 
+Raw reader quirks are normalized before they reach the public objects. Project
+save/load persists the standard object graph — surfaces, points, polygons, wells,
+and logs — rather than the original vendor format details.
+
 This guide walks the Python surface end to end. Two runnable notebooks accompany
 it under `examples/notebooks/`: `01_ingest_tour.ipynb` (author a small project,
 load it, inspect it, persist it) and `02_well_analysis.ipynb` (net-cutoff sweeps,
@@ -69,7 +73,10 @@ method)` with `"nearest"`, `"idw"`, or `"minimum_curvature"` (Briggs biharmonic,
 honouring the points as hard constraints).
 
 If a point cloud is really a regular grid export, `PointSet.infer_geometry(...)`
-can recover the lattice and attach an edge polygon:
+can recover the lattice and attach an edge polygon. EarthVision/Petrel exports
+with `column` and `row` fields use those indices as topology; plain IRAP/XYZ
+point exports have to infer from XY alone unless `Project.import_data(...)` can enrich
+them from a same-stem EarthVision topology export in the raw project tree.
 
 ```python
 geom = pts.infer_geometry(tolerance=1e-3, edge="convex_hull")
@@ -77,7 +84,7 @@ surf = pts.to_surface(geom, method="nearest")
 ```
 
 Inference is deliberately strict and raises when points are scattered, duplicate
-onto the same lattice node, or do not fit the detected lattice within tolerance.
+without topology fields, or do not fit the detected lattice within tolerance.
 
 ## Wells, logs and tops
 
@@ -170,9 +177,22 @@ w.view(spec=petekio.ViewSpec(curves=("PHIE", "SW"), tops=True),
 
 A whole project serialises to a single structured `.pproj` file — atomic to write,
 inspectable without a full load, and splittable / mergeable / tag-filterable.
+Use `Project.import_data(...)` for raw source trees; use `Project.load(...)` and
+`Project.save(...)` only for compact `.pproj` files.
 
 ```python
-geo.save("field.pproj")                          # atomic whole-project write
+project = petekio.Project.import_data("Data", settings=petekio.ImportSettings(crs="EPSG:32631"))
+project.save("field.pproj")                      # atomic compact-project write
+project = petekio.Project.load("field.pproj")    # compact-project read
+
+project.rename_surface("Top reservoir", "structure/top agat")
+project.surfaces                                 # ["structure/"]
+project.surfaces.structure                       # ["top agat"]
+project.surfaces.top_agat                        # unique leaf lookup
+project.surfaces.all_names()                     # ["structure/top agat"]
+project.delete_surface("structure/top agat")
+
+geo.save("field.pproj")                          # lower-level GeoData write
 petekio.GeoData.inspect("field.pproj")           # manifest dict: unit, owner, elements
 geo2 = petekio.GeoData.open("field.pproj")        # materialize
 petekio.GeoData.export("field.pproj", "share.pproj", ["field-a"])  # tagged subset
@@ -196,7 +216,7 @@ The declarative, frozen load- and view-time specs — each is JSON-durable
 | **Surfaces** | IRAP-classic / CPS-3 load, sample & resample (bilinear), edge polygons, arithmetic, stats, `area_below` volumetrics, gridding from scattered points (minimum-curvature) |
 | **Wells** | Positioned `.wellpath` trajectories (MD preserved; minimum-curvature), multi-bore sidetracks, LAS logs with mnemonic aliasing, Petrel well-tops, per-zone stats, field-wide lithostratigraphic ordering, net cutoffs |
 | **Points / polygons** | IRAP / GeoJSON / CSV load, strict regular-grid geometry inference, clip, point-to-surface gridding |
-| **Project** | `GeoData` substrate — load once, broadcast across the collection; read-only filtered views; single-file `.pproj` persistence |
+| **Project** | `GeoData` substrate — import raw data once, broadcast across the collection; read-only filtered views; compact `.pproj` load/save |
 
 ## Where to go next
 

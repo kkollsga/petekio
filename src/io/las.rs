@@ -13,33 +13,16 @@
 //! Latin-1 decoder); `core::Log` builds the domain object from the raw data.
 
 use crate::foundation::{GeoError, Result};
+use crate::io::{LogCurveData, LogData};
 use std::path::Path;
-
-/// One LAS curve: its mnemonic, unit, and samples (NULL already `f64::NAN`).
-#[derive(Debug, Clone)]
-pub struct LasCurve {
-    pub mnemonic: String,
-    pub unit: String,
-    pub values: Vec<f64>,
-}
-
-/// The parsed curves of a LAS file: a shared index (the first/depth curve) and
-/// every other curve.
-#[derive(Debug, Clone)]
-pub struct LasCurves {
-    /// The index/MD curve samples.
-    pub index: Vec<f64>,
-    /// Non-index curves, in file order.
-    pub curves: Vec<LasCurve>,
-}
 
 fn map_err(e: las_rs::LasError) -> GeoError {
     GeoError::Parse(format!("LAS: {e}"))
 }
 
-/// Read a LAS file into its index curve plus the remaining curves. LAS 1.2/2.0
+/// Read a LAS file into its md curve plus the remaining curves. LAS 1.2/2.0
 /// go through `las_rs`; LAS 3.0 (delimited) through the contained fallback.
-pub fn load(path: &Path) -> Result<LasCurves> {
+pub(crate) fn load(path: &Path) -> Result<LogData> {
     // Petrel LAS exports may be Latin-1 (Norwegian names), not UTF-8 — decode
     // permissively so the version/section sniff can't choke on a stray byte.
     let bytes = std::fs::read(path)?;
@@ -54,21 +37,21 @@ pub fn load(path: &Path) -> Result<LasCurves> {
 }
 
 /// LAS 1.2/2.0 read via `las_rs` (the original path; unchanged behaviour).
-fn load_via_las_rs(path: &Path) -> Result<LasCurves> {
+fn load_via_las_rs(path: &Path) -> Result<LogData> {
     let las = las_rs::read_file(path).map_err(map_err)?;
     let mnemonics = las.curve_mnemonics();
     // Index = the depth curve. `las_rs` recognizes the common `DEPT`; when it
     // doesn't (e.g. Petrel core logs name it `DEPTH`), fall back to the LAS
-    // convention that the **first** curve is the depth index.
-    let index = match las.index() {
+    // convention that the **first** curve is the depth md.
+    let md = match las.index() {
         Some(ix) => ix.to_vec(),
         None => {
             let first = mnemonics
                 .first()
-                .ok_or_else(|| GeoError::Parse("LAS: no index/depth curve".into()))?;
+                .ok_or_else(|| GeoError::Parse("LAS: no md/depth curve".into()))?;
             las.curve_data(first)
                 .map(<[f64]>::to_vec)
-                .ok_or_else(|| GeoError::Parse("LAS: no index/depth curve".into()))?
+                .ok_or_else(|| GeoError::Parse("LAS: no md/depth curve".into()))?
         }
     };
     let mut curves = Vec::with_capacity(mnemonics.len().saturating_sub(1));
@@ -78,13 +61,13 @@ fn load_via_las_rs(path: &Path) -> Result<LasCurves> {
             .get_curve(m)
             .map(|c| c.header.unit.clone())
             .unwrap_or_default();
-        curves.push(LasCurve {
+        curves.push(LogCurveData {
             mnemonic: (*m).to_string(),
             unit,
             values,
         });
     }
-    Ok(LasCurves { index, curves })
+    Ok(LogData { md, curves })
 }
 
 // ---- LAS 3.0 contained fallback parser -------------------------------------
@@ -195,7 +178,7 @@ fn detect_version(secs: &[Section]) -> Option<f64> {
 }
 
 /// Parse a LAS 3.0 body into curves via the contained delimiter-aware reader.
-fn parse_las3(secs: &[Section]) -> Result<LasCurves> {
+fn parse_las3(secs: &[Section]) -> Result<LogData> {
     let version = secs.iter().find(|s| classify(&s.head) == Class::Version);
     let delim = version
         .and_then(|s| find_field(s, "DLM"))
@@ -283,14 +266,14 @@ fn parse_num(tok: &str, null: f64) -> f64 {
     }
 }
 
-/// Build [`LasCurves`] from definitions + data rows. Ragged rows are NaN-padded
+/// Build [`LogData`] from definitions + data rows. Ragged rows are NaN-padded
 /// to the curve count.
 fn build_curves(
     defs: &[(String, String)],
     lines: &[&str],
     delim: Delim,
     null: f64,
-) -> Result<LasCurves> {
+) -> Result<LogData> {
     let ncol = defs.len();
     if ncol == 0 {
         return Err(GeoError::Format(
@@ -310,22 +293,22 @@ fn build_curves(
             col.push(toks.get(i).map(|t| parse_num(t, null)).unwrap_or(f64::NAN));
         }
     }
-    // Move each accumulated column out (no clone): col 0 is the index, the rest
+    // Move each accumulated column out (no clone): col 0 is the md, the rest
     // pair with their definition.
     let mut cols = cols.into_iter();
-    let index = cols.next().expect("ncol >= 1 checked above");
+    let md = cols.next().expect("ncol >= 1 checked above");
     let curves = cols
         .enumerate()
         .map(|(j, values)| {
             let i = j + 1;
-            LasCurve {
+            LogCurveData {
                 mnemonic: defs[i].0.clone(),
                 unit: defs[i].1.clone(),
                 values,
             }
         })
         .collect();
-    Ok(LasCurves { index, curves })
+    Ok(LogData { md, curves })
 }
 
 #[cfg(test)]
@@ -344,7 +327,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_depth_index_when_not_dept() {
-        // Petrel core logs name the index `DEPTH`, not the LAS-standard `DEPT`.
+        // Petrel core logs name the md `DEPTH`, not the LAS-standard `DEPT`.
         let body = "\
 ~Version
  VERS. 2.0 :
@@ -364,7 +347,7 @@ mod tests {
 ";
         let p = write("petekio_depth_index.las", body);
         let c = load(&p).unwrap();
-        assert_eq!(c.index, vec![100.0, 110.0, 120.0]);
+        assert_eq!(c.md, vec![100.0, 110.0, 120.0]);
         assert_eq!(c.curves.len(), 1);
         assert_eq!(c.curves[0].mnemonic, "CPOR");
         assert_eq!(c.curves[0].values, vec![19.0, 21.0, 18.0]);
@@ -394,7 +377,7 @@ mod tests {
 ";
         let p = write("petekio_las3_core.las", body);
         let c = load(&p).unwrap();
-        assert_eq!(c.index, vec![1205.0, 1210.0, 1215.0]);
+        assert_eq!(c.md, vec![1205.0, 1210.0, 1215.0]);
         assert_eq!(c.curves.len(), 2);
         assert_eq!(c.curves[0].mnemonic, "CPOR");
         assert_eq!(c.curves[0].unit, "pu");

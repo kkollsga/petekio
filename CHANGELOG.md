@@ -6,6 +6,31 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-08
+
+### Changed
+- EarthVision/Petrel point-grid loading now preserves `column` and `row`
+  fields as point attributes and uses them as authoritative topology for
+  `PointSet.infer_geometry(...)`. `Project.import_data(...)` now enriches
+  same-stem Petrel IRAP point exports from matching EarthVision topology files
+  when both are present. Standalone plain IRAP/XYZ point exports that have lost
+  those fields remain strict XY-only inference and now report a clearer hint
+  when duplicate nodes make exact geometry recovery impossible.
+- Renamed raw project ingestion from `Project.load(...)` with `LoadSettings` to
+  `Project.import_data(...)` with `ImportSettings`. `Project.load(...)` and
+  `Project.save(...)` now deal only with compact `.pproj` projects.
+- Added folder-aware project collections. Object names can use `/` folders
+  such as `structure/top agat`; `project.surfaces` shows immediate children,
+  `project.surfaces.structure` descends into the folder, `.all_names()` returns
+  canonical names, and unique leaf lookup such as `project.surfaces.top_agat`
+  resolves when unambiguous. Project objects can now be renamed/deleted through
+  typed methods (`rename_surface`, `delete_points`, etc.) or generic
+  `rename(kind, old, new)` / `delete(kind, name)`.
+- Surface, polygon, point, and log readers now normalize through canonical
+  internal payloads before constructing the public domain objects. `.pproj`
+  persistence remains format-independent: projects save `Surface`, `PointSet`,
+  `PolygonSet`, and `Well`/`Log` objects rather than source-format details.
+
 ## [0.3.4] - 2026-07-07
 
 ### Added

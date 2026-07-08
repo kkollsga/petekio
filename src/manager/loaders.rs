@@ -343,6 +343,19 @@ impl GeoData {
         Ok(entry.or_insert(points))
     }
 
+    /// Load an IRAP/RMS plain `X Y Z` point set and enrich it with Petrel
+    /// `column`/`row` topology from a matching EarthVision grid export.
+    pub fn load_points_with_topology(
+        &mut self,
+        name: &str,
+        path: impl AsRef<Path>,
+        topology_path: impl AsRef<Path>,
+    ) -> Result<&PointSet> {
+        let points = PointSet::load_irap_points_with_topology(path, topology_path)?;
+        let entry = self.points.entry(name.to_string());
+        Ok(entry.or_insert(points))
+    }
+
     /// Load a polygon set from `path` and store it under `name`, returning a
     /// borrow. Dispatches content-first (`detect(path)`), with extension fallback
     /// only when the detector returns `Unknown`: GeoJSON, shapefile, CPS-3

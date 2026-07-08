@@ -12,7 +12,7 @@
 //! the sibling [`loaders`](super::loaders) module.
 
 use crate::core::{PointSet, PolygonSet, Surface, Well};
-use crate::foundation::{Result, Unit};
+use crate::foundation::{GeoError, Result, Unit};
 use crate::manager::wells_view::WellsView;
 use indexmap::IndexMap;
 
@@ -146,9 +146,41 @@ impl GeoData {
         self.surfaces.get(name)
     }
 
+    /// Rename a stored surface.
+    pub fn rename_surface(&mut self, old: &str, new: &str) -> Result<()> {
+        rename_key(&mut self.surfaces, old, new, "surface")?;
+        rename_element_tags(&mut self.element_tags, old, new);
+        Ok(())
+    }
+
+    /// Delete a stored surface. Returns whether anything was removed.
+    pub fn delete_surface(&mut self, name: &str) -> bool {
+        let removed = self.surfaces.shift_remove(name).is_some();
+        if removed {
+            self.element_tags.shift_remove(name);
+        }
+        removed
+    }
+
     /// The well stored under `id`, or `None`.
     pub fn well(&self, id: &str) -> Option<&Well> {
         self.wells.get(id)
+    }
+
+    /// Rename a stored well.
+    pub fn rename_well(&mut self, old: &str, new: &str) -> Result<()> {
+        rename_key(&mut self.wells, old, new, "well")?;
+        rename_element_tags(&mut self.element_tags, old, new);
+        Ok(())
+    }
+
+    /// Delete a stored well. Returns whether anything was removed.
+    pub fn delete_well(&mut self, id: &str) -> bool {
+        let removed = self.wells.shift_remove(id).is_some();
+        if removed {
+            self.element_tags.shift_remove(id);
+        }
+        removed
     }
 
     /// Mutable access to the well stored under `id`, or `None` — for in-place
@@ -163,9 +195,41 @@ impl GeoData {
         self.points.get(name)
     }
 
+    /// Rename a stored point set.
+    pub fn rename_points(&mut self, old: &str, new: &str) -> Result<()> {
+        rename_key(&mut self.points, old, new, "point set")?;
+        rename_element_tags(&mut self.element_tags, old, new);
+        Ok(())
+    }
+
+    /// Delete a stored point set. Returns whether anything was removed.
+    pub fn delete_points(&mut self, name: &str) -> bool {
+        let removed = self.points.shift_remove(name).is_some();
+        if removed {
+            self.element_tags.shift_remove(name);
+        }
+        removed
+    }
+
     /// The polygon set stored under `name`, or `None`.
     pub fn polygons(&self, name: &str) -> Option<&PolygonSet> {
         self.polygons.get(name)
+    }
+
+    /// Rename a stored polygon set.
+    pub fn rename_polygons(&mut self, old: &str, new: &str) -> Result<()> {
+        rename_key(&mut self.polygons, old, new, "polygon set")?;
+        rename_element_tags(&mut self.element_tags, old, new);
+        Ok(())
+    }
+
+    /// Delete a stored polygon set. Returns whether anything was removed.
+    pub fn delete_polygons(&mut self, name: &str) -> bool {
+        let removed = self.polygons.shift_remove(name).is_some();
+        if removed {
+            self.element_tags.shift_remove(name);
+        }
+        removed
     }
 
     /// All surfaces in insertion order.
@@ -186,6 +250,31 @@ impl GeoData {
     /// A broadcastable, filterable view over all wells (insertion order).
     pub fn wells(&self) -> WellsView<'_> {
         WellsView::new(self.wells.values().collect())
+    }
+}
+
+fn rename_key<T>(map: &mut IndexMap<String, T>, old: &str, new: &str, kind: &str) -> Result<()> {
+    if old == new {
+        return Ok(());
+    }
+    if map.contains_key(new) {
+        return Err(GeoError::Parse(format!(
+            "rename_{kind}: destination '{new}' already exists"
+        )));
+    }
+    let Some(value) = map.shift_remove(old) else {
+        return Err(GeoError::NotFound(format!("{kind} '{old}'")));
+    };
+    map.insert(new.to_string(), value);
+    Ok(())
+}
+
+fn rename_element_tags(tags: &mut IndexMap<String, Vec<String>>, old: &str, new: &str) {
+    if old == new {
+        return;
+    }
+    if let Some(value) = tags.shift_remove(old) {
+        tags.insert(new.to_string(), value);
     }
 }
 

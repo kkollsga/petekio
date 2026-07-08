@@ -8,6 +8,7 @@
 //! node `(X0, Y0)`. A negative `YINC` means `yflip`.
 
 use crate::foundation::{GeoError, GridGeometry, Result};
+use crate::io::SurfaceData;
 use ndarray::{Array2, ShapeBuilder};
 use std::path::Path;
 
@@ -31,15 +32,15 @@ fn next_usize<'a>(it: &mut impl Iterator<Item = &'a str>, what: &str) -> Result<
         .map_err(|e| GeoError::Parse(format!("IRAP classic: bad {what} '{t}': {e}")))
 }
 
-/// Read an IRAP-classic file into a geometry + value grid.
-pub fn load_irap_classic(path: &Path) -> Result<(GridGeometry, Array2<f64>)> {
+/// Read an IRAP-classic file into canonical imported surface data.
+pub fn load_irap_classic(path: &Path) -> Result<SurfaceData> {
     // Latin-1 decode (permissive) like every other reader — a Petrel export with
     // a stray non-UTF-8 byte must not abort the parse.
     let text = crate::io::decode_latin1(&std::fs::read(path)?);
     parse_irap_classic(&text)
 }
 
-fn parse_irap_classic(text: &str) -> Result<(GridGeometry, Array2<f64>)> {
+fn parse_irap_classic(text: &str) -> Result<SurfaceData> {
     let mut it = text.split_whitespace();
 
     let id = {
@@ -94,7 +95,7 @@ fn parse_irap_classic(text: &str) -> Result<(GridGeometry, Array2<f64>)> {
     // (ncol, nrow) reproduces exactly that, with logical indexing values[[i,j]].
     let values = Array2::from_shape_vec((ncol, nrow).f(), data)
         .map_err(|e| GeoError::Parse(format!("IRAP classic: shape error: {e}")))?;
-    Ok((geom, values))
+    SurfaceData::new(geom, values)
 }
 
 /// Write a geometry + value grid as IRAP-classic ASCII (round-trips

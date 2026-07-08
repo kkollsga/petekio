@@ -9,7 +9,7 @@ FIXTURES = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 
 
 def _project(*, aliases=None):
-    return petekio.Project.load(FIXTURES / "wells_petro", aliases=aliases)
+    return petekio.Project.import_data(FIXTURES / "wells_petro", aliases=aliases)
 
 
 def test_project_wells_logs_returns_lazy_namespace_and_channels():

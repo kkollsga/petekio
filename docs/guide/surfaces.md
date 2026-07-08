@@ -34,7 +34,7 @@ Operations return **new** surfaces; the stored surface is unchanged.
 
 A `PointSet` is scattered `(x, y, z)` with optional per-point attributes. Load
 GeoJSON, CSV (with `x`/`y`/`z` columns; other numeric columns become
-attributes), or RMS/IRAP plain `X Y Z`.
+attributes), EarthVision/Petrel point grids, or RMS/IRAP plain `X Y Z`.
 
 ```python
 pts = geo.load_points("picks", "picks.geojson")
@@ -44,8 +44,13 @@ grid = pts.to_surface(grid_geom)               # or grid scattered points onto a
 ```
 
 Use `infer_geometry()` only when the points are expected to be a regular grid
-export. For genuinely scattered picks or irregular vendor exports, choose the
-model/template `GridGeometry` explicitly and call `to_surface(...)`.
+export. EarthVision/Petrel exports that carry `column` and `row` fields use that
+topology directly. During `Project.import_data(...)`, same-stem Petrel IRAP point
+exports are enriched from matching EarthVision topology files when both are
+present. Standalone plain IRAP/XYZ point exports must infer from XY only, so
+they cannot recover exact grid topology once those fields are lost. For
+genuinely scattered picks or irregular vendor exports, choose the model/template
+`GridGeometry` explicitly and call `to_surface(...)`.
 
 ## Polygons
 

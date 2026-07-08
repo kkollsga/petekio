@@ -40,7 +40,7 @@ def _polygon_geojson() -> str:
     )
 
 
-def test_project_load_raw_tree_inventory_and_accessors(tmp_path):
+def test_project_import_raw_tree_inventory_and_accessors(tmp_path):
     root = tmp_path / "Data"
     _write(root / "Surfaces" / "Top reservoir.irap", _irap())
     _write(root / "Points" / "samples.csv", "x,y,z,poro\n1,2,-3,0.2\n4,5,-6,0.3\n")
@@ -50,7 +50,7 @@ def test_project_load_raw_tree_inventory_and_accessors(tmp_path):
     _write(root / "WellTops.tops", _petrel_tops())
     _write(root / "Notes" / "readme.txt", "not loadable\n")
 
-    project = petekio.Project.load(
+    project = petekio.Project.import_data(
         root,
         aliases={"por": ["PHIE_2025"]},
         crs="ED50",
@@ -110,13 +110,13 @@ def test_project_load_raw_tree_inventory_and_accessors(tmp_path):
     assert well.crs == "ED50"
 
 
-def test_project_load_accepts_petekio_load_settings(tmp_path):
+def test_project_import_accepts_petekio_import_settings(tmp_path):
     root = tmp_path / "Data"
     _write(root / "Wells" / "99_9-1_A_CompLogs.las", _las())
 
-    project = petekio.Project.load(
+    project = petekio.Project.import_data(
         root,
-        settings=petekio.LoadSettings(
+        settings=petekio.ImportSettings(
             crs="EPSG:32631",
             aliases={"por": ["PHIE_2025"]},
             unit="m",
@@ -132,11 +132,11 @@ def test_project_load_accepts_petekio_load_settings(tmp_path):
     assert project.well("99/9-1").log("por").stats().count == 3
 
 
-def test_project_load_accepts_settings_mapping_aliases_and_crs(tmp_path):
+def test_project_import_accepts_settings_mapping_aliases_and_crs(tmp_path):
     root = tmp_path / "Data"
     _write(root / "Wells" / "99_9-1_A_CompLogs.las", _las())
 
-    project = petekio.Project.load(
+    project = petekio.Project.import_data(
         root,
         settings={
             "crs": "EPSG:32631",
@@ -151,14 +151,14 @@ def test_project_load_accepts_settings_mapping_aliases_and_crs(tmp_path):
     assert project.well("99/9-1").log("por").stats().count == 3
 
 
-def test_project_load_does_not_false_skip_tops_csv(tmp_path):
+def test_project_import_does_not_false_skip_tops_csv(tmp_path):
     root = tmp_path / "Data"
     well_dir = root / "Wells" / "15_9-A1"
     _write(well_dir / "sample.las", _las())
     _write(well_dir / "tops.csv", "name,md\nTop A,100.0\nBase A,120.0\n")
     _write(root / "Points" / "samples.csv", "x,y,z\n1,2,3\n")
 
-    project = petekio.Project.load(root)
+    project = petekio.Project.import_data(root)
     inv = project.inventory()
 
     assert inv["wells"] == ["15/9-A1"]
@@ -167,16 +167,68 @@ def test_project_load_does_not_false_skip_tops_csv(tmp_path):
     assert project.well("15/9-A1").top("Top A") is not None
 
 
-def test_project_load_uses_relative_names_for_duplicate_spatial_stems(tmp_path):
+def test_project_import_uses_relative_names_for_duplicate_spatial_stems(tmp_path):
     root = tmp_path / "Data"
     _write(root / "Surfaces" / "Top reservoir.irap", _irap())
     _write(root / "Alternatives" / "Top reservoir.irap", _irap())
 
-    project = petekio.Project.load(root)
+    project = petekio.Project.import_data(root)
 
-    assert project.surfaces == ["Alternatives.Top reservoir", "Surfaces.Top reservoir"]
-    assert project.surface("Alternatives.Top reservoir").stats().count == 4
-    assert project.surface("Surfaces.Top reservoir").stats().count == 4
+    assert project.surfaces == ["Alternatives/", "Surfaces/"]
+    assert project.surfaces.all_names() == [
+        "Alternatives/Top reservoir",
+        "Surfaces/Top reservoir",
+    ]
+    assert project.surfaces.Alternatives == ["Top reservoir"]
+    assert project.surface("Alternatives/Top reservoir").stats().count == 4
+    assert project.surface("Surfaces/Top reservoir").stats().count == 4
+
+
+def test_project_import_enriches_irap_points_from_matching_earthvision_topology(tmp_path):
+    root = tmp_path / "Data"
+    _write(
+        root / "Surfaces" / "EarthVision_grid" / "Top Agat.EarthVisionGrid",
+        """# Type: scattered data
+# Field: 1 x
+# Field: 2 y
+# Field: 3 z meters
+# Field: 4 column
+# Field: 5 row
+# Grid_size: 3 x 2
+# End:
+100.0 200.0 -50.0 1 1
+110.0 200.0 -51.0 2 1
+110.0 200.0 -51.0 3 1
+100.0 210.0 -52.0 1 2
+110.0 210.0 -53.0 2 2
+120.0 210.0 -54.0 3 2
+""",
+    )
+    _write(
+        root / "Surfaces" / "IrapClassic_points" / "Top Agat.IrapClassicPoints",
+        """100.0 200.0 -50.0
+110.0 200.0 -51.0
+100.0 210.0 -52.0
+110.0 210.0 -53.0
+120.0 210.0 -54.0
+""",
+    )
+
+    project = petekio.Project.import_data(root)
+    pts = project.points["Surfaces/IrapClassic_points/Top Agat"]
+
+    assert pts.attr("column") == [1.0, 2.0, 1.0, 2.0, 3.0]
+    assert pts.attr("row") == [1.0, 1.0, 2.0, 2.0, 2.0]
+    assert project.points.Surfaces.IrapClassic_points.top_agat.attr("row") == [
+        1.0,
+        1.0,
+        2.0,
+        2.0,
+        2.0,
+    ]
+    geom = pts.infer_geometry(tolerance=1e-3, edge="convex_hull")
+    assert geom.ncol == 3
+    assert geom.nrow == 2
 
 
 def test_project_load_pproj_delegates_to_geodata_open(tmp_path):
@@ -190,3 +242,98 @@ def test_project_load_pproj_delegates_to_geodata_open(tmp_path):
     assert isinstance(project.geodata, petekio.GeoData)
     assert project.surface("top").stats().count == 4
     assert project.inventory()["surfaces"] == ["top"]
+
+
+def test_project_load_rejects_raw_source_directory(tmp_path):
+    root = tmp_path / "Data"
+    root.mkdir()
+
+    with pytest.raises(ValueError, match="Use Project.import_data"):
+        petekio.Project.load(root)
+
+
+def test_project_import_rejects_pproj(tmp_path):
+    geo = petekio.GeoData(unit="m")
+    pproj = tmp_path / "field.pproj"
+    geo.save(str(pproj))
+
+    with pytest.raises(ValueError, match="raw source directory"):
+        petekio.Project.import_data(pproj)
+
+
+def test_project_save_writes_compact_project(tmp_path):
+    root = tmp_path / "Data"
+    _write(root / "Surfaces" / "Top reservoir.irap", _irap())
+    project = petekio.Project.import_data(root)
+
+    pproj = tmp_path / "field.pproj"
+    project.save(pproj)
+    reopened = petekio.Project.load(pproj)
+
+    assert reopened.surfaces == ["Top reservoir"]
+    assert reopened.surface("Top reservoir").stats().count == 4
+
+    with pytest.raises(ValueError, match=".pproj"):
+        project.save(tmp_path / "field")
+
+
+def test_project_folder_navigation_and_object_management(tmp_path):
+    root = tmp_path / "Data"
+    _write(root / "Surfaces" / "Top reservoir.irap", _irap())
+    _write(root / "Points" / "samples.csv", "x,y,z,poro\n1,2,-3,0.2\n4,5,-6,0.3\n")
+    _write(root / "Polygons" / "ModelEdge.geojson", _polygon_geojson())
+    _write(root / "Wells" / "99_9-1_A_CompLogs.las", _las())
+    _write(root / "WellTops.tops", _petrel_tops())
+
+    project = petekio.Project.import_data(root)
+
+    project.rename_surface("Top reservoir", "structure/top agat")
+    assert project.surfaces == ["structure/"]
+    assert project.structures == ["structure/"]
+    assert project.surfaces.structure == ["top agat"]
+    assert project.surfaces.structure.top_agat.stats().count == 4
+    assert project.surfaces.top_agat.stats().count == 4
+    assert project.inventory()["surfaces"] == ["structure/top agat"]
+
+    project.rename_points("samples", "data/samples")
+    project.rename_polygons("ModelEdge", "maps/model edge")
+    project.rename_well("99/9-1", "wells/A1")
+    project.rename_tops("WellTops", "tops/main")
+
+    assert project.points == ["data/"]
+    assert project.points.data.samples.stats("poro").count == 2
+    assert project.polygons.maps.model_edge.contains(0.5, 0.5)
+    assert project.well("wells/A1") is not None
+    assert project.tops == ["tops/"]
+    assert list(project.tops.tops.main["surface"]) == ["Top A", "Base A"]
+
+    pproj = tmp_path / "managed.pproj"
+    project.save(pproj)
+    reopened = petekio.Project.load(pproj)
+    assert reopened.surfaces == ["structure/"]
+    assert reopened.surfaces.top_agat.stats().count == 4
+    assert reopened.points.data.samples.stats("poro").count == 2
+
+    reopened.delete_surface("top agat")
+    reopened.delete_points("data/samples")
+    reopened.delete_polygons("maps/model edge")
+    reopened.delete_well("wells/A1")
+
+    assert reopened.inventory()["counts"]["surfaces"] == 0
+    assert reopened.inventory()["counts"]["points"] == 0
+    assert reopened.inventory()["counts"]["polygons"] == 0
+    assert reopened.inventory()["counts"]["wells"] == 0
+
+
+def test_project_rename_and_delete_errors_are_loud(tmp_path):
+    root = tmp_path / "Data"
+    _write(root / "Surfaces" / "Top A.irap", _irap())
+    _write(root / "Surfaces" / "Top B.irap", _irap())
+    project = petekio.Project.import_data(root)
+
+    with pytest.raises(ValueError, match="already exists"):
+        project.rename_surface("Top A", "Top B")
+    with pytest.raises(KeyError):
+        project.delete_surface("missing")
+    with pytest.raises(ValueError, match="unsupported"):
+        project.rename("cube", "Top A", "x")

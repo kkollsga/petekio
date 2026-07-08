@@ -74,17 +74,26 @@ honouring the points as hard constraints).
 
 If a point cloud is really a regular grid export, `PointSet.infer_geometry(...)`
 can recover the lattice and attach an edge polygon. EarthVision/Petrel exports
-with `column` and `row` fields use those indices as topology; plain IRAP/XYZ
-point exports have to infer from XY alone unless `Project.import_data(...)` can enrich
-them from a same-stem EarthVision topology export in the raw project tree.
+with `column` and `row` fields can instead become a `StructuredMeshSurface`,
+which keeps logical topology but stores explicit XY per node. Plain IRAP/XYZ
+point exports have to infer from XY alone unless `Project.import_data(...)` can
+enrich them from a same-stem EarthVision topology export in the raw project tree.
 
 ```python
-geom = pts.infer_geometry(tolerance=1e-3, edge="convex_hull")
+geom = pts.infer_geometry(tolerance=1e-3)  # default edge="trimesh"
 surf = pts.to_surface(geom, method="nearest")
+mesh = pts.to_structured_surface(edge="occupied")
 ```
 
 Inference is deliberately strict and raises when points are scattered, duplicate
 without topology fields, or do not fit the detected lattice within tolerance.
+The default `edge="trimesh"` traces the exterior of the locally connected point
+triangulation. Use `edge="occupied"` when you want the smallest grid-oriented
+rectangle covering all point XYs, `edge="full_rect"` for the inferred regular
+geometry rectangle, and `edge="convex_hull"` for a convex envelope comparison.
+Use `to_structured_surface(...)` for topology-bearing Petrel surfaces that are
+locally shifted around faults; use `to_surface(...)` when you want gridding onto
+an explicit regular model geometry.
 
 ## Wells, logs and tops
 

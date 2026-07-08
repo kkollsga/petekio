@@ -17,6 +17,7 @@ mod detect;
 mod points;
 mod specs;
 mod stats;
+mod structured_surface;
 mod surface;
 mod trajectory;
 mod viewer;
@@ -106,6 +107,7 @@ fn _petekio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<geometry::GridGeometry>()?;
     m.add_class::<surface::Surface>()?;
     m.add_class::<surface::AttrAccessor>()?;
+    m.add_class::<structured_surface::StructuredMeshSurface>()?;
     m.add_class::<points::PointSet>()?;
     m.add_class::<points::PointColumn>()?;
     m.add_class::<points::PolygonSet>()?;

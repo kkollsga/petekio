@@ -9,6 +9,7 @@
 use crate::geodata::GeoData;
 use crate::geometry::{BBox, GridGeometry};
 use crate::stats::Stats;
+use crate::structured_surface::StructuredMeshSurface;
 use crate::surface::Surface;
 use crate::{parse_grid_method, to_pyerr};
 use petekio::{GeometryEdge, PointSet as RsPointSet, PolygonSet as RsPolygonSet};
@@ -195,9 +196,10 @@ impl PointSet {
     /// Infer a regular grid geometry from the points. Raises `ValueError` when
     /// the point cloud is not grid-like within `tolerance`.
     ///
-    /// `edge` controls `geometry.edge`: `"occupied"` (default), `"convex_hull"`,
-    /// or `"full_rect"`.
-    #[pyo3(signature = (tolerance = 1e-3, edge = "occupied"))]
+    /// `edge` controls `geometry.edge`: `"trimesh"`/`"tin"` (default;
+    /// triangulated point footprint), `"occupied"` (tight grid-oriented
+    /// rectangle over all point XYs), `"convex_hull"`, or `"full_rect"`.
+    #[pyo3(signature = (tolerance = 1e-3, edge = "trimesh"))]
     fn infer_geometry(&self, py: Python<'_>, tolerance: f64, edge: &str) -> PyResult<GridGeometry> {
         let edge = parse_geometry_edge(edge)?;
         self.with(py, |p| {
@@ -218,6 +220,23 @@ impl PointSet {
         self.with(py, |p| {
             py.detach(|| p.to_surface(g, gm))
                 .map(Surface::wrap)
+                .map_err(to_pyerr)
+        })
+    }
+
+    /// Promote topology-bearing points (`column`/`row` attributes) to a
+    /// structured mesh surface with explicit XY at every logical node.
+    #[pyo3(signature = (tolerance = 1e-3, edge = "occupied"))]
+    fn to_structured_surface(
+        &self,
+        py: Python<'_>,
+        tolerance: f64,
+        edge: &str,
+    ) -> PyResult<StructuredMeshSurface> {
+        let edge = parse_geometry_edge(edge)?;
+        self.with(py, |p| {
+            p.to_structured_surface(tolerance, edge)
+                .map(StructuredMeshSurface::wrap)
                 .map_err(to_pyerr)
         })
     }
@@ -267,11 +286,12 @@ fn parse_geometry_edge(s: &str) -> PyResult<GeometryEdge> {
         .replace([' ', '-'], "_")
         .as_str()
     {
+        "trimesh" | "tin" | "triangulated" | "triangulated_mesh" => Ok(GeometryEdge::Trimesh),
         "occupied" => Ok(GeometryEdge::Occupied),
         "convex_hull" | "convexhull" | "hull" => Ok(GeometryEdge::ConvexHull),
         "full_rect" | "fullrect" | "rect" | "rectangle" => Ok(GeometryEdge::FullRect),
         other => Err(PyValueError::new_err(format!(
-            "unknown geometry edge '{other}' (expected 'occupied', 'convex_hull', or 'full_rect')"
+            "unknown geometry edge '{other}' (expected 'trimesh', 'occupied', 'convex_hull', or 'full_rect')"
         ))),
     }
 }

@@ -6,6 +6,28 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-07-08
+
+### Added
+- Added `StructuredMeshSurface` for topology-bearing point grids that need
+  explicit per-node XY coordinates, including Python access to `kind`, `ncol`,
+  `nrow`, `node_xy(...)`, `z(...)`, `values()`, `geometry`, `edge`, `stats()`,
+  and `history()`.
+- Added `edge="trimesh"` / `edge="tin"` for
+  `PointSet.infer_geometry(...)`. This is now the default point edge and traces
+  the exterior of the locally connected point triangulation.
+
+### Changed
+- Reworked point-derived geometry edges. `edge="occupied"` now means the tight
+  grid-oriented rectangle covering all finite point XY positions;
+  `edge="full_rect"` remains the inferred regular geometry rectangle; and
+  `edge="convex_hull"` remains an explicit convex envelope.
+- Surface-point docs now recommend the default triangulated edge for point
+  footprints, while keeping `occupied` available as the compact rectangular QC
+  outline.
+- Updated the Python dependency floor to `petektools>=0.2.6,<0.3` so the wheel
+  gets the viewer topology-grid QA improvements from petekTools 0.2.6.
+
 ## [0.3.6] - 2026-07-08
 
 ### Added

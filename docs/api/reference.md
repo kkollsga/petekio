@@ -75,11 +75,24 @@ and percentiles (`.p10`, `.p50`, `.p90`).
 | `.area_below(z)` | Planimetric area below a depth. |
 | operators | `+ - * /` with a scalar or a matching-geometry surface (elementwise). |
 
+## StructuredMeshSurface
+
+| Member | Description |
+| --- | --- |
+| `.kind` | Always `"structured_mesh"`. |
+| `.ncol` / `.nrow` | Logical column/row node counts. |
+| `.node_xy(i, j)` / `.z(i, j)` | Explicit node coordinate and primary value at logical node `(i, j)`. |
+| `.values()` / `.x()` / `.y()` | Row-major nested lists for the explicit node arrays. |
+| `.edge` / `.bbox()` | Modelling edge polygon and finite-node bounding box. |
+| `.nominal_geometry` | Optional approximate `GridGeometry`; metadata only. |
+| `.stats()` / `.history()` | NaN-skipping value statistics and operation history. |
+
 ## PointSet & PolygonSet
 
 | Member | Description |
 | --- | --- |
-| `PointSet.bbox` / `.infer_geometry(...)` / `.to_surface(grid_geom)` | Bounds; strict regular-grid geometry inference; grid points onto an explicit geometry. |
+| `PointSet.bbox` / `.infer_geometry(...)` / `.to_surface(grid_geom)` | Bounds; strict regular-grid geometry inference with default `trimesh` point edge; grid points onto an explicit geometry. |
+| `PointSet.to_structured_surface(...)` | Promote topology-bearing points (`column`/`row`) to `StructuredMeshSurface` while preserving explicit shifted XY nodes. |
 | `PointSet.x` / `.y` / `.z` / `.<attr>` | Column objects for same-point-set calculations; assign with `points.new_attr = ...`. |
 | `GridGeometry.edge` | Edge polygon carried by inferred geometry, or a rectangular footprint for plain geometries. |
 | `PolygonSet.rings` | The constituent rings. |

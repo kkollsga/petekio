@@ -287,6 +287,101 @@ def test_earthvision_pointset_infer_geometry_uses_column_row(tmp_path):
     assert math.isclose(geom.yinc, 10.0, abs_tol=1e-9)
 
 
+def test_pointset_trimesh_edge_tracks_concave_footprint_by_default():
+    x, y, z, col, row = [], [], [], [], []
+    for j in range(4):
+        for i in range(4):
+            if i <= 1 or j <= 1:
+                x.append(float(i))
+                y.append(float(j))
+                z.append(100.0 + i + j)
+                col.append(i + 1)
+                row.append(j + 1)
+
+    p = petekio.PointSet.from_xyz(x, y, z)
+    p.column = col
+    p.row = row
+
+    default = p.infer_geometry(tolerance=1e-6)
+    trimesh = p.infer_geometry(tolerance=1e-6, edge="trimesh")
+    hull = p.infer_geometry(tolerance=1e-6, edge="convex_hull")
+    full_rect = p.infer_geometry(tolerance=1e-6, edge="full_rect")
+
+    assert math.isclose(default.edge.area(), 5.5, abs_tol=1e-12)
+    assert math.isclose(trimesh.edge.area(), default.edge.area(), abs_tol=1e-12)
+    assert hull.edge.area() > trimesh.edge.area()
+    assert math.isclose(full_rect.edge.area(), 9.0, abs_tol=1e-12)
+
+
+def test_pointset_occupied_edge_is_tight_grid_oriented_rectangle():
+    p = petekio.PointSet.from_xyz(
+        [0.0, 10.0, 0.0, 12.0],
+        [0.0, 0.0, 10.0, 10.0],
+        [100.0, 101.0, 102.0, 103.0],
+    )
+    p.column = [1, 2, 1, 2]
+    p.row = [1, 1, 2, 2]
+
+    occupied = p.infer_geometry(tolerance=1e-6, edge="occupied")
+    full_rect = p.infer_geometry(tolerance=1e-6, edge="full_rect")
+
+    assert math.isclose(occupied.edge.area(), 120.0, abs_tol=1e-12)
+    assert math.isclose(occupied.edge.bbox().xmax, 12.0, abs_tol=1e-12)
+    assert occupied.edge.area() > full_rect.edge.area()
+
+
+def test_pointset_trimesh_edge_works_without_topology():
+    x, y, z = [], [], []
+    for j in range(4):
+        for i in range(4):
+            if i <= 1 or j <= 1:
+                x.append(float(i))
+                y.append(float(j))
+                z.append(100.0 + i + j)
+
+    p = petekio.PointSet.from_xyz(x, y, z)
+
+    trimesh = p.infer_geometry(tolerance=1e-6, edge="tin")
+    full_rect = p.infer_geometry(tolerance=1e-6, edge="full_rect")
+
+    assert math.isclose(trimesh.edge.area(), 5.5, abs_tol=1e-12)
+    assert math.isclose(full_rect.edge.area(), 9.0, abs_tol=1e-12)
+
+
+def test_pointset_to_structured_surface_preserves_explicit_xy():
+    p = petekio.PointSet.from_xyz(
+        [0.0, 10.0, 0.0, 12.0],
+        [0.0, 0.0, 10.0, 10.0],
+        [100.0, 101.0, 102.0, 103.0],
+    )
+    p.column = [1, 2, 1, 2]
+    p.row = [1, 1, 2, 2]
+
+    s = p.to_structured_surface(edge="occupied")
+
+    assert isinstance(s, petekio.StructuredMeshSurface)
+    assert s.kind == "structured_mesh"
+    assert s.ncol == 2
+    assert s.nrow == 2
+    assert s.node_xy(1, 1) == (12.0, 10.0)
+    assert s.z(1, 1) == 103.0
+    assert s.values() == [[100.0, 101.0], [102.0, 103.0]]
+    assert s.stats().count == 4
+    assert s.edge.area() > 0.0
+    assert any("points.to_structured_surface(edge=Occupied)" in h for h in s.history())
+
+
+def test_pointset_to_structured_surface_requires_topology():
+    p = petekio.PointSet.from_xyz(
+        [0.0, 10.0, 0.0, 10.0],
+        [0.0, 0.0, 10.0, 10.0],
+        [100.0, 101.0, 102.0, 103.0],
+    )
+
+    with pytest.raises(ValueError, match="requires column/row topology"):
+        p.to_structured_surface()
+
+
 def test_pointset_infer_geometry_rejects_scattered_points():
     p = petekio.PointSet.from_xyz(
         [0.0, 11.0, 3.0, 19.0, 7.0],

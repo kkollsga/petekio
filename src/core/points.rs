@@ -8,15 +8,18 @@
 //! identical to our `GridGeometry`, so the seam is a 1:1 map (`to_lattice`); the
 //! kernels themselves were lifted from petekIO 0.2.0 and are held at parity.
 
-use crate::core::{PolygonSet, Surface};
+use crate::core::{PolygonSet, StructuredMeshSurface, Surface};
 use crate::foundation::{
     BBox, GeoError, GridGeometry, HasHistory, OperationHistory, Point3, Result, Stats,
 };
 use crate::io::PointData;
+use geo::{MultiPoint, Point, TriangulateDelaunayUnconstrained};
 use indexmap::IndexMap;
+use ndarray::Array2;
 use petektools::{grid as pt_grid, grid_min_curvature_seeded, GridMethod as PtGridMethod};
 use rstar::primitives::GeomWithData;
 use rstar::RTree;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// A gridding method for [`PointSet::to_surface`] — see
@@ -34,8 +37,10 @@ pub enum GridMethod {
 /// Edge polygon to attach when inferring a grid geometry from points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeometryEdge {
-    /// Rectangular footprint spanning the occupied lattice index extents.
+    /// Tight grid-oriented rectangle over the occupied point XY footprint.
     Occupied,
+    /// Exterior boundary of the locally connected point triangulation.
+    Trimesh,
     /// Convex hull of the input point cloud.
     ConvexHull,
     /// Full rectangular lattice footprint.
@@ -300,7 +305,7 @@ impl PointSet {
     /// [`infer_geometry_with_edge`](Self::infer_geometry_with_edge) when the
     /// caller also needs the modelling edge polygon.
     pub fn infer_geometry(&self, tolerance: f64) -> Result<GridGeometry> {
-        self.infer_geometry_with_edge(tolerance, GeometryEdge::Occupied)
+        self.infer_geometry_with_edge(tolerance, GeometryEdge::Trimesh)
             .map(|(geom, _edge)| geom)
     }
 
@@ -321,9 +326,9 @@ impl PointSet {
             })?,
         };
         let edge_polygon = match edge {
-            GeometryEdge::Occupied | GeometryEdge::FullRect => {
-                PolygonSet::from_grid_geometry(&geom)
-            }
+            GeometryEdge::Occupied => occupied_rect_from_points(&self.coords, &geom)?,
+            GeometryEdge::Trimesh => triangulated_edge_from_points(&self.coords, Some(&geom))?,
+            GeometryEdge::FullRect => PolygonSet::from_grid_geometry(&geom),
             GeometryEdge::ConvexHull => {
                 let pts = self
                     .coords
@@ -348,6 +353,70 @@ impl PointSet {
         let mut out = Surface::new(geom, values)?;
         let mut history = self.history.clone();
         history.push(format!("points.to_surface(method={method:?})"));
+        out.set_history(history);
+        Ok(out)
+    }
+
+    /// Promote topology-bearing points to a structured mesh surface. This keeps
+    /// the exported logical `(column, row)` topology and the actual per-node XY
+    /// coordinates, instead of forcing the nodes onto a single affine
+    /// [`GridGeometry`].
+    ///
+    /// Requires `column`/`row` attributes. Use [`to_surface`](Self::to_surface)
+    /// when the desired result is a regular grid on an explicit model geometry.
+    pub fn to_structured_surface(
+        &self,
+        tolerance: f64,
+        edge: GeometryEdge,
+    ) -> Result<StructuredMeshSurface> {
+        let indexed = topology_indexed_points(&self.coords, &self.attrs)?;
+        if indexed.len() < 4 {
+            return Err(GeoError::GeometryInference(
+                "structured surface conversion requires at least four indexed points".into(),
+            ));
+        }
+
+        let min_col = indexed.iter().map(|p| p.col).min().unwrap();
+        let max_col = indexed.iter().map(|p| p.col).max().unwrap();
+        let min_row = indexed.iter().map(|p| p.row).min().unwrap();
+        let max_row = indexed.iter().map(|p| p.row).max().unwrap();
+        if max_col <= min_col || max_row <= min_row {
+            return Err(GeoError::GeometryInference(
+                "column/row attributes do not span a two-dimensional structured surface".into(),
+            ));
+        }
+
+        let ncol = (max_col - min_col + 1) as usize;
+        let nrow = (max_row - min_row + 1) as usize;
+        let mut x = Array2::from_elem((ncol, nrow), f64::NAN);
+        let mut y = Array2::from_elem((ncol, nrow), f64::NAN);
+        let mut values = Array2::from_elem((ncol, nrow), f64::NAN);
+        let mut occupied = vec![false; ncol * nrow];
+
+        for p in &indexed {
+            let i = (p.col - min_col) as usize;
+            let j = (p.row - min_row) as usize;
+            let slot = i + j * ncol;
+            if occupied[slot] {
+                return Err(GeoError::GeometryInference(format!(
+                    "multiple points map to structured node column={}, row={}",
+                    p.col, p.row
+                )));
+            }
+            occupied[slot] = true;
+            x[[i, j]] = p.x;
+            y[[i, j]] = p.y;
+            values[[i, j]] = p.z;
+        }
+
+        let nominal_geometry =
+            infer_grid_geometry_from_index_attrs(&self.coords, &self.attrs, tolerance)
+                .ok()
+                .flatten();
+        let edge_polygon = structured_edge(&x, &y, Some(&values), nominal_geometry.as_ref(), edge)?;
+        let mut out = StructuredMeshSurface::new(x, y, values, nominal_geometry, edge_polygon)?;
+        let mut history = self.history.clone();
+        history.push(format!("points.to_structured_surface(edge={edge:?})"));
         out.set_history(history);
         Ok(out)
     }
@@ -382,6 +451,555 @@ impl PointSet {
             .collect();
         RTree::bulk_load(entries)
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IndexedPoint {
+    col: isize,
+    row: isize,
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+fn topology_indexed_points(
+    coords: &[[f64; 3]],
+    attrs: &IndexMap<String, Vec<f64>>,
+) -> Result<Vec<IndexedPoint>> {
+    let columns = find_attr(attrs, &["column", "col"]).ok_or_else(|| {
+        GeoError::GeometryInference(
+            "structured surface conversion requires column/row topology attributes".into(),
+        )
+    })?;
+    let rows = find_attr(attrs, &["row"]).ok_or_else(|| {
+        GeoError::GeometryInference(
+            "structured surface conversion requires column/row topology attributes".into(),
+        )
+    })?;
+    if columns.len() != coords.len() || rows.len() != coords.len() {
+        return Err(GeoError::GeometryInference(
+            "column/row attributes must match point count".into(),
+        ));
+    }
+
+    let mut indexed = Vec::new();
+    for (idx, c) in coords.iter().enumerate() {
+        if !c[0].is_finite() || !c[1].is_finite() {
+            continue;
+        }
+        let Some(col) = integer_attr(columns[idx], "column")? else {
+            continue;
+        };
+        let Some(row) = integer_attr(rows[idx], "row")? else {
+            continue;
+        };
+        indexed.push(IndexedPoint {
+            col,
+            row,
+            x: c[0],
+            y: c[1],
+            z: c[2],
+        });
+    }
+    Ok(indexed)
+}
+
+fn occupied_rect_from_points(coords: &[[f64; 3]], geom: &GridGeometry) -> Result<PolygonSet> {
+    let (s, c) = geom.rotation_deg.to_radians().sin_cos();
+    let mut min_u = f64::INFINITY;
+    let mut max_u = f64::NEG_INFINITY;
+    let mut min_v = f64::INFINITY;
+    let mut max_v = f64::NEG_INFINITY;
+    let mut any = false;
+
+    for p in coords {
+        if !p[0].is_finite() || !p[1].is_finite() {
+            continue;
+        }
+        let u = p[0] * c + p[1] * s;
+        let v = -p[0] * s + p[1] * c;
+        min_u = min_u.min(u);
+        max_u = max_u.max(u);
+        min_v = min_v.min(v);
+        max_v = max_v.max(v);
+        any = true;
+    }
+
+    if !any || min_u == max_u || min_v == max_v {
+        return Err(GeoError::GeometryInference(
+            "occupied rectangle requires a non-degenerate finite point footprint".into(),
+        ));
+    }
+
+    let to_xy = |u: f64, v: f64| [u * c - v * s, u * s + v * c, 0.0];
+    Ok(PolygonSet::from_rings(vec![vec![
+        to_xy(min_u, min_v),
+        to_xy(max_u, min_v),
+        to_xy(max_u, max_v),
+        to_xy(min_u, max_v),
+    ]]))
+}
+
+fn triangulated_edge_from_points(
+    coords: &[[f64; 3]],
+    nominal_geometry: Option<&GridGeometry>,
+) -> Result<PolygonSet> {
+    let mut pts: Vec<[f64; 2]> = coords
+        .iter()
+        .filter(|c| c[0].is_finite() && c[1].is_finite())
+        .map(|c| [c[0], c[1]])
+        .collect();
+    pts.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    pts.dedup_by(|a, b| a[0] == b[0] && a[1] == b[1]);
+    if pts.len() < 3 {
+        return Err(GeoError::GeometryInference(
+            "triangulated occupied edge requires at least three unique points".into(),
+        ));
+    }
+
+    let mp = MultiPoint::new(pts.iter().map(|p| Point::new(p[0], p[1])).collect());
+    let triangles = mp
+        .unconstrained_triangulation()
+        .map_err(|err| GeoError::GeometryInference(format!("point triangulation failed: {err}")))?;
+    if triangles.is_empty() {
+        return Err(GeoError::GeometryInference(
+            "point triangulation produced no triangles".into(),
+        ));
+    }
+
+    let cutoff = triangulated_edge_cutoff(&triangles, nominal_geometry)?;
+    let mut coords_by_key: HashMap<PointKey, [f64; 2]> = HashMap::new();
+    let mut edge_counts: HashMap<EdgeKey, usize> = HashMap::new();
+
+    for tri in triangles {
+        let vertices = tri.to_array();
+        let xy = [
+            [vertices[0].x, vertices[0].y],
+            [vertices[1].x, vertices[1].y],
+            [vertices[2].x, vertices[2].y],
+        ];
+        if xy.iter().any(|p| !p[0].is_finite() || !p[1].is_finite()) {
+            continue;
+        }
+        let lengths = [
+            dist2d(xy[0], xy[1]),
+            dist2d(xy[1], xy[2]),
+            dist2d(xy[2], xy[0]),
+        ];
+        if lengths.iter().any(|d| *d > cutoff) {
+            continue;
+        }
+
+        let keys = [
+            PointKey::new(xy[0]),
+            PointKey::new(xy[1]),
+            PointKey::new(xy[2]),
+        ];
+        for (key, point) in keys.into_iter().zip(xy) {
+            coords_by_key.entry(key).or_insert(point);
+        }
+        for (a, b) in [(keys[0], keys[1]), (keys[1], keys[2]), (keys[2], keys[0])] {
+            *edge_counts.entry(EdgeKey::new(a, b)).or_insert(0) += 1;
+        }
+    }
+
+    let boundary_edges: Vec<EdgeKey> = edge_counts
+        .into_iter()
+        .filter_map(|(edge, count)| (count == 1).then_some(edge))
+        .collect();
+    let rings = boundary_rings_from_edges(&boundary_edges, &coords_by_key)?;
+    if rings.is_empty() {
+        return Err(GeoError::GeometryInference(
+            "triangulated occupied edge has no closed boundary".into(),
+        ));
+    }
+    Ok(PolygonSet::from_rings(rings))
+}
+
+fn triangulated_edge_cutoff(
+    triangles: &[geo::Triangle<f64>],
+    nominal_geometry: Option<&GridGeometry>,
+) -> Result<f64> {
+    let mut lengths = Vec::with_capacity(triangles.len() * 3);
+    for tri in triangles {
+        let vertices = tri.to_array();
+        let xy = [
+            [vertices[0].x, vertices[0].y],
+            [vertices[1].x, vertices[1].y],
+            [vertices[2].x, vertices[2].y],
+        ];
+        for (a, b) in [(xy[0], xy[1]), (xy[1], xy[2]), (xy[2], xy[0])] {
+            let d = dist2d(a, b);
+            if d.is_finite() && d > 0.0 {
+                lengths.push(d);
+            }
+        }
+    }
+    if lengths.is_empty() {
+        return Err(GeoError::GeometryInference(
+            "point triangulation produced no finite edge lengths".into(),
+        ));
+    }
+    lengths.sort_by(f64::total_cmp);
+    let p75 = lengths[((lengths.len() - 1) * 3) / 4];
+    let data_cutoff = p75 * 1.5;
+    let geom_cutoff = nominal_geometry
+        .map(|g| g.xinc.hypot(g.yinc) * 1.25)
+        .filter(|d| d.is_finite() && *d > 0.0);
+    Ok(geom_cutoff.map_or(data_cutoff, |d| d.max(data_cutoff)))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct PointKey(u64, u64);
+
+impl PointKey {
+    fn new(p: [f64; 2]) -> PointKey {
+        PointKey(normalized_bits(p[0]), normalized_bits(p[1]))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct EdgeKey(PointKey, PointKey);
+
+impl EdgeKey {
+    fn new(a: PointKey, b: PointKey) -> EdgeKey {
+        if point_key_le(a, b) {
+            EdgeKey(a, b)
+        } else {
+            EdgeKey(b, a)
+        }
+    }
+}
+
+fn normalized_bits(v: f64) -> u64 {
+    if v == 0.0 {
+        0.0f64.to_bits()
+    } else {
+        v.to_bits()
+    }
+}
+
+fn point_key_le(a: PointKey, b: PointKey) -> bool {
+    a.0 < b.0 || (a.0 == b.0 && a.1 <= b.1)
+}
+
+fn dist2d(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+fn boundary_rings_from_edges(
+    edges: &[EdgeKey],
+    coords_by_key: &HashMap<PointKey, [f64; 2]>,
+) -> Result<Vec<Vec<[f64; 3]>>> {
+    let mut adjacency: HashMap<PointKey, Vec<PointKey>> = HashMap::new();
+    let mut unused: HashSet<EdgeKey> = HashSet::new();
+    for &EdgeKey(a, b) in edges {
+        adjacency.entry(a).or_default().push(b);
+        adjacency.entry(b).or_default().push(a);
+        unused.insert(EdgeKey::new(a, b));
+    }
+
+    let mut rings = Vec::new();
+    while let Some(edge) = unused.iter().next().copied() {
+        unused.remove(&edge);
+        let EdgeKey(start, mut current) = edge;
+        let mut previous = start;
+        let mut ring_keys = vec![start];
+
+        while current != start {
+            ring_keys.push(current);
+            let next = adjacency
+                .get(&current)
+                .and_then(|neighbors| {
+                    neighbors
+                        .iter()
+                        .copied()
+                        .find(|candidate| {
+                            *candidate != previous
+                                && unused.contains(&EdgeKey::new(current, *candidate))
+                        })
+                        .or_else(|| {
+                            neighbors.iter().copied().find(|candidate| {
+                                unused.contains(&EdgeKey::new(current, *candidate))
+                            })
+                        })
+                })
+                .ok_or_else(|| {
+                    GeoError::GeometryInference(
+                        "triangulated occupied edge boundary is not closed".into(),
+                    )
+                })?;
+            unused.remove(&EdgeKey::new(current, next));
+            previous = current;
+            current = next;
+
+            if ring_keys.len() > edges.len() + 1 {
+                return Err(GeoError::GeometryInference(
+                    "triangulated occupied edge tracing did not close".into(),
+                ));
+            }
+        }
+
+        if ring_keys.len() >= 3 {
+            let mut ring = Vec::with_capacity(ring_keys.len());
+            for key in ring_keys {
+                let xy = coords_by_key.get(&key).ok_or_else(|| {
+                    GeoError::GeometryInference(
+                        "triangulated occupied edge lost boundary coordinates".into(),
+                    )
+                })?;
+                ring.push([xy[0], xy[1], 0.0]);
+            }
+            rings.push(ring);
+        }
+    }
+    Ok(rings)
+}
+
+fn structured_edge(
+    x: &Array2<f64>,
+    y: &Array2<f64>,
+    values: Option<&Array2<f64>>,
+    nominal_geometry: Option<&GridGeometry>,
+    edge: GeometryEdge,
+) -> Result<PolygonSet> {
+    match edge {
+        GeometryEdge::ConvexHull => convex_hull_from_node_arrays(x, y),
+        GeometryEdge::Trimesh => triangulated_edge_from_node_arrays(x, y, values, nominal_geometry),
+        GeometryEdge::FullRect => nominal_geometry
+            .map(PolygonSet::from_grid_geometry)
+            .ok_or_else(|| {
+                GeoError::GeometryInference(
+                    "full_rect edge requires a nominal regular geometry".into(),
+                )
+            }),
+        GeometryEdge::Occupied => occupied_edge_from_node_arrays(x, y, values)
+            .or_else(|_| perimeter_edge_from_node_arrays(x, y))
+            .or_else(|_| convex_hull_from_node_arrays(x, y)),
+    }
+}
+
+fn convex_hull_from_node_arrays(x: &Array2<f64>, y: &Array2<f64>) -> Result<PolygonSet> {
+    let pts = x
+        .iter()
+        .zip(y.iter())
+        .filter(|(x, y)| x.is_finite() && y.is_finite())
+        .map(|(x, y)| [*x, *y])
+        .collect();
+    PolygonSet::convex_hull_xy(pts).ok_or_else(|| {
+        GeoError::GeometryInference(
+            "structured surface edge requires at least three non-collinear nodes".into(),
+        )
+    })
+}
+
+fn triangulated_edge_from_node_arrays(
+    x: &Array2<f64>,
+    y: &Array2<f64>,
+    values: Option<&Array2<f64>>,
+    nominal_geometry: Option<&GridGeometry>,
+) -> Result<PolygonSet> {
+    let (ncol, nrow) = x.dim();
+    let mut coords = Vec::new();
+    for j in 0..nrow {
+        for i in 0..ncol {
+            let xi = x[[i, j]];
+            let yi = y[[i, j]];
+            let zi = values.map(|z| z[[i, j]]).unwrap_or(0.0);
+            if xi.is_finite() && yi.is_finite() && zi.is_finite() {
+                coords.push([xi, yi, zi]);
+            }
+        }
+    }
+    triangulated_edge_from_points(&coords, nominal_geometry)
+}
+
+fn perimeter_edge_from_node_arrays(x: &Array2<f64>, y: &Array2<f64>) -> Result<PolygonSet> {
+    let (ncol, nrow) = x.dim();
+    if ncol < 2 || nrow < 2 {
+        return Err(GeoError::GeometryInference(
+            "structured surface perimeter edge requires at least 2x2 nodes".into(),
+        ));
+    }
+    let mut ring = Vec::new();
+    for i in 0..ncol {
+        push_finite_node(&mut ring, x, y, i, 0)?;
+    }
+    for j in 1..nrow {
+        push_finite_node(&mut ring, x, y, ncol - 1, j)?;
+    }
+    for i in (0..ncol.saturating_sub(1)).rev() {
+        push_finite_node(&mut ring, x, y, i, nrow - 1)?;
+    }
+    for j in (1..nrow.saturating_sub(1)).rev() {
+        push_finite_node(&mut ring, x, y, 0, j)?;
+    }
+    if ring.len() < 3 {
+        return Err(GeoError::GeometryInference(
+            "structured surface perimeter edge has fewer than three finite nodes".into(),
+        ));
+    }
+    Ok(PolygonSet::from_rings(vec![ring]))
+}
+
+fn occupied_edge_from_node_arrays(
+    x: &Array2<f64>,
+    y: &Array2<f64>,
+    values: Option<&Array2<f64>>,
+) -> Result<PolygonSet> {
+    let (ncol, nrow) = x.dim();
+    if ncol < 2 || nrow < 2 {
+        return Err(GeoError::GeometryInference(
+            "occupied edge requires at least 2x2 nodes".into(),
+        ));
+    }
+    if let Some(z) = values {
+        if z.dim() != (ncol, nrow) {
+            return Err(GeoError::GeometryInference(
+                "occupied edge value array does not match node geometry".into(),
+            ));
+        }
+    }
+
+    let mut node_present = vec![false; ncol * nrow];
+    for j in 0..nrow {
+        for i in 0..ncol {
+            let xy_present = x[[i, j]].is_finite() && y[[i, j]].is_finite();
+            let value_present = values.map(|z| z[[i, j]].is_finite()).unwrap_or(true);
+            node_present[i + j * ncol] = xy_present && value_present;
+        }
+    }
+
+    let cell_ncol = ncol - 1;
+    let cell_nrow = nrow - 1;
+    let mut cell_present = vec![false; cell_ncol * cell_nrow];
+    for j in 0..cell_nrow {
+        for i in 0..cell_ncol {
+            cell_present[i + j * cell_ncol] = node_present[i + j * ncol]
+                && node_present[i + 1 + j * ncol]
+                && node_present[i + 1 + (j + 1) * ncol]
+                && node_present[i + (j + 1) * ncol];
+        }
+    }
+
+    let has_cell = |cells: &[bool], i: isize, j: isize| -> bool {
+        if i < 0 || j < 0 || i >= cell_ncol as isize || j >= cell_nrow as isize {
+            return false;
+        }
+        cells[i as usize + j as usize * cell_ncol]
+    };
+
+    let mut next: HashMap<(usize, usize), Vec<(usize, usize)>> = HashMap::new();
+    let mut edge_count = 0usize;
+    for j in 0..cell_nrow {
+        for i in 0..cell_ncol {
+            if !cell_present[i + j * cell_ncol] {
+                continue;
+            }
+            if !has_cell(&cell_present, i as isize, j as isize - 1) {
+                add_boundary_edge(&mut next, &mut edge_count, (i, j), (i + 1, j));
+            }
+            if !has_cell(&cell_present, i as isize + 1, j as isize) {
+                add_boundary_edge(&mut next, &mut edge_count, (i + 1, j), (i + 1, j + 1));
+            }
+            if !has_cell(&cell_present, i as isize, j as isize + 1) {
+                add_boundary_edge(&mut next, &mut edge_count, (i + 1, j + 1), (i, j + 1));
+            }
+            if !has_cell(&cell_present, i as isize - 1, j as isize) {
+                add_boundary_edge(&mut next, &mut edge_count, (i, j + 1), (i, j));
+            }
+        }
+    }
+
+    if edge_count == 0 {
+        return Err(GeoError::GeometryInference(
+            "occupied edge has no complete occupied cells".into(),
+        ));
+    }
+
+    let mut rings = Vec::new();
+    while let Some((start, mut current)) = pop_any_boundary_edge(&mut next) {
+        let mut ring_nodes = vec![start];
+        while current != start {
+            ring_nodes.push(current);
+            if ring_nodes.len() > edge_count + 1 {
+                return Err(GeoError::GeometryInference(
+                    "occupied edge tracing did not close".into(),
+                ));
+            }
+            current = pop_boundary_edge(&mut next, current).ok_or_else(|| {
+                GeoError::GeometryInference("occupied edge boundary is not closed".into())
+            })?;
+        }
+        if ring_nodes.len() >= 3 {
+            rings.push(
+                ring_nodes
+                    .into_iter()
+                    .map(|(i, j)| [x[[i, j]], y[[i, j]], 0.0])
+                    .collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    if rings.is_empty() {
+        return Err(GeoError::GeometryInference(
+            "occupied edge has fewer than three boundary vertices".into(),
+        ));
+    }
+    Ok(PolygonSet::from_rings(rings))
+}
+
+fn add_boundary_edge(
+    next: &mut HashMap<(usize, usize), Vec<(usize, usize)>>,
+    edge_count: &mut usize,
+    from: (usize, usize),
+    to: (usize, usize),
+) {
+    next.entry(from).or_default().push(to);
+    *edge_count += 1;
+}
+
+fn pop_any_boundary_edge(
+    next: &mut HashMap<(usize, usize), Vec<(usize, usize)>>,
+) -> Option<((usize, usize), (usize, usize))> {
+    let from = *next
+        .iter()
+        .find(|(_, outs)| !outs.is_empty())
+        .map(|(k, _)| k)?;
+    let to = pop_boundary_edge(next, from)?;
+    Some((from, to))
+}
+
+fn pop_boundary_edge(
+    next: &mut HashMap<(usize, usize), Vec<(usize, usize)>>,
+    from: (usize, usize),
+) -> Option<(usize, usize)> {
+    let out = {
+        let outs = next.get_mut(&from)?;
+        outs.pop()
+    };
+    if next.get(&from).is_some_and(Vec::is_empty) {
+        next.remove(&from);
+    }
+    out
+}
+
+fn push_finite_node(
+    ring: &mut Vec<[f64; 3]>,
+    x: &Array2<f64>,
+    y: &Array2<f64>,
+    i: usize,
+    j: usize,
+) -> Result<()> {
+    let xi = x[[i, j]];
+    let yi = y[[i, j]];
+    if !xi.is_finite() || !yi.is_finite() {
+        return Err(GeoError::GeometryInference(
+            "structured surface perimeter edge has missing boundary nodes".into(),
+        ));
+    }
+    ring.push([xi, yi, 0.0]);
+    Ok(())
 }
 
 impl HasHistory for PointSet {
@@ -962,6 +1580,174 @@ mod tests {
         approx::assert_relative_eq!(geom.yinc, source.yinc, epsilon = 1e-9);
         approx::assert_relative_eq!(geom.rotation_deg, source.rotation_deg, epsilon = 1e-9);
         assert!(edge.area() > 0.0);
+    }
+
+    #[test]
+    fn trimesh_edge_tracks_concave_point_footprint() {
+        let mut coords = Vec::new();
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        for j in 0..4 {
+            for i in 0..4 {
+                if i <= 1 || j <= 1 {
+                    coords.push([i as f64, j as f64, 100.0 + i as f64 + j as f64]);
+                    columns.push((i + 1) as f64);
+                    rows.push((j + 1) as f64);
+                }
+            }
+        }
+
+        let mut attrs = IndexMap::new();
+        attrs.insert("column".to_string(), columns);
+        attrs.insert("row".to_string(), rows);
+        let p = PointSet::from_parts(coords, attrs);
+
+        let (_, trimesh) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::Trimesh)
+            .unwrap();
+        let (_, hull) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::ConvexHull)
+            .unwrap();
+        let (_, full_rect) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::FullRect)
+            .unwrap();
+
+        approx::assert_relative_eq!(trimesh.area(), 5.5, epsilon = 1e-12);
+        assert!(hull.area() > trimesh.area());
+        approx::assert_relative_eq!(full_rect.area(), 9.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn occupied_edge_is_tight_grid_oriented_rectangle() {
+        let source = GridGeometry {
+            xori: 0.0,
+            yori: 0.0,
+            xinc: 10.0,
+            yinc: 10.0,
+            ncol: 2,
+            nrow: 2,
+            rotation_deg: 0.0,
+            yflip: false,
+        };
+        let coords = vec![
+            [0.0, 0.0, 100.0],
+            [10.0, 0.0, 101.0],
+            [0.0, 10.0, 102.0],
+            [12.0, 10.0, 103.0],
+        ];
+        let mut attrs = IndexMap::new();
+        attrs.insert("column".to_string(), vec![1.0, 2.0, 1.0, 2.0]);
+        attrs.insert("row".to_string(), vec![1.0, 1.0, 2.0, 2.0]);
+        let p = PointSet::from_parts(coords, attrs);
+
+        let (geom, occupied) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::Occupied)
+            .unwrap();
+        let (_, full_rect) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::FullRect)
+            .unwrap();
+
+        assert_eq!(geom.ncol, source.ncol);
+        assert_eq!(geom.nrow, source.nrow);
+        approx::assert_relative_eq!(occupied.area(), 120.0, epsilon = 1e-12);
+        approx::assert_relative_eq!(occupied.bbox().xmax, 12.0, epsilon = 1e-12);
+        assert!(occupied.area() > full_rect.area());
+    }
+
+    #[test]
+    fn trimesh_edge_works_without_topology() {
+        let mut coords = Vec::new();
+        for j in 0..4 {
+            for i in 0..4 {
+                if i <= 1 || j <= 1 {
+                    coords.push([i as f64, j as f64, 100.0 + i as f64 + j as f64]);
+                }
+            }
+        }
+        let p = PointSet::from_coords(coords);
+
+        let (_, trimesh) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::Trimesh)
+            .unwrap();
+        let (_, full_rect) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::FullRect)
+            .unwrap();
+
+        approx::assert_relative_eq!(trimesh.area(), 5.5, epsilon = 1e-12);
+        approx::assert_relative_eq!(full_rect.area(), 9.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn to_structured_surface_preserves_locally_shifted_nodes() {
+        let coords = vec![
+            [0.0, 0.0, 100.0],
+            [10.0, 0.0, 101.0],
+            [0.0, 10.0, 102.0],
+            [12.0, 10.0, 103.0],
+        ];
+        let mut attrs = IndexMap::new();
+        attrs.insert("column".to_string(), vec![1.0, 2.0, 1.0, 2.0]);
+        attrs.insert("row".to_string(), vec![1.0, 1.0, 2.0, 2.0]);
+        let p = PointSet::from_parts(coords, attrs);
+
+        let s = p
+            .to_structured_surface(1e-3, GeometryEdge::Occupied)
+            .unwrap();
+
+        assert_eq!(s.kind(), "structured_mesh");
+        assert_eq!(s.ncol(), 2);
+        assert_eq!(s.nrow(), 2);
+        assert_eq!(s.node_xy(1, 1).unwrap(), (12.0, 10.0));
+        assert_eq!(s.z(1, 1).unwrap(), 103.0);
+        assert_eq!(s.stats().count, 4);
+        assert!(s.edge().area() > 0.0);
+        assert!(s
+            .history()
+            .iter()
+            .any(|h| h == "points.to_structured_surface(edge=Occupied)"));
+    }
+
+    #[test]
+    fn structured_surface_occupied_edge_tracks_concave_cells() {
+        let mut coords = Vec::new();
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        for j in 0..4 {
+            for i in 0..4 {
+                if i <= 1 || j <= 1 {
+                    coords.push([i as f64, j as f64, 100.0 + i as f64 + j as f64]);
+                    columns.push((i + 1) as f64);
+                    rows.push((j + 1) as f64);
+                }
+            }
+        }
+
+        let mut attrs = IndexMap::new();
+        attrs.insert("column".to_string(), columns);
+        attrs.insert("row".to_string(), rows);
+        let p = PointSet::from_parts(coords, attrs);
+
+        let s = p
+            .to_structured_surface(1e-6, GeometryEdge::Occupied)
+            .unwrap();
+
+        approx::assert_relative_eq!(s.edge().area(), 5.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn to_structured_surface_requires_topology() {
+        let p = PointSet::from_coords(vec![
+            [0.0, 0.0, 100.0],
+            [10.0, 0.0, 101.0],
+            [0.0, 10.0, 102.0],
+            [10.0, 10.0, 103.0],
+        ]);
+
+        let err = match p.to_structured_surface(1e-3, GeometryEdge::Occupied) {
+            Ok(_) => panic!("expected missing topology error"),
+            Err(err) => err,
+        };
+        assert!(format!("{err}").contains("requires column/row topology"));
     }
 
     #[test]

@@ -7,6 +7,7 @@ pub(crate) mod persist; // per-element save/load to a standalone .pproj
 pub mod points; // PointSet — scattered points + attributes + gridding
 pub mod polygons; // PolygonSet — rings + contains/area/bbox/clip
 pub mod surface;
+pub mod structured_surface;
 mod surface_filter; // NaN-aware smoothing + boundary polygon on Surface
 mod surface_ops; // arithmetic + operator overloads on Surface
 mod surface_stats; // statistics + volumetrics on Surface
@@ -17,6 +18,7 @@ pub mod well; // Well → Sidetrack → Trajectory hierarchy
 pub use log::{Log, LogKind, LogView};
 pub use points::{GeometryEdge, GridMethod, PointSet};
 pub use polygons::PolygonSet;
+pub use structured_surface::StructuredMeshSurface;
 pub use surface::Surface;
 pub use tops::{FluidContact, Interval, Top};
 pub use trajectory::{Station, Trajectory, TrajectoryInput};

@@ -39,8 +39,9 @@ attributes), EarthVision/Petrel point grids, or RMS/IRAP plain `X Y Z`.
 ```python
 pts = geo.load_points("picks", "picks.geojson")
 pts.bbox
-geom = pts.infer_geometry(edge="convex_hull")  # strict; raises if points are not grid-like
+geom = pts.infer_geometry()                    # default edge="trimesh"
 grid = pts.to_surface(grid_geom)               # or grid scattered points onto an explicit model grid
+mesh = pts.to_structured_surface()             # topology-bearing points, explicit shifted XY nodes
 ```
 
 ### Point attribute calculations
@@ -63,14 +64,29 @@ Use an explicit future attach/resample operation to bring values from another
 point set onto this one before doing column math. That keeps matching tolerance,
 nearest-neighbour/interpolation policy, and missing-data handling visible.
 
-Use `infer_geometry()` only when the points are expected to be a regular grid
-export. EarthVision/Petrel exports that carry `column` and `row` fields use that
-topology directly. During `Project.import_data(...)`, same-stem Petrel IRAP point
-exports are enriched from matching EarthVision topology files when both are
-present. Standalone plain IRAP/XYZ point exports must infer from XY only, so
-they cannot recover exact grid topology once those fields are lost. For
-genuinely scattered picks or irregular vendor exports, choose the model/template
-`GridGeometry` explicitly and call `to_surface(...)`.
+Use `infer_geometry()` only when the points are expected to be a truly regular
+affine grid. EarthVision/Petrel exports that carry `column` and `row` fields can
+also be promoted with `to_structured_surface(...)`; that keeps the logical
+row/column topology while preserving each node's actual XY coordinate. This is
+the right home for Petrel surfaces that are locally shifted around faults.
+`edge="trimesh"` is the default point footprint: the exterior boundary of the
+locally connected point triangulation. `edge="occupied"` is the tight
+grid-oriented rectangle that covers all point XYs. `edge="full_rect"` is the
+inferred regular geometry rectangle, and `edge="convex_hull"` is intentionally
+broader for envelope/QC comparison.
+
+During `Project.import_data(...)`, same-stem Petrel IRAP point exports are
+enriched from matching EarthVision topology files when both are present.
+Standalone plain IRAP/XYZ point exports must infer from XY only, so they cannot
+recover exact grid topology once those fields are lost. For genuinely scattered
+picks or irregular vendor exports, choose the model/template `GridGeometry`
+explicitly and call `to_surface(...)`.
+
+`StructuredMeshSurface` is intentionally not a regular `Surface`: it has
+`kind == "structured_mesh"`, `ncol`, `nrow`, `node_xy(i, j)`, `z(i, j)`,
+`values()`, `edge`, `nominal_geometry`, `bbox()`, `stats()`, and `history()`.
+Use `nominal_geometry` only as approximate metadata; the explicit node XY arrays
+are canonical.
 
 ## Polygons
 

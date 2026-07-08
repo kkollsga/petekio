@@ -9,7 +9,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Kristian dF Kollsgård", email = "kkollsg@gmail.com" }]
-dependencies = ["petektools>=0.2.5,<0.3"]
+dependencies = ["petektools>=0.2.6,<0.3"]
 keywords = ["subsurface", "geoscience", "geology", "seismic", "irap"]
 classifiers = [
     "Development Status :: 3 - Alpha",

@@ -383,6 +383,7 @@ def test_detect_topology_labels_a_curvilinear_grid_and_round_trips():
     assert report.verified
     assert pts is not None
     assert report.assigned == report.distinct_nodes == len(x)
+    assert report.blocks == 1 and report.largest_block == len(x)
     assert report.conflicts == 0
     assert report.stalled_frontier == 0
     # the fixture swells along i, so its modal i-step really is a little above 50 m
@@ -429,10 +430,19 @@ def test_detect_topology_refuses_to_walk_across_a_fault():
             px, py = node(i, j)
             x.append(px + 30.0); y.append(py + 25.0); z.append(-1900.0)
 
-    pts, report = petekio.PointSet.from_xyz(x, y, z).detect_topology()
+    p = petekio.PointSet.from_xyz(x, y, z)
+    pts, report = p.detect_topology()
     assert not report.verified
     assert pts is None, "an unverified detection must not hand back labels"
-    assert report.assigned < report.distinct_nodes
+    # The walk re-seeds where it stalls: every node is labelled, but in >1 block, and a
+    # structured mesh has only one (column, row) space.
+    assert report.assigned == report.distinct_nodes
+    assert report.blocks >= 2
+
+    # ...and the TIN fallback keeps both blocks without bridging the throw.
+    tin = p.to_tri_surface()
+    assert tin.components == 2
+    assert tin.n_points > 6 * 8
 
 
 def test_detect_topology_coincident_nodes():

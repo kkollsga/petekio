@@ -295,6 +295,8 @@ pub struct TopologyReport {
     pub coincident_dropped: usize,     // same XY and same Z: harmless
     pub coincident_ambiguous: usize,   // same XY, different Z: unresolvable
     pub stalled_frontier: usize,       // the fault traces, in point-index form
+    pub blocks: usize,                 // fault blocks; verified() requires exactly 1
+    pub largest_block: usize,
 }
 impl TopologyReport { pub fn verified(&self) -> bool; }
 
@@ -307,6 +309,7 @@ impl TriSurface {
     pub fn points(&self) -> &[[f64; 3]];        // the input points, unmoved
     pub fn triangles(&self) -> &[[u32; 3]];     // CCW, indices into points()
     pub fn edge(&self) -> &PolygonSet;
+    pub fn components(&self) -> usize;          // >1 means the mesh honours a fault
     pub fn to_points(&self) -> PointSet;
     pub fn bbox(&self) -> BBox;
     pub fn stats(&self) -> Stats;

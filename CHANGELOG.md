@@ -16,7 +16,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
   the cell diagonal already exceeds two short-axis steps and the admissible band is
   empty. `max_link` is in cells and must lie in `(sqrt(2), 2)`: below the diagonal the
   mesh shreds, at two cells a triangle skips a node. Adjacencies the topology walk
-  refused are excluded, so the mesh does not bridge a fault it can see. Adds no
+  refused are excluded, and so is every edge between two different fault blocks — nodes
+  the walk could not connect have no grid adjacency, which is what a fault *is*. Both
+  blocks are kept (`TriSurface.components()` reports how many); dropping all but the
+  largest would silently discard real data. On a reference fault-cut export this leaves
+  2 bridging triangles of 76,262, against 84 for a bare length filter. Adds no
   dependency: `spade` was already in the tree via `geo`.
 - `PointSet.detect_topology(nominal_cell=None)` — recovers `column`/`row` topology
   from bare `X Y Z` surface points **without moving a point**. It detects the grid
@@ -27,8 +31,10 @@ All notable changes to petekIO are recorded here. The format loosely follows
   **verifies** — every distinct node labelled, no index claimed twice, no coincident
   pair with differing z. It deliberately cannot cross a fault: where nodes are snapped
   onto a fault trace or stretched across it, the neighbour relation is not determined
-  by geometry, and forcing it welds fault blocks together silently. The stall is the
-  signal, and `report.stalled_frontier` locates it. Spec: `surface_topology_walk_spec`.
+  by geometry, and forcing it welds fault blocks together silently. Instead the walk
+  **re-seeds** wherever it stalls, labelling each fault block in its own index space:
+  `report.blocks` is 1 for an uninterrupted grid and more when the surface is fault-cut,
+  and `verified` requires exactly one. Spec: `surface_topology_walk_spec`.
 - `StructuredMeshSurface.to_points()` — explodes the mesh back into a `PointSet` with
   its `column`/`row` topology, copying node XY/Z rather than resampling. It is the
   exact inverse of `PointSet.to_structured_surface(...)`, and a round-trip test now

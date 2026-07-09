@@ -38,6 +38,12 @@ impl TriSurface {
         self.inner.triangles().len()
     }
 
+    /// Connected components; more than one means the mesh honours a fault.
+    #[getter]
+    fn components(&self) -> usize {
+        self.inner.components()
+    }
+
     /// Vertices as `(x, y, z)` tuples — the input points, unmoved.
     fn points(&self) -> Vec<(f64, f64, f64)> {
         self.inner
@@ -84,9 +90,10 @@ impl TriSurface {
 
     fn __repr__(&self) -> String {
         format!(
-            "TriSurface(points={}, triangles={}, rings={})",
+            "TriSurface(points={}, triangles={}, components={}, rings={})",
             self.inner.points().len(),
             self.inner.triangles().len(),
+            self.inner.components(),
             self.inner.edge().rings().len(),
         )
     }

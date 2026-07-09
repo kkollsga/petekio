@@ -52,13 +52,22 @@ pub struct TopologyReport {
     /// Adjacencies the walk could not resolve although a candidate lay in that
     /// direction — the fault traces, in point-index form.
     pub stalled_frontier: usize,
+    /// Fault blocks found. The walk re-seeds wherever it stalls, so one block means
+    /// one uninterrupted grid; more than one means the surface is fault-cut.
+    pub blocks: usize,
+    /// Nodes in the biggest block. Most of the extra blocks on a real export are
+    /// single snapped nodes along the clip boundary, not fault blocks.
+    pub largest_block: usize,
 }
 
 impl TopologyReport {
-    /// Every distinct node labelled, no index claimed twice, no unresolvable
-    /// coincidence. Exactly the condition under which labels are returned.
+    /// One fault block covering every distinct node, no index claimed twice, no
+    /// unresolvable coincidence. Exactly the condition under which labels are
+    /// returned: a structured mesh has a single `(column, row)` space, and a
+    /// fault-cut surface has no such thing.
     pub fn verified(&self) -> bool {
-        self.assigned == self.distinct_nodes
+        self.blocks == 1
+            && self.assigned == self.distinct_nodes
             && self.conflicts == 0
             && self.coincident_ambiguous == 0
     }
@@ -135,7 +144,11 @@ impl PointSet {
         let step_i = [e1[0] * inc_i, e1[1] * inc_i];
         let step_j = [e2[0] * inc_j, e2[1] * inc_j];
 
-        let (index_of, conflicts, frontier) = walk(&tree, &pts, step_i, step_j);
+        let (index_of, conflicts, frontier, blocks) = walk(&tree, &pts, step_i, step_j);
+        let mut block_size: HashMap<u32, usize> = HashMap::new();
+        for &(b, ..) in index_of.values() {
+            *block_size.entry(b).or_insert(0) += 1;
+        }
 
         Ok(GridDetection {
             pts,
@@ -148,6 +161,8 @@ impl PointSet {
             index_of,
             conflicts,
             frontier,
+            blocks,
+            block_size,
             coincident_dropped,
             coincident_ambiguous,
         })
@@ -163,10 +178,13 @@ pub(crate) struct GridDetection {
     pub(crate) inc_i: f64,
     pub(crate) inc_j: f64,
     azimuth: f64,
-    pub(crate) index_of: HashMap<usize, (i32, i32)>,
+    pub(crate) index_of: HashMap<usize, NodeIndex>,
     conflicts: usize,
     /// Adjacencies the walk refused to resolve: each pair straddles a fault.
     pub(crate) frontier: Vec<(usize, usize)>,
+    blocks: u32,
+    /// Nodes per block.
+    pub(crate) block_size: HashMap<u32, usize>,
     coincident_dropped: usize,
     coincident_ambiguous: usize,
 }
@@ -183,6 +201,8 @@ impl GridDetection {
             coincident_dropped: self.coincident_dropped,
             coincident_ambiguous: self.coincident_ambiguous,
             stalled_frontier: self.frontier.len(),
+            blocks: self.blocks as usize,
+            largest_block: self.block_size.values().copied().max().unwrap_or(0),
         }
     }
 }
@@ -398,17 +418,61 @@ fn dist(a: &[f64; 2], b: &[f64; 2]) -> f64 {
 /// neighbours and claims the nearest unlabelled point near that prediction.
 /// Unmatched directions leave a hole, which is legal — a surface need not fill
 /// its lattice. Returns the labels, the conflict count, and the stalled frontier.
-type WalkResult = (HashMap<usize, (i32, i32)>, usize, Vec<(usize, usize)>);
+/// A node's place in the grid: which fault block, and its `(column, row)` inside it.
+pub(crate) type NodeIndex = (u32, i32, i32);
+
+type WalkResult = (HashMap<usize, NodeIndex>, usize, Vec<(usize, usize)>, u32);
+
+/// Label every node, one fault block at a time.
+///
+/// A single walk stops at the first fault: past a collapsed or stretched step the
+/// neighbour relation is not determined by geometry. So re-seed in whatever is left
+/// and walk again. Each block gets its own index origin, and a block boundary is
+/// exactly a fault (or the surface's outer edge). Two nodes in different blocks have
+/// no grid adjacency at all — which is what lets a triangulated fallback refuse to
+/// bridge the fault it cannot otherwise see.
 fn walk(
     tree: &RTree<AerialEntry>,
     pts: &[[f64; 2]],
     step_i: [f64; 2],
     step_j: [f64; 2],
 ) -> WalkResult {
-    let seed = interior_seed(pts);
-    let mut index_of: HashMap<usize, (i32, i32)> = HashMap::new();
+    let mut index_of: HashMap<usize, NodeIndex> = HashMap::new();
+    let mut conflicts = 0usize;
+    let mut stalled: Vec<(usize, usize)> = Vec::new();
+    let mut block = 0u32;
+
+    while let Some(seed) = interior_seed(pts, &index_of) {
+        walk_block(
+            tree,
+            pts,
+            step_i,
+            step_j,
+            seed,
+            block,
+            &mut index_of,
+            &mut conflicts,
+            &mut stalled,
+        );
+        block += 1;
+    }
+    (index_of, conflicts, stalled, block)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_block(
+    tree: &RTree<AerialEntry>,
+    pts: &[[f64; 2]],
+    step_i: [f64; 2],
+    step_j: [f64; 2],
+    seed: usize,
+    block: u32,
+    index_of: &mut HashMap<usize, NodeIndex>,
+    conflicts: &mut usize,
+    stalled: &mut Vec<(usize, usize)>,
+) {
     let mut owner: HashMap<(i32, i32), usize> = HashMap::new();
-    index_of.insert(seed, (0, 0));
+    index_of.insert(seed, (block, 0, 0));
     owner.insert((0, 0), seed);
     let mut queue = VecDeque::from([seed]);
 
@@ -418,11 +482,9 @@ fn walk(
     // could claim the wrong node on an anisotropic grid.
     let r2 = (R_PRED * len_i.min(len_j)).powi(2);
     let frontier_r2 = (FRONTIER_RADIUS * len_i.max(len_j)).powi(2);
-    let mut conflicts = 0usize;
-    let mut stalled: Vec<(usize, usize)> = Vec::new();
 
     while let Some(k) = queue.pop_front() {
-        let (i, j) = index_of[&k];
+        let (_, i, j) = index_of[&k];
         let p = pts[k];
 
         // Predict with the *locally measured* step where labelled neighbours supply
@@ -446,10 +508,12 @@ fn walk(
             let mut best: Option<(f64, usize)> = None;
             for e in tree.locate_within_distance(pred, r2) {
                 let m = e.data;
-                if index_of.contains_key(&m) {
-                    if index_of[&m] != target {
-                        // Someone else already owns this point at a different index.
-                        conflicts += 1;
+                if let Some(&(owner_block, oi, oj)) = index_of.get(&m) {
+                    // A node claimed by an EARLIER block is simply across a fault from
+                    // here; that is the walk working, not a conflict. Only a clash
+                    // inside this block's own index space is one.
+                    if owner_block == block && (oi, oj) != target {
+                        *conflicts += 1;
                     }
                     continue;
                 }
@@ -461,15 +525,14 @@ fn walk(
 
             match best {
                 Some((_, m)) => {
-                    index_of.insert(m, target);
+                    index_of.insert(m, (block, target.0, target.1));
                     owner.insert(target, m);
                     queue.push_back(m);
                 }
                 None => {
                     let len = vec[0].hypot(vec[1]);
                     let unit = [vec[0] / len, vec[1] / len];
-                    if let Some(q) = frontier_candidate(tree, &index_of, p, unit, len, frontier_r2)
-                    {
+                    if let Some(q) = frontier_candidate(tree, index_of, p, unit, len, frontier_r2) {
                         // The adjacency the walk could not resolve: `k` and `q` lie on
                         // opposite sides of a fault. Recording the pair lets a
                         // triangulated fallback refuse to bridge it.
@@ -479,7 +542,6 @@ fn walk(
             }
         }
     }
-    (index_of, conflicts, stalled)
 }
 
 /// The locally measured step vector along one axis at `(i, j)`, averaged over
@@ -519,7 +581,7 @@ fn local_step(
 /// walk stalled here — a fault trace — rather than simply running off the edge.
 fn frontier_candidate(
     tree: &RTree<AerialEntry>,
-    index_of: &HashMap<usize, (i32, i32)>,
+    index_of: &HashMap<usize, NodeIndex>,
     p: [f64; 2],
     unit: [f64; 2],
     step_len: f64,
@@ -544,20 +606,27 @@ fn frontier_candidate(
     best.map(|(_, m)| m)
 }
 
-/// A deep-interior seed: the point closest to the centroid. Boundary nodes are
-/// exactly the snapped ones, so seeding there strands the walk immediately.
-fn interior_seed(pts: &[[f64; 2]]) -> usize {
-    let n = pts.len() as f64;
-    let cx = pts.iter().map(|p| p[0]).sum::<f64>() / n;
-    let cy = pts.iter().map(|p| p[1]).sum::<f64>() / n;
-    let mut best = (f64::INFINITY, 0usize);
-    for (k, p) in pts.iter().enumerate() {
-        let d = (p[0] - cx).powi(2) + (p[1] - cy).powi(2);
+/// A deep-interior seed among the still-unlabelled nodes: the one closest to their
+/// centroid. Boundary nodes are exactly the snapped ones, so seeding there strands the
+/// walk immediately. Returns `None` once every node carries a label.
+fn interior_seed(pts: &[[f64; 2]], index_of: &HashMap<usize, NodeIndex>) -> Option<usize> {
+    let free: Vec<usize> = (0..pts.len())
+        .filter(|k| !index_of.contains_key(k))
+        .collect();
+    if free.is_empty() {
+        return None;
+    }
+    let n = free.len() as f64;
+    let cx = free.iter().map(|&k| pts[k][0]).sum::<f64>() / n;
+    let cy = free.iter().map(|&k| pts[k][1]).sum::<f64>() / n;
+    let mut best = (f64::INFINITY, free[0]);
+    for &k in &free {
+        let d = (pts[k][0] - cx).powi(2) + (pts[k][1] - cy).powi(2);
         if d < best.0 {
             best = (d, k);
         }
     }
-    best.1
+    Some(best.1)
 }
 
 /// Emit the labelled point set: original coordinates, plus 1-based `column`/`row`.
@@ -565,18 +634,19 @@ fn labelled(
     src: &PointSet,
     pts: &[[f64; 2]],
     zs: &[f64],
-    index_of: &HashMap<usize, (i32, i32)>,
+    index_of: &HashMap<usize, NodeIndex>,
 ) -> PointSet {
-    let min_i = index_of.values().map(|v| v.0).min().unwrap();
-    let min_j = index_of.values().map(|v| v.1).min().unwrap();
+    // Only ever called on a verified (single-block) detection.
+    let min_i = index_of.values().map(|v| v.1).min().unwrap();
+    let min_j = index_of.values().map(|v| v.2).min().unwrap();
 
-    let mut order: Vec<(&usize, &(i32, i32))> = index_of.iter().collect();
-    order.sort_by_key(|(_, &(i, j))| (j, i));
+    let mut order: Vec<(&usize, &NodeIndex)> = index_of.iter().collect();
+    order.sort_by_key(|(_, &(_, i, j))| (j, i));
 
     let mut coords = Vec::with_capacity(order.len());
     let mut columns = Vec::with_capacity(order.len());
     let mut rows = Vec::with_capacity(order.len());
-    for (&k, &(i, j)) in order {
+    for (&k, &(_, i, j)) in order {
         coords.push([pts[k][0], pts[k][1], zs[k]]);
         columns.push((i - min_i + 1) as f64);
         rows.push((j - min_j + 1) as f64);
@@ -631,6 +701,8 @@ mod tests {
             "walk must label every node of an unfaulted grid: {report:?}"
         );
         assert_eq!(report.assigned, coords.len());
+        assert_eq!(report.blocks, 1, "an unfaulted grid is one block");
+        assert_eq!(report.largest_block, coords.len());
         assert_eq!(report.conflicts, 0);
         // This fixture deliberately swells along i, so the modal i-step is a little
         // above the nominal 50 m. That is the grid, not an estimator error.
@@ -691,10 +763,15 @@ mod tests {
 
         assert!(!report.verified(), "a fault-cut grid must not verify");
         assert!(labelled.is_none(), "unverified detection yields no labels");
+        // The walk re-seeds where it stalls, so every node is labelled -- but in more
+        // than one block, and a structured mesh has only one (column, row) space.
+        assert_eq!(report.assigned, report.distinct_nodes);
         assert!(
-            report.assigned < report.distinct_nodes,
-            "the walk must stall at the fault, leaving nodes unlabelled: {report:?}"
+            report.blocks >= 2,
+            "the fault must split the grid into blocks: {report:?}"
         );
+        // NB: stalled_frontier can be zero when the throw exceeds the frontier search
+        // radius; the block split is the reliable signal, not the frontier count.
     }
 
     #[test]

@@ -29,6 +29,8 @@ pub const DEFAULT_MAX_LINK: f64 = 1.8;
 const MIN_LINK: f64 = std::f64::consts::SQRT_2;
 /// At or above two cells a triangle skips a node.
 const MAX_LINK: f64 = 2.0;
+/// Triangles a connected island needs to count as a piece of surface.
+const MIN_ISLAND: usize = 8;
 
 /// An unstructured triangulated surface over the original points.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -89,6 +91,17 @@ impl TriSurface {
         *out.operation_history_mut() = self.history.clone();
         out.record_history("tri_surface.to_points()");
         out
+    }
+
+    /// Connected components. More than one means the surface is fault-cut and the
+    /// mesh honours the fault rather than bridging it.
+    pub fn components(&self) -> usize {
+        let tris: Vec<[usize; 3]> = self
+            .triangles
+            .iter()
+            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+            .collect();
+        count_components(&tris)
     }
 
     /// Human-readable operation history.
@@ -152,7 +165,7 @@ impl PointSet {
             ));
         }
 
-        let kept = largest_component(&kept);
+        let kept = drop_small_islands(&kept);
         let (points, triangles) = compact(&kept, &d);
         let edge = boundary_rings(&triangles, &points)?;
 
@@ -195,17 +208,27 @@ fn ordered(a: usize, b: usize) -> (usize, usize) {
 
 /// May `a` and `b` share a triangle edge?
 ///
-/// When the walk labelled *both*, their `(column, row)` settles it: neighbouring grid
-/// nodes differ by one in each index, and anything further apart is a link across a
-/// hole or a fault — a link length cannot see that, because a one-cell fault throw is
-/// metrically identical to a stretched cell (36 of the 84 bridges on the reference
-/// surface are shorter than a legal quad diagonal). When either node went unlabelled,
-/// we have no topology to appeal to and the length filter is all there is.
+/// The walk labels every node with a fault block and a `(column, row)` inside it, so
+/// this is decidable: nodes in the same block are grid neighbours when their indices
+/// differ by one, and nodes in *different* blocks have no grid adjacency at all — the
+/// walk refused to connect them, which is precisely what a fault is. A link length
+/// cannot see this, because a one-cell fault throw is metrically identical to a
+/// stretched cell: 36 of the 84 bridges on the reference surface are shorter than a
+/// legal quad diagonal.
 fn index_adjacent(d: &GridDetection, a: usize, b: usize) -> bool {
-    match (d.index_of.get(&a), d.index_of.get(&b)) {
-        (Some(&(ia, ja)), Some(&(ib, jb))) => (ia - ib).abs().max((ja - jb).abs()) == 1,
-        _ => true,
+    let (Some(&(ba, ia, ja)), Some(&(bb, ib, jb))) = (d.index_of.get(&a), d.index_of.get(&b))
+    else {
+        return true;
+    };
+    // Different fault blocks: the walk could not connect them, so no grid adjacency
+    // exists, and every such edge crosses a fault. Trust even a one-node block —
+    // requiring a minimum block size to believe this was tried, and left 64 of the 84
+    // bridges standing, because the fault-trace nodes are exactly the snapped ones the
+    // walk cannot chain into a block.
+    if ba != bb {
+        return false;
     }
+    (ia - ib).abs().max((ja - jb).abs()) == 1
 }
 
 /// Delaunay over the normalized points, returning faces as indices into `pts`.
@@ -239,8 +262,14 @@ fn delaunay(pts: &[[f64; 2]]) -> Result<Vec<[usize; 3]>> {
     Ok(faces)
 }
 
-/// One surface, not several: keep the triangles of the largest connected component.
-fn largest_component(tris: &[[usize; 3]]) -> Vec<[usize; 3]> {
+/// Drop islands too small to be a piece of surface.
+///
+/// NOT "keep only the largest component". A fault-cut surface genuinely has more than
+/// one block, and once the fault constraints stop the mesh bridging the throw, those
+/// blocks separate — dropping all but the biggest would silently discard real data (on
+/// the reference surface, a whole fault-bounded lobe: 1,990 nodes). What we do want
+/// gone are the specks a length filter leaves behind at the clip boundary.
+fn drop_small_islands(tris: &[[usize; 3]]) -> Vec<[usize; 3]> {
     let mut parent: HashMap<usize, usize> = HashMap::new();
     fn find(parent: &mut HashMap<usize, usize>, x: usize) -> usize {
         let mut root = x;
@@ -278,19 +307,10 @@ fn largest_component(tris: &[[usize; 3]]) -> Vec<[usize; 3]> {
     for t in tris {
         *size.entry(find(&mut parent, t[0])).or_insert(0) += 1;
     }
-    // Deterministic: on a tie, the smallest root wins (HashMap order is not stable).
-    let best = size
-        .iter()
-        .max_by_key(|(&r, &n)| (n, std::cmp::Reverse(r)))
-        .map(|(&r, _)| r);
-    match best {
-        Some(root) => tris
-            .iter()
-            .copied()
-            .filter(|t| find(&mut parent, t[0]) == root)
-            .collect(),
-        None => Vec::new(),
-    }
+    tris.iter()
+        .copied()
+        .filter(|t| size[&find(&mut parent, t[0])] >= MIN_ISLAND)
+        .collect()
 }
 
 /// Reindex the surviving triangles onto only the vertices they use.
@@ -386,6 +406,37 @@ fn boundary_rings(tris: &[[u32; 3]], points: &[[f64; 3]]) -> Result<PolygonSet> 
     Ok(PolygonSet::from_rings(rings))
 }
 
+/// Number of connected components among `tris`.
+fn count_components(tris: &[[usize; 3]]) -> usize {
+    let mut parent: HashMap<usize, usize> = HashMap::new();
+    fn find(parent: &mut HashMap<usize, usize>, x: usize) -> usize {
+        let mut root = x;
+        while let Some(&p) = parent.get(&root) {
+            if p == root {
+                break;
+            }
+            root = p;
+        }
+        root
+    }
+    for t in tris {
+        for &v in t {
+            parent.entry(v).or_insert(v);
+        }
+    }
+    for t in tris {
+        let r0 = find(&mut parent, t[0]);
+        for &v in &t[1..] {
+            let r = find(&mut parent, v);
+            if r != r0 {
+                parent.insert(r, r0);
+            }
+        }
+    }
+    let roots: HashSet<usize> = tris.iter().map(|t| find(&mut parent, t[0])).collect();
+    roots.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,19 +509,16 @@ mod tests {
             "the fixture is faulted"
         );
 
+        assert!(report.blocks >= 2, "the fixture must split into blocks");
+
         let tin = p.to_tri_surface(None).unwrap();
-        // One sheet, and no triangle spans the gap: every edge stays short in cells.
-        assert_eq!(tin.edge().rings().len(), 1);
+        // Both blocks survive. A fault-cut surface really *is* two sheets, and keeping
+        // only the largest would silently discard real data. What must not happen is a
+        // triangle spanning the throw.
+        assert_eq!(tin.components(), 2, "the fault is honoured, not bridged");
         assert!(
-            tin.points().len() < 6 * 9 + 6 * 9,
-            "the far block is dropped"
-        );
-        let xs: Vec<f64> = tin.points().iter().map(|p| p[0]).collect();
-        let span = xs.iter().cloned().fold(f64::MIN, f64::max)
-            - xs.iter().cloned().fold(f64::MAX, f64::min);
-        assert!(
-            span < 300.0,
-            "the retained sheet must not cross the fault: {span}"
+            tin.points().len() > 6 * 9,
+            "the far block must be kept, not discarded"
         );
     }
 

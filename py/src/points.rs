@@ -920,12 +920,27 @@ impl TopologyReport {
         self.inner.stalled_frontier
     }
 
+    /// Fault blocks found; one means an uninterrupted grid.
+    #[getter]
+    fn blocks(&self) -> usize {
+        self.inner.blocks
+    }
+
+    /// Nodes in the biggest block.
+    #[getter]
+    fn largest_block(&self) -> usize {
+        self.inner.largest_block
+    }
+
     fn __repr__(&self) -> String {
         let r = &self.inner;
         format!(
-            "TopologyReport(verified={}, assigned={}/{}, cell=({:.3}, {:.3}), azimuth={:.3}, \
-             conflicts={}, stalled_frontier={}, coincident_dropped={}, coincident_ambiguous={})",
+            "TopologyReport(verified={}, blocks={} (largest {}), assigned={}/{}, \
+             cell=({:.3}, {:.3}), azimuth={:.3}, conflicts={}, stalled_frontier={}, \
+             coincident_dropped={}, coincident_ambiguous={})",
             r.verified(),
+            r.blocks,
+            r.largest_block,
             r.assigned,
             r.distinct_nodes,
             r.detected_cell_i,

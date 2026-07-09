@@ -7,6 +7,17 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- `PointSet.to_tri_surface(max_link=None)` + `TriSurface` — the triangulated fallback
+  for a surface whose topology `detect_topology` cannot verify. The points are the
+  vertices, unmoved; the result is one connected sheet with its boundary ring(s).
+  Delaunay runs in the **normalized grid frame** (each axis divided by its own step),
+  so an anisotropic cell becomes a unit square and one scalar `max_link` bounds both
+  axes — in world units no such scalar exists, since past an aspect ratio of sqrt(2)
+  the cell diagonal already exceeds two short-axis steps and the admissible band is
+  empty. `max_link` is in cells and must lie in `(sqrt(2), 2)`: below the diagonal the
+  mesh shreds, at two cells a triangle skips a node. Adjacencies the topology walk
+  refused are excluded, so the mesh does not bridge a fault it can see. Adds no
+  dependency: `spade` was already in the tree via `geo`.
 - `PointSet.detect_topology(nominal_cell=None)` — recovers `column`/`row` topology
   from bare `X Y Z` surface points **without moving a point**. It detects the grid
   azimuth from the modal nearest-neighbour step and a step **per axis** (a 50 x 25 m

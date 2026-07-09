@@ -33,7 +33,7 @@ pub use analysis::{
 pub use core::{
     FluidContact, GeometryEdge, GridMethod, Interval, Log, LogKind, LogView, PointSet, PolygonSet,
     Sidetrack, Station, StructuredMeshSurface, Surface, Top, TopologyReport, Trajectory,
-    TrajectoryInput, Well,
+    TrajectoryInput, TriSurface, Well, DEFAULT_MAX_LINK,
 };
 pub use foundation::{
     BBox, Distribution, GeoError, GridGeometry, HasHistory, OperationHistory, Point3, Provenance,

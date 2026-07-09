@@ -276,6 +276,7 @@ impl PointSet {
     pub fn to_surface(&self, geom: GridGeometry, method: GridMethod) -> Result<Surface>;
     pub fn to_structured_surface(&self, tolerance: f64, edge: GeometryEdge) -> Result<StructuredMeshSurface>;
     pub fn detect_topology(&self, nominal_cell: Option<f64>) -> Result<(Option<PointSet>, TopologyReport)>;
+    pub fn to_tri_surface(&self, max_link: Option<f64>) -> Result<TriSurface>;   // max_link in CELLS, in (sqrt2, 2); None = 1.8
     pub fn regrid_min_curvature(&self, prior: &Surface) -> Result<Surface>;  // warm-started incremental re-grid on prior's lattice
 }
 pub enum GridMethod { Nearest, InverseDistance, MinimumCurvature }
@@ -296,6 +297,20 @@ pub struct TopologyReport {
     pub stalled_frontier: usize,       // the fault traces, in point-index form
 }
 impl TopologyReport { pub fn verified(&self) -> bool; }
+
+/// The triangulated fallback for a fault-cut surface: the original points, unmoved,
+/// as one connected sheet. Spec: `surface_tin_fallback_spec`.
+pub const DEFAULT_MAX_LINK: f64 = 1.8;   // cells
+pub struct TriSurface { /* points, triangles, edge */ }
+impl TriSurface {
+    pub fn kind(&self) -> &'static str;
+    pub fn points(&self) -> &[[f64; 3]];        // the input points, unmoved
+    pub fn triangles(&self) -> &[[u32; 3]];     // CCW, indices into points()
+    pub fn edge(&self) -> &PolygonSet;
+    pub fn to_points(&self) -> PointSet;
+    pub fn bbox(&self) -> BBox;
+    pub fn stats(&self) -> Stats;
+}
 
 /// A `(column, row)`-indexed surface carrying explicit per-node XY: the exact home for
 /// Petrel/EarthVision exports whose nodes are fault-shifted or curvilinear and therefore
@@ -672,6 +687,7 @@ exposes `infer_geometry(tolerance=1e-3, edge="full_rect")` and
 `to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
 `edge="occupied"|"convex_hull"|"full_rect"`; `detect_topology(nominal_cell=None)`
 returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
+`to_tri_surface(max_link=None)` is the fallback when it does not;
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
 Bindings are thin: every method delegates to the Rust API above. The spec
 value-objects (`NetSettings`, `IngestSpec`, `ViewSpec`, `ViewSettings`) follow

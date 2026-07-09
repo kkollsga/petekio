@@ -452,6 +452,56 @@ def test_detect_topology_coincident_nodes():
     assert pts is None
 
 
+def _rotated_lattice(ncol, nrow, xinc, yinc, az):
+    c, s = math.cos(math.radians(az)), math.sin(math.radians(az))
+    x, y, z = [], [], []
+    for j in range(nrow):
+        for i in range(ncol):
+            u, v = xinc * i, yinc * j
+            x.append(1000.0 + u * c - v * s)
+            y.append(2000.0 + u * s + v * c)
+            z.append(-1800.0)
+    return x, y, z
+
+
+def test_tri_surface_triangulates_a_grid_into_one_sheet():
+    x, y, z = _rotated_lattice(9, 7, 50.0, 50.0, 25.0)
+    tin = petekio.PointSet.from_xyz(x, y, z).to_tri_surface()
+    assert tin.kind == "tri_surface"
+    assert tin.n_points == len(x)
+    assert tin.n_triangles == 2 * 8 * 6
+    assert len(tin.edge.rings()) == 1
+    # the vertices are the input points, unmoved
+    assert sorted(tin.points()) == sorted(zip(x, y, z))
+
+
+def test_tri_surface_handles_anisotropic_cells():
+    # A 50 x 20 cell has a diagonal longer than two short steps, so no world-unit
+    # max link can work. The normalized grid frame makes the cell a unit square.
+    x, y, z = _rotated_lattice(9, 7, 50.0, 20.0, 40.0)
+    tin = petekio.PointSet.from_xyz(x, y, z).to_tri_surface()
+    assert tin.n_triangles == 2 * 8 * 6
+    assert len(tin.edge.rings()) == 1
+
+
+def test_tri_surface_is_deterministic():
+    x, y, z = _rotated_lattice(11, 9, 50.0, 30.0, 17.0)
+    p = petekio.PointSet.from_xyz(x, y, z)
+    first = p.to_tri_surface()
+    for _ in range(5):
+        again = p.to_tri_surface()
+        assert again.triangles() == first.triangles()
+        assert again.points() == first.points()
+        assert again.edge.rings() == first.edge.rings()
+
+
+@pytest.mark.parametrize("bad", [1.0, 1.41, 2.0, 2.5])
+def test_tri_surface_rejects_max_link_outside_the_band(bad):
+    x, y, z = _rotated_lattice(6, 6, 50.0, 50.0, 0.0)
+    with pytest.raises(ValueError, match="max_link"):
+        petekio.PointSet.from_xyz(x, y, z).to_tri_surface(bad)
+
+
 def test_structured_surface_round_trips_points_exactly():
     # A curvilinear, partially populated mesh with a fault-shifted node: the exact
     # shape a Petrel surface export takes. Nothing may move.

@@ -94,6 +94,18 @@ impl PointSet {
         &self,
         nominal_cell: Option<f64>,
     ) -> Result<(Option<PointSet>, TopologyReport)> {
+        let d = self.detect_grid(nominal_cell)?;
+        let report = d.report();
+        if !report.verified() {
+            return Ok((None, report));
+        }
+        Ok((Some(labelled(self, &d.pts, &d.zs, &d.index_of)), report))
+    }
+
+    /// The shared detection pass: dedupe, detect the axes and per-axis steps, walk.
+    /// [`detect_topology`](Self::detect_topology) turns this into labels; the TIN
+    /// fallback consumes its frontier as fault constraints.
+    pub(crate) fn detect_grid(&self, nominal_cell: Option<f64>) -> Result<GridDetection> {
         if let Some(c) = nominal_cell {
             if !c.is_finite() || c <= 0.0 {
                 return Err(GeoError::GeometryInference(
@@ -103,8 +115,7 @@ impl PointSet {
         }
 
         let (pts, zs, coincident_dropped, coincident_ambiguous) = distinct_nodes(self.coords())?;
-        let n = pts.len();
-        if n < 4 {
+        if pts.len() < 4 {
             return Err(GeoError::GeometryInference(
                 "topology detection requires at least four distinct finite points".into(),
             ));
@@ -124,25 +135,55 @@ impl PointSet {
         let step_i = [e1[0] * inc_i, e1[1] * inc_i];
         let step_j = [e2[0] * inc_j, e2[1] * inc_j];
 
-        let (index_of, conflicts, stalled) = walk(&tree, &pts, step_i, step_j);
+        let (index_of, conflicts, frontier) = walk(&tree, &pts, step_i, step_j);
 
-        let report = TopologyReport {
-            detected_cell_i: inc_i,
-            detected_cell_j: inc_j,
-            detected_azimuth_deg: azimuth.to_degrees(),
-            distinct_nodes: n,
-            assigned: index_of.len(),
+        Ok(GridDetection {
+            pts,
+            zs,
+            e1,
+            e2,
+            inc_i,
+            inc_j,
+            azimuth,
+            index_of,
             conflicts,
+            frontier,
             coincident_dropped,
             coincident_ambiguous,
-            stalled_frontier: stalled,
-        };
+        })
+    }
+}
 
-        if !report.verified() {
-            return Ok((None, report));
+/// The full result of one detection pass over a point set.
+pub(crate) struct GridDetection {
+    pub(crate) pts: Vec<[f64; 2]>,
+    pub(crate) zs: Vec<f64>,
+    pub(crate) e1: [f64; 2],
+    pub(crate) e2: [f64; 2],
+    pub(crate) inc_i: f64,
+    pub(crate) inc_j: f64,
+    azimuth: f64,
+    pub(crate) index_of: HashMap<usize, (i32, i32)>,
+    conflicts: usize,
+    /// Adjacencies the walk refused to resolve: each pair straddles a fault.
+    pub(crate) frontier: Vec<(usize, usize)>,
+    coincident_dropped: usize,
+    coincident_ambiguous: usize,
+}
+
+impl GridDetection {
+    pub(crate) fn report(&self) -> TopologyReport {
+        TopologyReport {
+            detected_cell_i: self.inc_i,
+            detected_cell_j: self.inc_j,
+            detected_azimuth_deg: self.azimuth.to_degrees(),
+            distinct_nodes: self.pts.len(),
+            assigned: self.index_of.len(),
+            conflicts: self.conflicts,
+            coincident_dropped: self.coincident_dropped,
+            coincident_ambiguous: self.coincident_ambiguous,
+            stalled_frontier: self.frontier.len(),
         }
-
-        Ok((Some(labelled(self, &pts, &zs, &index_of)), report))
     }
 }
 
@@ -357,12 +398,13 @@ fn dist(a: &[f64; 2], b: &[f64; 2]) -> f64 {
 /// neighbours and claims the nearest unlabelled point near that prediction.
 /// Unmatched directions leave a hole, which is legal — a surface need not fill
 /// its lattice. Returns the labels, the conflict count, and the stalled frontier.
+type WalkResult = (HashMap<usize, (i32, i32)>, usize, Vec<(usize, usize)>);
 fn walk(
     tree: &RTree<AerialEntry>,
     pts: &[[f64; 2]],
     step_i: [f64; 2],
     step_j: [f64; 2],
-) -> (HashMap<usize, (i32, i32)>, usize, usize) {
+) -> WalkResult {
     let seed = interior_seed(pts);
     let mut index_of: HashMap<usize, (i32, i32)> = HashMap::new();
     let mut owner: HashMap<(i32, i32), usize> = HashMap::new();
@@ -377,7 +419,7 @@ fn walk(
     let r2 = (R_PRED * len_i.min(len_j)).powi(2);
     let frontier_r2 = (FRONTIER_RADIUS * len_i.max(len_j)).powi(2);
     let mut conflicts = 0usize;
-    let mut stalled = 0usize;
+    let mut stalled: Vec<(usize, usize)> = Vec::new();
 
     while let Some(k) = queue.pop_front() {
         let (i, j) = index_of[&k];
@@ -426,8 +468,12 @@ fn walk(
                 None => {
                     let len = vec[0].hypot(vec[1]);
                     let unit = [vec[0] / len, vec[1] / len];
-                    if frontier_candidate(tree, &index_of, p, unit, len, frontier_r2) {
-                        stalled += 1;
+                    if let Some(q) = frontier_candidate(tree, &index_of, p, unit, len, frontier_r2)
+                    {
+                        // The adjacency the walk could not resolve: `k` and `q` lie on
+                        // opposite sides of a fault. Recording the pair lets a
+                        // triangulated fallback refuse to bridge it.
+                        stalled.push((k, q));
                     }
                 }
             }
@@ -478,7 +524,8 @@ fn frontier_candidate(
     unit: [f64; 2],
     step_len: f64,
     frontier_r2: f64,
-) -> bool {
+) -> Option<usize> {
+    let mut best: Option<(f64, usize)> = None;
     for e in tree.locate_within_distance(p, frontier_r2) {
         let m = e.data;
         if index_of.contains_key(&m) {
@@ -490,11 +537,11 @@ fn frontier_candidate(
         if d < 0.5 * step_len {
             continue;
         }
-        if (dx * unit[0] + dy * unit[1]) / d > FRONTIER_COS {
-            return true;
+        if (dx * unit[0] + dy * unit[1]) / d > FRONTIER_COS && best.is_none_or(|b| d < b.0) {
+            best = Some((d, m));
         }
     }
-    false
+    best.map(|(_, m)| m)
 }
 
 /// A deep-interior seed: the point closest to the centroid. Boundary nodes are

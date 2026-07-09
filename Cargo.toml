@@ -41,6 +41,9 @@ csv = "1"
 geo = { version = "0.33", features = ["use-serde"] }
 geozero = { version = "0.15", features = ["with-geo", "with-geojson", "with-wkt", "with-shp"] }
 rstar = "0.13"
+# Delaunay for the TIN fallback. Already in the tree transitively via `geo`, so
+# depending on it directly adds zero crates.
+spade = "2.15"
 # Persistence (.pproj): serde DTOs + bincode sections layered on petekTools'
 # generic container (which owns the magic/JSON-header/zstd framing).
 serde = { version = "1", features = ["derive"] }

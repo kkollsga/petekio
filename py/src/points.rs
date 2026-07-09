@@ -11,6 +11,7 @@ use crate::geometry::{BBox, GridGeometry};
 use crate::stats::Stats;
 use crate::structured_surface::StructuredMeshSurface;
 use crate::surface::Surface;
+use crate::tri_surface::TriSurface;
 use crate::{parse_grid_method, to_pyerr};
 use petekio::{
     GeometryEdge, PointSet as RsPointSet, PolygonSet as RsPolygonSet,
@@ -218,6 +219,22 @@ impl PointSet {
                 labelled.map(PointSet::owned),
                 TopologyReport { inner: report },
             ))
+        })
+    }
+
+    /// Triangulate the points into a `TriSurface` — the fallback when
+    /// `detect_topology()` cannot verify a structured mesh.
+    ///
+    /// `max_link` is the longest triangle edge to keep, **in cells** of the detected
+    /// grid, and must lie in `(sqrt(2), 2)`; `None` uses 1.8. The result is a single
+    /// connected component, and no triangle bridges a fault: the adjacencies the
+    /// topology walk refused are excluded from the triangulation.
+    #[pyo3(signature = (max_link = None))]
+    fn to_tri_surface(&self, py: Python<'_>, max_link: Option<f64>) -> PyResult<TriSurface> {
+        self.with(py, |p| {
+            py.detach(|| p.to_tri_surface(max_link))
+                .map(TriSurface::wrap)
+                .map_err(to_pyerr)
         })
     }
 

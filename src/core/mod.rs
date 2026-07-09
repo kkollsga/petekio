@@ -12,6 +12,7 @@ mod surface_filter; // NaN-aware smoothing + boundary polygon on Surface
 mod surface_ops; // arithmetic + operator overloads on Surface
 mod surface_stats; // statistics + volumetrics on Surface
 pub mod topology; // (column,row) recovery from unlabelled surface points
+pub mod tri_surface; // TriSurface — the triangulated fallback for fault-cut surfaces
 pub mod tops; // Top → Interval — formation tops and the depth interval each names
 pub mod trajectory; // well path: minimum-curvature normalization + interpolation
 pub mod well; // Well → Sidetrack → Trajectory hierarchy
@@ -24,4 +25,5 @@ pub use surface::Surface;
 pub use topology::TopologyReport;
 pub use tops::{FluidContact, Interval, Top};
 pub use trajectory::{Station, Trajectory, TrajectoryInput};
+pub use tri_surface::{TriSurface, DEFAULT_MAX_LINK};
 pub use well::{Sidetrack, Well};

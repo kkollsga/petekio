@@ -98,13 +98,20 @@ labelled, report = pts.detect_topology()
 if report.verified:
     mesh = labelled.to_structured_surface()   # exact: no point moved
 else:
-    ...  # fault-cut: report.stalled_frontier locates the fault
+    tin = pts.to_tri_surface()                # fault-cut: report.blocks > 1
 ```
 
-`detect_topology` detects the grid azimuth and cell size, then walks the grid paths
-to *label* each point. It never moves one, and it will not walk across a fault: at a
-fault the neighbour relation is not determined by geometry, so it stalls and returns
-`verified = False` rather than silently welding the fault blocks together.
+`detect_topology` detects the grid azimuth and a step per axis, then walks the grid
+paths to *label* each point. It never moves one, and it will not walk across a fault:
+there the neighbour relation is not determined by geometry, so it re-seeds and labels
+the far side as its own **block** rather than silently welding them together.
+`report.blocks == 1` means an uninterrupted grid; more means the surface is fault-cut,
+and `verified` is `False`.
+
+`to_tri_surface(max_link=None)` is the fallback for that case: the points become the
+vertices of a triangulated surface, unmoved, and the fault is honoured rather than
+bridged — `TriSurface.components` reports how many blocks survived. `max_link` is the
+longest triangle edge to keep, in **cells**, and must lie in `(√2, 2)`.
 
 The default `edge="full_rect"` is the four-corner rectangle of the inferred
 lattice: cheap, but it claims the whole bounding lattice even where nodes carry no

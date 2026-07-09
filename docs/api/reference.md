@@ -93,6 +93,9 @@ and percentiles (`.p10`, `.p50`, `.p90`).
 | --- | --- |
 | `PointSet.bbox` / `.infer_geometry(...)` / `.to_surface(grid_geom)` | Bounds; strict regular-grid geometry inference (rejects curvilinear meshes) with default `full_rect` point edge — `occupied` for the true data footprint; grid points onto an explicit geometry. |
 | `PointSet.to_structured_surface(...)` | Promote topology-bearing points (`column`/`row`) to `StructuredMeshSurface` while preserving explicit shifted XY nodes. |
+| `PointSet.detect_topology(nominal_cell=None)` | Recover `column`/`row` from bare XYZ without moving a point. Returns `(points \| None, TopologyReport)`; `.verified` gates the labels, `.blocks > 1` means fault-cut. |
+| `PointSet.to_tri_surface(max_link=None)` | The fallback when topology cannot be verified: a `TriSurface` over the original points, honouring faults rather than bridging them. `max_link` in cells, in `(√2, 2)`. |
+| `StructuredMeshSurface.to_points()` | Exact inverse of `to_structured_surface(...)` — copies node XY/Z, never resamples. |
 | `PointSet.x` / `.y` / `.z` / `.<attr>` | Column objects for same-point-set calculations; assign with `points.new_attr = ...`. |
 | `GridGeometry.edge` | Edge polygon carried by inferred geometry, or a rectangular footprint for plain geometries. |
 | `PolygonSet.rings` | The constituent rings. |

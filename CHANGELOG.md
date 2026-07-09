@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-07-09
+
 ### Added
 - `PointSet.to_tri_surface(max_link=None)` + `TriSurface` — the triangulated fallback
   for a surface whose topology `detect_topology` cannot verify. The points are the

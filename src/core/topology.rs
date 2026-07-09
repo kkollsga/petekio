@@ -30,8 +30,11 @@ use std::collections::{HashMap, VecDeque};
 /// promoted to a structured mesh.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopologyReport {
-    /// Detected cell size, from the modal nearest-neighbour step.
-    pub detected_cell: f64,
+    /// Detected step along the column axis. The two increments are resolved
+    /// separately: a grid's cell need not be square.
+    pub detected_cell_i: f64,
+    /// Detected step along the row axis.
+    pub detected_cell_j: f64,
     /// Detected grid azimuth in degrees, modulo 90 (the axes are interchangeable).
     pub detected_azimuth_deg: f64,
     /// Distinct nodes considered (after dropping exactly-coincident duplicates).
@@ -61,12 +64,13 @@ impl TopologyReport {
     }
 }
 
-/// Match radius around a predicted neighbour position, in cells.
+/// Match radius around a predicted neighbour position, in units of the shorter step.
 const R_PRED: f64 = 0.42;
-/// A re-estimated local axial step is trusted only inside this band, in cells.
+/// A locally measured axial step is trusted only inside this band, relative to the
+/// globally detected step for that axis.
 const LOCAL_FRAME_BAND: (f64, f64) = (0.6, 1.6);
-/// Radius, in cells, within which an unassigned point counts as a stalled
-/// frontier candidate rather than simply absent.
+/// Radius, in units of the longer step, within which an unassigned point counts as
+/// a stalled frontier candidate rather than simply absent.
 const FRONTIER_RADIUS: f64 = 2.2;
 /// Angular tolerance for the frontier test.
 const FRONTIER_COS: f64 = 0.951; // cos(18 degrees)
@@ -113,14 +117,18 @@ impl PointSet {
             .collect();
         let tree = RTree::bulk_load(entries);
 
-        let cell = detect_cell(&tree, &pts, nominal_cell)?;
-        let azimuth = detect_azimuth(&tree, &pts, cell)?;
+        let seed = detect_cell(&tree, &pts, nominal_cell)?;
+        let azimuth = detect_azimuth(&tree, &pts, seed)?;
         let (e1, e2) = axes(azimuth);
+        let (inc_i, inc_j) = detect_axis_steps(&tree, &pts, e1, e2, seed)?;
+        let step_i = [e1[0] * inc_i, e1[1] * inc_i];
+        let step_j = [e2[0] * inc_j, e2[1] * inc_j];
 
-        let (index_of, conflicts, stalled) = walk(&tree, &pts, cell, e1, e2);
+        let (index_of, conflicts, stalled) = walk(&tree, &pts, step_i, step_j);
 
         let report = TopologyReport {
-            detected_cell: cell,
+            detected_cell_i: inc_i,
+            detected_cell_j: inc_j,
             detected_azimuth_deg: azimuth.to_degrees(),
             distinct_nodes: n,
             assigned: index_of.len(),
@@ -200,7 +208,8 @@ fn detect_cell(tree: &RTree<AerialEntry>, pts: &[[f64; 2]], hint: Option<f64>) -
         ));
     }
 
-    // Histogram every short neighbour step and take the modal bin.
+    // Histogram every short neighbour step and take the modal bin. This is the
+    // *seed* scale — the shorter of the two axes when the cell is anisotropic.
     let hi = 1.4 * seed;
     const BINS: usize = 240;
     let mut hist = [0usize; BINS];
@@ -224,6 +233,88 @@ fn detect_cell(tree: &RTree<AerialEntry>, pts: &[[f64; 2]], hint: Option<f64>) -
         ));
     }
     Ok(sums[best] / hist[best] as f64)
+}
+
+/// The step along each axis. A grid's two increments need not agree — a 50 x 25 m
+/// Petrel cell is ordinary — so resolve them separately rather than assuming one
+/// cell. `seed` is the shorter axis, from [`detect_cell`]; the longer one is found
+/// within `AXIS_SEARCH` seeds of it.
+fn detect_axis_steps(
+    tree: &RTree<AerialEntry>,
+    pts: &[[f64; 2]],
+    e1: [f64; 2],
+    e2: [f64; 2],
+    seed: f64,
+) -> Result<(f64, f64)> {
+    const BINS: usize = 512;
+    /// Candidates inspected per point. Must reach the long axis of a strongly
+    /// anisotropic cell, whose neighbour sits many short-axis steps away.
+    const CANDIDATES: usize = 64;
+    /// How far out to look, in seeds — the seed is the *shorter* axis.
+    const AXIS_SEARCH: f64 = 20.0;
+    /// A neighbour vector counts as axial when it deviates less than this from the axis.
+    const AXIAL_TAN: f64 = 0.30;
+
+    let hi = AXIS_SEARCH * seed;
+    // Histogram the *nearest* axial neighbour in each of the four directions. Taking
+    // every axial neighbour instead would bin the step and all its multiples with
+    // near-equal support, and the mode would pick an arbitrary multiple.
+    let mut hist = [[0usize; BINS]; 2];
+    let mut sums = [[0.0f64; BINS]; 2];
+
+    for p in pts {
+        let mut nearest = [[f64::INFINITY; 2]; 2]; // [axis][forward, backward]
+        for e in tree.nearest_neighbor_iter(*p).take(CANDIDATES) {
+            let q = e.geom();
+            let v = [q[0] - p[0], q[1] - p[1]];
+            let d = v[0].hypot(v[1]);
+            if d <= 0.0 {
+                continue;
+            }
+            if d > hi {
+                break; // nearest_neighbor_iter yields in increasing distance
+            }
+            for (axis, (along_axis, across_axis)) in [(e1, e2), (e2, e1)].into_iter().enumerate() {
+                let along = v[0] * along_axis[0] + v[1] * along_axis[1];
+                let across = v[0] * across_axis[0] + v[1] * across_axis[1];
+                if across.abs() > AXIAL_TAN * along.abs() {
+                    continue;
+                }
+                let side = usize::from(along < 0.0);
+                let mag = along.abs();
+                if mag > 0.0 && mag < nearest[axis][side] {
+                    nearest[axis][side] = mag;
+                }
+            }
+            // Candidates arrive in increasing distance, so once every direction has a
+            // nearest axial neighbour, nothing further can improve on it.
+            if nearest.iter().flatten().all(|m| m.is_finite()) {
+                break;
+            }
+        }
+        for (axis, sides) in nearest.iter().enumerate() {
+            for &mag in sides {
+                if !mag.is_finite() {
+                    continue;
+                }
+                let b = (((mag / hi) * BINS as f64) as usize).min(BINS - 1);
+                hist[axis][b] += 1;
+                sums[axis][b] += mag;
+            }
+        }
+    }
+
+    let mut out = [0.0f64; 2];
+    for axis in 0..2 {
+        let best = (0..BINS).max_by_key(|&b| hist[axis][b]).unwrap();
+        if hist[axis][best] == 0 {
+            return Err(GeoError::GeometryInference(
+                "could not detect a step along both grid axes".into(),
+            ));
+        }
+        out[axis] = sums[axis][best] / hist[axis][best] as f64;
+    }
+    Ok((out[0], out[1]))
 }
 
 /// Grid azimuth, modulo 90 degrees. Averaged on the quadrupled angle so the
@@ -269,9 +360,8 @@ fn dist(a: &[f64; 2], b: &[f64; 2]) -> f64 {
 fn walk(
     tree: &RTree<AerialEntry>,
     pts: &[[f64; 2]],
-    cell: f64,
-    e1: [f64; 2],
-    e2: [f64; 2],
+    step_i: [f64; 2],
+    step_j: [f64; 2],
 ) -> (HashMap<usize, (i32, i32)>, usize, usize) {
     let seed = interior_seed(pts);
     let mut index_of: HashMap<usize, (i32, i32)> = HashMap::new();
@@ -280,9 +370,12 @@ fn walk(
     owner.insert((0, 0), seed);
     let mut queue = VecDeque::from([seed]);
 
-    let r_pred = R_PRED * cell;
-    let r2 = r_pred * r_pred;
-    let frontier_r2 = (FRONTIER_RADIUS * cell).powi(2);
+    let len_i = step_i[0].hypot(step_i[1]);
+    let len_j = step_j[0].hypot(step_j[1]);
+    // The match radius must not exceed half the *shorter* step, or a prediction
+    // could claim the wrong node on an anisotropic grid.
+    let r2 = (R_PRED * len_i.min(len_j)).powi(2);
+    let frontier_r2 = (FRONTIER_RADIUS * len_i.max(len_j)).powi(2);
     let mut conflicts = 0usize;
     let mut stalled = 0usize;
 
@@ -290,21 +383,23 @@ fn walk(
         let (i, j) = index_of[&k];
         let p = pts[k];
 
-        // Re-estimate the local frame from already-labelled axial neighbours so the
-        // walk follows the grid's curvature instead of a single global azimuth.
-        let (le1, le2) = local_frame(&owner, pts, i, j, p, cell).unwrap_or((e1, e2));
+        // Predict with the *locally measured* step where labelled neighbours supply
+        // one, so the walk follows the grid's curvature, shear and swell rather than
+        // a single global frame.
+        let li = local_step(&owner, pts, p, (i, j), (1, 0), len_i).unwrap_or(step_i);
+        let lj = local_step(&owner, pts, p, (i, j), (0, 1), len_j).unwrap_or(step_j);
 
         for (vec, di, dj) in [
-            (le1, 1, 0),
-            ([-le1[0], -le1[1]], -1, 0),
-            (le2, 0, 1),
-            ([-le2[0], -le2[1]], 0, -1),
+            (li, 1, 0),
+            ([-li[0], -li[1]], -1, 0),
+            (lj, 0, 1),
+            ([-lj[0], -lj[1]], 0, -1),
         ] {
             let target = (i + di, j + dj);
             if owner.contains_key(&target) {
                 continue;
             }
-            let pred = [p[0] + vec[0] * cell, p[1] + vec[1] * cell];
+            let pred = [p[0] + vec[0], p[1] + vec[1]];
 
             let mut best: Option<(f64, usize)> = None;
             for e in tree.locate_within_distance(pred, r2) {
@@ -329,7 +424,9 @@ fn walk(
                     queue.push_back(m);
                 }
                 None => {
-                    if frontier_candidate(tree, &index_of, p, vec, cell, frontier_r2) {
+                    let len = vec[0].hypot(vec[1]);
+                    let unit = [vec[0] / len, vec[1] / len];
+                    if frontier_candidate(tree, &index_of, p, unit, len, frontier_r2) {
                         stalled += 1;
                     }
                 }
@@ -339,21 +436,25 @@ fn walk(
     (index_of, conflicts, stalled)
 }
 
-/// The local axial frame at `(i, j)`, from labelled neighbours along +/- i.
-fn local_frame(
+/// The locally measured step vector along one axis at `(i, j)`, averaged over
+/// whichever of the two labelled neighbours along that axis exist. Returns `None`
+/// when neither exists, or when the measured step falls outside the trusted band
+/// around the global step — a stretched or collapsed step must not steer the walk.
+fn local_step(
     owner: &HashMap<(i32, i32), usize>,
     pts: &[[f64; 2]],
-    i: i32,
-    j: i32,
     p: [f64; 2],
-    cell: f64,
-) -> Option<([f64; 2], [f64; 2])> {
+    (i, j): (i32, i32),
+    (di, dj): (i32, i32),
+    global_len: f64,
+) -> Option<[f64; 2]> {
     let mut acc = [0.0f64; 2];
     let mut n = 0.0f64;
-    for (di, sign) in [(1i32, 1.0f64), (-1, -1.0)] {
-        if let Some(&m) = owner.get(&(i + di, j)) {
-            acc[0] += sign * (pts[m][0] - p[0]);
-            acc[1] += sign * (pts[m][1] - p[1]);
+    for sign in [1i32, -1] {
+        let key = (i + di * sign, j + dj * sign);
+        if let Some(&m) = owner.get(&key) {
+            acc[0] += sign as f64 * (pts[m][0] - p[0]);
+            acc[1] += sign as f64 * (pts[m][1] - p[1]);
             n += 1.0;
         }
     }
@@ -362,11 +463,10 @@ fn local_frame(
     }
     let v = [acc[0] / n, acc[1] / n];
     let len = v[0].hypot(v[1]);
-    if len <= LOCAL_FRAME_BAND.0 * cell || len >= LOCAL_FRAME_BAND.1 * cell {
+    if len <= LOCAL_FRAME_BAND.0 * global_len || len >= LOCAL_FRAME_BAND.1 * global_len {
         return None;
     }
-    let e1 = [v[0] / len, v[1] / len];
-    Some((e1, [-e1[1], e1[0]]))
+    Some(v)
 }
 
 /// Is there an unlabelled point out along `vec` that we failed to claim? Then the
@@ -375,8 +475,8 @@ fn frontier_candidate(
     tree: &RTree<AerialEntry>,
     index_of: &HashMap<usize, (i32, i32)>,
     p: [f64; 2],
-    vec: [f64; 2],
-    cell: f64,
+    unit: [f64; 2],
+    step_len: f64,
     frontier_r2: f64,
 ) -> bool {
     for e in tree.locate_within_distance(p, frontier_r2) {
@@ -387,10 +487,10 @@ fn frontier_candidate(
         let q = e.geom();
         let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
         let d = dx.hypot(dy);
-        if d < 0.5 * cell {
+        if d < 0.5 * step_len {
             continue;
         }
-        if (dx * vec[0] + dy * vec[1]) / d > FRONTIER_COS {
+        if (dx * unit[0] + dy * unit[1]) / d > FRONTIER_COS {
             return true;
         }
     }
@@ -485,7 +585,14 @@ mod tests {
         );
         assert_eq!(report.assigned, coords.len());
         assert_eq!(report.conflicts, 0);
-        approx::assert_relative_eq!(report.detected_cell, 50.0, epsilon = 1.5);
+        // This fixture deliberately swells along i, so the modal i-step is a little
+        // above the nominal 50 m. That is the grid, not an estimator error.
+        assert!(
+            (50.0..54.0).contains(&report.detected_cell_i),
+            "i-step {} outside the swelling grid's range",
+            report.detected_cell_i
+        );
+        approx::assert_relative_eq!(report.detected_cell_j, 50.0, epsilon = 1.5);
 
         let labelled = labelled.expect("verified detection yields labelled points");
         assert_eq!(labelled.len(), coords.len());
@@ -576,6 +683,62 @@ mod tests {
             !report.verified(),
             "verified() must agree with whether labels were returned: {report:?}"
         );
+    }
+
+    /// A rotated, anisotropic, sheared lattice — the shape a real Petrel grid takes.
+    fn anisotropic(
+        ncol: usize,
+        nrow: usize,
+        az_deg: f64,
+        xinc: f64,
+        yinc: f64,
+        shear: f64,
+    ) -> Vec<[f64; 3]> {
+        let (s, c) = az_deg.to_radians().sin_cos();
+        let mut out = Vec::new();
+        for j in 0..nrow {
+            for i in 0..ncol {
+                let (fi, fj) = (i as f64, j as f64);
+                let (u, v) = (xinc * fi + shear * fj, yinc * fj);
+                out.push([
+                    1000.0 + u * c - v * s,
+                    2000.0 + u * s + v * c,
+                    -1800.0 - fi - fj,
+                ]);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn detects_anisotropic_cells() {
+        // A grid's two increments need not agree. Resolving one "cell" and predicting
+        // both axes with it strands the walk the moment the cell is not square.
+        for (xinc, yinc) in [(50.0, 50.0), (50.0, 25.0), (25.0, 50.0), (20.0, 200.0)] {
+            let p = PointSet::from_coords(anisotropic(12, 10, 30.0, xinc, yinc, 0.0));
+            let (labelled, report) = p.detect_topology(None).unwrap();
+            assert!(
+                report.verified(),
+                "an anisotropic {xinc}x{yinc} grid must verify: {report:?}"
+            );
+            assert!(labelled.is_some());
+            let (lo, hi) = (xinc.min(yinc), xinc.max(yinc));
+            let (di, dj) = (report.detected_cell_i, report.detected_cell_j);
+            approx::assert_relative_eq!(di.min(dj), lo, epsilon = 1e-6);
+            approx::assert_relative_eq!(di.max(dj), hi, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn detects_a_sheared_anisotropic_grid() {
+        let p = PointSet::from_coords(anisotropic(14, 12, 37.0, 50.0, 25.0, 4.0));
+        let (labelled, report) = p.detect_topology(None).unwrap();
+        assert!(
+            report.verified(),
+            "shear must not derail the walk: {report:?}"
+        );
+        assert_eq!(report.assigned, 14 * 12);
+        assert!(labelled.is_some());
     }
 
     #[test]

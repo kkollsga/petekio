@@ -9,8 +9,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ### Added
 - `PointSet.detect_topology(nominal_cell=None)` — recovers `column`/`row` topology
   from bare `X Y Z` surface points **without moving a point**. It detects the grid
-  azimuth and cell size from the modal nearest-neighbour step, then walks the grid
-  paths predictively, re-estimating the local frame so it follows a curvilinear grid.
+  azimuth from the modal nearest-neighbour step and a step **per axis** (a 50 x 25 m
+  cell is ordinary), then walks the grid paths predictively, using locally measured
+  step vectors so it follows curvature, shear and swell.
   Returns `(points, TopologyReport)`; the points are `None` unless the detection
   **verifies** — every distinct node labelled, no index claimed twice, no coincident
   pair with differing z. It deliberately cannot cross a fault: where nodes are snapped

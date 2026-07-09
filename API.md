@@ -285,7 +285,8 @@ pub enum GridMethod { Nearest, InverseDistance, MinimumCurvature }
 /// holds. An unverified report means the surface is fault-cut — represent it as a
 /// triangulated network, not a structured mesh. Spec: `surface_topology_walk_spec`.
 pub struct TopologyReport {
-    pub detected_cell: f64,
+    pub detected_cell_i: f64,          // the two increments are resolved separately
+    pub detected_cell_j: f64,
     pub detected_azimuth_deg: f64,
     pub distinct_nodes: usize,
     pub assigned: usize,

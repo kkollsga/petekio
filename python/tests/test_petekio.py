@@ -385,11 +385,31 @@ def test_detect_topology_labels_a_curvilinear_grid_and_round_trips():
     assert report.assigned == report.distinct_nodes == len(x)
     assert report.conflicts == 0
     assert report.stalled_frontier == 0
-    assert abs(report.detected_cell - 50.0) < 1.5
+    # the fixture swells along i, so its modal i-step really is a little above 50 m
+    assert 50.0 <= report.detected_cell_i < 54.0
+    assert abs(report.detected_cell_j - 50.0) < 1.5
 
     # the labels are what let the mesh be built, and nothing moved
     back = pts.to_structured_surface().to_points()
     assert sorted(zip(x, y, z)) == sorted(back.xyz())
+
+
+@pytest.mark.parametrize("xinc,yinc", [(50.0, 50.0), (50.0, 25.0), (25.0, 50.0), (20.0, 200.0)])
+def test_detect_topology_handles_anisotropic_cells(xinc, yinc):
+    # A grid's two increments need not agree; a 50 x 25 m Petrel cell is ordinary.
+    c, s = math.cos(math.radians(30.0)), math.sin(math.radians(30.0))
+    x, y, z = [], [], []
+    for j in range(10):
+        for i in range(12):
+            u, v = xinc * i, yinc * j
+            x.append(1000.0 + u * c - v * s)
+            y.append(2000.0 + u * s + v * c)
+            z.append(-1800.0 - i - j)
+    pts, report = petekio.PointSet.from_xyz(x, y, z).detect_topology()
+    assert report.verified, report
+    assert pts is not None
+    got = sorted((report.detected_cell_i, report.detected_cell_j))
+    assert got == pytest.approx(sorted((xinc, yinc)), abs=1e-6)
 
 
 def test_detect_topology_refuses_to_walk_across_a_fault():

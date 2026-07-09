@@ -849,10 +849,16 @@ impl TopologyReport {
         self.inner.verified()
     }
 
-    /// Detected cell size, from the modal nearest-neighbour step.
+    /// Detected step along the column axis (the cell need not be square).
     #[getter]
-    fn detected_cell(&self) -> f64 {
-        self.inner.detected_cell
+    fn detected_cell_i(&self) -> f64 {
+        self.inner.detected_cell_i
+    }
+
+    /// Detected step along the row axis.
+    #[getter]
+    fn detected_cell_j(&self) -> f64 {
+        self.inner.detected_cell_j
     }
 
     /// Detected grid azimuth in degrees, modulo 90.
@@ -900,12 +906,13 @@ impl TopologyReport {
     fn __repr__(&self) -> String {
         let r = &self.inner;
         format!(
-            "TopologyReport(verified={}, assigned={}/{}, cell={:.3}, azimuth={:.3}, \
+            "TopologyReport(verified={}, assigned={}/{}, cell=({:.3}, {:.3}), azimuth={:.3}, \
              conflicts={}, stalled_frontier={}, coincident_dropped={}, coincident_ambiguous={})",
             r.verified(),
             r.assigned,
             r.distinct_nodes,
-            r.detected_cell,
+            r.detected_cell_i,
+            r.detected_cell_j,
             r.detected_azimuth_deg,
             r.conflicts,
             r.stalled_frontier,

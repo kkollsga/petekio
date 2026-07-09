@@ -7,6 +7,16 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- `PointSet.detect_topology(nominal_cell=None)` — recovers `column`/`row` topology
+  from bare `X Y Z` surface points **without moving a point**. It detects the grid
+  azimuth and cell size from the modal nearest-neighbour step, then walks the grid
+  paths predictively, re-estimating the local frame so it follows a curvilinear grid.
+  Returns `(points, TopologyReport)`; the points are `None` unless the detection
+  **verifies** — every distinct node labelled, no index claimed twice, no coincident
+  pair with differing z. It deliberately cannot cross a fault: where nodes are snapped
+  onto a fault trace or stretched across it, the neighbour relation is not determined
+  by geometry, and forcing it welds fault blocks together silently. The stall is the
+  signal, and `report.stalled_frontier` locates it. Spec: `surface_topology_walk_spec`.
 - `StructuredMeshSurface.to_points()` — explodes the mesh back into a `PointSet` with
   its `column`/`row` topology, copying node XY/Z rather than resampling. It is the
   exact inverse of `PointSet.to_structured_surface(...)`, and a round-trip test now

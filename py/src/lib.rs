@@ -105,6 +105,7 @@ fn _petekio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<stats::Stats>()?;
     m.add_class::<geometry::BBox>()?;
     m.add_class::<geometry::GridGeometry>()?;
+    m.add_class::<points::TopologyReport>()?;
     m.add_class::<surface::Surface>()?;
     m.add_class::<surface::AttrAccessor>()?;
     m.add_class::<structured_surface::StructuredMeshSurface>()?;

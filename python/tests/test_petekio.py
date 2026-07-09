@@ -358,6 +358,80 @@ def test_pointset_removed_geometry_edges_raise(removed):
         p.infer_geometry(tolerance=1e-6, edge=removed)
 
 
+def _curvilinear_grid(ncol, nrow, skip_corner=True):
+    """~50 m cell, rotated 30 deg, gently swelling and bowed, with a missing corner."""
+    c, s = math.cos(math.radians(30.0)), math.sin(math.radians(30.0))
+    x, y, z = [], [], []
+    for j in range(nrow):
+        for i in range(ncol):
+            if skip_corner and i >= ncol - 2 and j >= nrow - 2:
+                continue
+            u = 50.0 * i * (1.0 + 0.004 * i)
+            v = 50.0 * j + 0.007 * i * i
+            x.append(1000.0 + u * c - v * s)
+            y.append(2000.0 + u * s + v * c)
+            z.append(-1800.0 - i - j)
+    return x, y, z
+
+
+def test_detect_topology_labels_a_curvilinear_grid_and_round_trips():
+    x, y, z = _curvilinear_grid(9, 7)
+    p = petekio.PointSet.from_xyz(x, y, z)
+    assert p.attr("column") is None  # no topology in the input
+
+    pts, report = p.detect_topology()
+    assert report.verified
+    assert pts is not None
+    assert report.assigned == report.distinct_nodes == len(x)
+    assert report.conflicts == 0
+    assert report.stalled_frontier == 0
+    assert abs(report.detected_cell - 50.0) < 1.5
+
+    # the labels are what let the mesh be built, and nothing moved
+    back = pts.to_structured_surface().to_points()
+    assert sorted(zip(x, y, z)) == sorted(back.xyz())
+
+
+def test_detect_topology_refuses_to_walk_across_a_fault():
+    c, s = math.cos(math.radians(30.0)), math.sin(math.radians(30.0))
+    x, y, z = [], [], []
+
+    def node(i, j):
+        u, v = 50.0 * i, 50.0 * j
+        return 1000.0 + u * c - v * s, 2000.0 + u * s + v * c
+
+    for j in range(8):
+        for i in range(6):
+            px, py = node(i, j)
+            x.append(px); y.append(py); z.append(-1800.0)
+    for j in range(8):
+        for i in range(8, 14):
+            px, py = node(i, j)
+            x.append(px + 30.0); y.append(py + 25.0); z.append(-1900.0)
+
+    pts, report = petekio.PointSet.from_xyz(x, y, z).detect_topology()
+    assert not report.verified
+    assert pts is None, "an unverified detection must not hand back labels"
+    assert report.assigned < report.distinct_nodes
+
+
+def test_detect_topology_coincident_nodes():
+    x, y, z = _curvilinear_grid(7, 6)
+    # same XY, same z: a fault-collapsed pair — harmless, drop one
+    p = petekio.PointSet.from_xyz(x + [x[10]], y + [y[10]], z + [z[10]])
+    pts, report = p.detect_topology()
+    assert report.coincident_dropped == 1
+    assert report.coincident_ambiguous == 0
+    assert report.verified and pts is not None
+
+    # same XY, different z: two nodes at one place — refuse
+    p = petekio.PointSet.from_xyz(x + [x[10]], y + [y[10]], z + [z[10] + 25.0])
+    pts, report = p.detect_topology()
+    assert report.coincident_ambiguous == 1
+    assert not report.verified
+    assert pts is None
+
+
 def test_structured_surface_round_trips_points_exactly():
     # A curvilinear, partially populated mesh with a fault-shifted node: the exact
     # shape a Petrel surface export takes. Nothing may move.

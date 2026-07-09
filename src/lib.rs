@@ -32,7 +32,8 @@ pub use analysis::{
 };
 pub use core::{
     FluidContact, GeometryEdge, GridMethod, Interval, Log, LogKind, LogView, PointSet, PolygonSet,
-    Sidetrack, Station, StructuredMeshSurface, Surface, Top, Trajectory, TrajectoryInput, Well,
+    Sidetrack, Station, StructuredMeshSurface, Surface, Top, TopologyReport, Trajectory,
+    TrajectoryInput, Well,
 };
 pub use foundation::{
     BBox, Distribution, GeoError, GridGeometry, HasHistory, OperationHistory, Point3, Provenance,

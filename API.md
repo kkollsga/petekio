@@ -275,9 +275,26 @@ impl PointSet {
     pub fn infer_geometry_with_edge(&self, tolerance: f64, edge: GeometryEdge) -> Result<(GridGeometry, PolygonSet)>;
     pub fn to_surface(&self, geom: GridGeometry, method: GridMethod) -> Result<Surface>;
     pub fn to_structured_surface(&self, tolerance: f64, edge: GeometryEdge) -> Result<StructuredMeshSurface>;
+    pub fn detect_topology(&self, nominal_cell: Option<f64>) -> Result<(Option<PointSet>, TopologyReport)>;
     pub fn regrid_min_curvature(&self, prior: &Surface) -> Result<Surface>;  // warm-started incremental re-grid on prior's lattice
 }
 pub enum GridMethod { Nearest, InverseDistance, MinimumCurvature }
+
+/// The outcome of recovering `(column, row)` from unlabelled surface points.
+/// `verified()` is the gate: `detect_topology` returns labelled points only when it
+/// holds. An unverified report means the surface is fault-cut — represent it as a
+/// triangulated network, not a structured mesh. Spec: `surface_topology_walk_spec`.
+pub struct TopologyReport {
+    pub detected_cell: f64,
+    pub detected_azimuth_deg: f64,
+    pub distinct_nodes: usize,
+    pub assigned: usize,
+    pub conflicts: usize,
+    pub coincident_dropped: usize,     // same XY and same Z: harmless
+    pub coincident_ambiguous: usize,   // same XY, different Z: unresolvable
+    pub stalled_frontier: usize,       // the fault traces, in point-index form
+}
+impl TopologyReport { pub fn verified(&self) -> bool; }
 
 /// A `(column, row)`-indexed surface carrying explicit per-node XY: the exact home for
 /// Petrel/EarthVision exports whose nodes are fault-shifted or curvilinear and therefore
@@ -652,7 +669,8 @@ on `Surface`; `surface.attr["name"]` indexed access; `surface.edge` and
 `surface.geometry.edge` expose matching `PolygonSet` outlines; `PointSet`
 exposes `infer_geometry(tolerance=1e-3, edge="full_rect")` and
 `to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
-`edge="occupied"|"convex_hull"|"full_rect"`;
+`edge="occupied"|"convex_hull"|"full_rect"`; `detect_topology(nominal_cell=None)`
+returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
 Bindings are thin: every method delegates to the Rust API above. The spec
 value-objects (`NetSettings`, `IngestSpec`, `ViewSpec`, `ViewSettings`) follow

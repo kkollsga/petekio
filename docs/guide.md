@@ -90,6 +90,22 @@ without topology fields, do not fit the detected lattice within tolerance, or fo
 a curvilinear mesh that no regular lattice describes — promote those with
 `to_structured_surface(...)`, which stores explicit per-node XY.
 
+When a surface export has lost its `column`/`row` fields, recover them rather than
+forcing the points onto a lattice:
+
+```python
+labelled, report = pts.detect_topology()
+if report.verified:
+    mesh = labelled.to_structured_surface()   # exact: no point moved
+else:
+    ...  # fault-cut: report.stalled_frontier locates the fault
+```
+
+`detect_topology` detects the grid azimuth and cell size, then walks the grid paths
+to *label* each point. It never moves one, and it will not walk across a fault: at a
+fault the neighbour relation is not determined by geometry, so it stalls and returns
+`verified = False` rather than silently welding the fault blocks together.
+
 The default `edge="full_rect"` is the four-corner rectangle of the inferred
 lattice: cheap, but it claims the whole bounding lattice even where nodes carry no
 data. Use `edge="occupied"` for the true data footprint — the outline of the

@@ -12,7 +12,10 @@ use crate::stats::Stats;
 use crate::structured_surface::StructuredMeshSurface;
 use crate::surface::Surface;
 use crate::{parse_grid_method, to_pyerr};
-use petekio::{GeometryEdge, PointSet as RsPointSet, PolygonSet as RsPolygonSet};
+use petekio::{
+    GeometryEdge, PointSet as RsPointSet, PolygonSet as RsPolygonSet,
+    TopologyReport as RsTopologyReport,
+};
 use pyo3::exceptions::{PyAttributeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -191,6 +194,31 @@ impl PointSet {
     /// Index of the areally-nearest point to `(x, y)`, or `None` if empty.
     fn nearest(&self, py: Python<'_>, x: f64, y: f64) -> PyResult<Option<usize>> {
         self.with(py, |p| Ok(p.nearest(x, y)))
+    }
+
+    /// Recover `column`/`row` topology from bare coordinates, without moving a point.
+    ///
+    /// Returns `(points, report)`. `points` carries the `column`/`row` attributes and
+    /// is **`None` unless the detection verified** — every distinct node labelled, no
+    /// index claimed twice, no coincident node pair with differing z. An unverified
+    /// report means the surface is fault-cut: represent it as a triangulated network,
+    /// not a structured mesh. `report.stalled_frontier` locates the fault.
+    #[pyo3(signature = (nominal_cell = None))]
+    fn detect_topology(
+        &self,
+        py: Python<'_>,
+        nominal_cell: Option<f64>,
+    ) -> PyResult<(Option<PointSet>, TopologyReport)> {
+        self.with(py, |p| {
+            // Neighbour search over the whole cloud is compute-heavy pure Rust.
+            let (labelled, report) = py
+                .detach(|| p.detect_topology(nominal_cell))
+                .map_err(to_pyerr)?;
+            Ok((
+                labelled.map(PointSet::owned),
+                TopologyReport { inner: report },
+            ))
+        })
     }
 
     /// Infer a regular grid geometry from the points. Raises `ValueError` when
@@ -803,5 +831,86 @@ impl PolygonSet {
         value: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         self.set_attr(py, name, value)
+    }
+}
+
+/// What `PointSet.detect_topology(...)` learned. `verified` is the gate: labels are
+/// returned only when it is true.
+#[pyclass(name = "TopologyReport")]
+pub struct TopologyReport {
+    pub(crate) inner: RsTopologyReport,
+}
+
+#[pymethods]
+impl TopologyReport {
+    /// Every distinct node labelled, no index claimed twice, no unresolvable coincidence.
+    #[getter]
+    fn verified(&self) -> bool {
+        self.inner.verified()
+    }
+
+    /// Detected cell size, from the modal nearest-neighbour step.
+    #[getter]
+    fn detected_cell(&self) -> f64 {
+        self.inner.detected_cell
+    }
+
+    /// Detected grid azimuth in degrees, modulo 90.
+    #[getter]
+    fn detected_azimuth_deg(&self) -> f64 {
+        self.inner.detected_azimuth_deg
+    }
+
+    /// Distinct nodes considered, after dropping exactly-coincident duplicates.
+    #[getter]
+    fn distinct_nodes(&self) -> usize {
+        self.inner.distinct_nodes
+    }
+
+    /// Nodes the walk reached and labelled.
+    #[getter]
+    fn assigned(&self) -> usize {
+        self.inner.assigned
+    }
+
+    /// Times two points claimed the same `(column, row)`.
+    #[getter]
+    fn conflicts(&self) -> usize {
+        self.inner.conflicts
+    }
+
+    /// Coincident points dropped: same XY *and* same z, so harmless.
+    #[getter]
+    fn coincident_dropped(&self) -> usize {
+        self.inner.coincident_dropped
+    }
+
+    /// Coincident points with differing z: two nodes at one place, unresolvable.
+    #[getter]
+    fn coincident_ambiguous(&self) -> usize {
+        self.inner.coincident_ambiguous
+    }
+
+    /// Adjacencies the walk could not resolve — the fault traces.
+    #[getter]
+    fn stalled_frontier(&self) -> usize {
+        self.inner.stalled_frontier
+    }
+
+    fn __repr__(&self) -> String {
+        let r = &self.inner;
+        format!(
+            "TopologyReport(verified={}, assigned={}/{}, cell={:.3}, azimuth={:.3}, \
+             conflicts={}, stalled_frontier={}, coincident_dropped={}, coincident_ambiguous={})",
+            r.verified(),
+            r.assigned,
+            r.distinct_nodes,
+            r.detected_cell,
+            r.detected_azimuth_deg,
+            r.conflicts,
+            r.stalled_frontier,
+            r.coincident_dropped,
+            r.coincident_ambiguous,
+        )
     }
 }

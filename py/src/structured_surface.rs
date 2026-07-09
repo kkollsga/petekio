@@ -2,7 +2,7 @@
 //! per-node XY coordinates.
 
 use crate::geometry::{BBox, GridGeometry};
-use crate::points::PolygonSet;
+use crate::points::{PointSet, PolygonSet};
 use crate::stats::Stats;
 use petekio::StructuredMeshSurface as RsStructuredMeshSurface;
 use pyo3::prelude::*;
@@ -82,6 +82,13 @@ impl StructuredMeshSurface {
     /// Z values as row-major nested lists: outer list is rows.
     fn values(&self) -> Vec<Vec<f64>> {
         matrix_rows(self.inner.values())
+    }
+
+    /// Explode the mesh back into a `PointSet`, one point per populated node, with
+    /// its `column`/`row` topology. Exact — coordinates are copied, not resampled —
+    /// so `points.to_structured_surface().to_points()` round-trips losslessly.
+    fn to_points(&self) -> PointSet {
+        PointSet::owned(self.inner.to_points())
     }
 
     /// Summary statistics over finite primary values.

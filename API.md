@@ -274,9 +274,31 @@ impl PointSet {
     pub fn infer_geometry(&self, tolerance: f64) -> Result<GridGeometry>;
     pub fn infer_geometry_with_edge(&self, tolerance: f64, edge: GeometryEdge) -> Result<(GridGeometry, PolygonSet)>;
     pub fn to_surface(&self, geom: GridGeometry, method: GridMethod) -> Result<Surface>;
+    pub fn to_structured_surface(&self, tolerance: f64, edge: GeometryEdge) -> Result<StructuredMeshSurface>;
     pub fn regrid_min_curvature(&self, prior: &Surface) -> Result<Surface>;  // warm-started incremental re-grid on prior's lattice
 }
 pub enum GridMethod { Nearest, InverseDistance, MinimumCurvature }
+
+/// A `(column, row)`-indexed surface carrying explicit per-node XY: the exact home for
+/// Petrel/EarthVision exports whose nodes are fault-shifted or curvilinear and therefore
+/// lie on no single `GridGeometry`. `nominal_geometry` is metadata, never the coordinates.
+pub struct StructuredMeshSurface { /* ncol, nrow, x, y, values, nominal_geometry, edge */ }
+impl StructuredMeshSurface {
+    pub fn new(x: Array2<f64>, y: Array2<f64>, values: Array2<f64>,
+               nominal_geometry: Option<GridGeometry>, edge: PolygonSet) -> Result<Self>;
+    pub fn ncol(&self) -> usize;
+    pub fn nrow(&self) -> usize;
+    pub fn x(&self) -> &Array2<f64>;
+    pub fn y(&self) -> &Array2<f64>;
+    pub fn values(&self) -> &Array2<f64>;
+    pub fn nominal_geometry(&self) -> Option<&GridGeometry>;  // metadata only
+    pub fn edge(&self) -> &PolygonSet;
+    pub fn node_xy(&self, i: usize, j: usize) -> Result<(f64, f64)>;
+    pub fn z(&self, i: usize, j: usize) -> Result<f64>;
+    pub fn to_points(&self) -> PointSet;   // exact inverse of PointSet::to_structured_surface
+    pub fn bbox(&self) -> BBox;
+    pub fn stats(&self) -> Stats;
+}
 
 pub struct PolygonSet { /* rings, optional Z */ }
 impl PolygonSet {
@@ -628,7 +650,9 @@ petekio.ViewSettings(serve=True, save=None)                  # HOW view() delive
 Python rules: `Stats` fields exposed as read-only attributes; operators (`+ - * /`)
 on `Surface`; `surface.attr["name"]` indexed access; `surface.edge` and
 `surface.geometry.edge` expose matching `PolygonSet` outlines; `PointSet`
-exposes `infer_geometry(tolerance=1e-3, edge="occupied"|"convex_hull"|"full_rect")`;
+exposes `infer_geometry(tolerance=1e-3, edge="full_rect")` and
+`to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
+`edge="occupied"|"convex_hull"|"full_rect"`;
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
 Bindings are thin: every method delegates to the Rust API above. The spec
 value-objects (`NetSettings`, `IngestSpec`, `ViewSpec`, `ViewSettings`) follow

@@ -13,13 +13,12 @@ use crate::foundation::{
     BBox, GeoError, GridGeometry, HasHistory, OperationHistory, Point3, Result, Stats,
 };
 use crate::io::PointData;
-use geo::{MultiPoint, Point, TriangulateDelaunayUnconstrained};
 use indexmap::IndexMap;
 use ndarray::Array2;
 use petektools::{grid as pt_grid, grid_min_curvature_seeded, GridMethod as PtGridMethod};
 use rstar::primitives::GeomWithData;
 use rstar::RTree;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// A gridding method for [`PointSet::to_surface`] — see
@@ -37,16 +36,13 @@ pub enum GridMethod {
 /// Edge polygon to attach when inferring a grid geometry from points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeometryEdge {
-    /// Concave outer footprint: topology-aware occupied-cell edge when
-    /// `column`/`row` exist, otherwise a triangulated point-cloud hull.
-    ConcaveHull,
-    /// Tight grid-oriented rectangle over the occupied point XY footprint.
+    /// Outline of the occupied lattice nodes — the true data footprint, which
+    /// follows interior holes and a non-rectangular outer boundary.
     Occupied,
-    /// Exterior boundary of the locally connected point triangulation.
-    Trimesh,
     /// Convex hull of the input point cloud.
     ConvexHull,
-    /// Full rectangular lattice footprint.
+    /// The full rectangular lattice footprint. Cheap and always four corners, but
+    /// it claims the whole bounding lattice even where no node carries data.
     FullRect,
 }
 
@@ -306,34 +302,46 @@ impl PointSet {
     /// Infer a regular grid geometry from point coordinates. The returned
     /// geometry spans the occupied lattice extents; use
     /// [`infer_geometry_with_edge`](Self::infer_geometry_with_edge) when the
-    /// caller also needs the modelling edge polygon.
+    /// caller also needs the modelling edge polygon — in particular
+    /// [`GeometryEdge::Occupied`] when the data footprint is not rectangular.
     pub fn infer_geometry(&self, tolerance: f64) -> Result<GridGeometry> {
-        self.infer_geometry_with_edge(tolerance, GeometryEdge::ConcaveHull)
+        self.infer_geometry_with_edge(tolerance, GeometryEdge::FullRect)
             .map(|(geom, _edge)| geom)
     }
 
     /// Infer a regular grid geometry and an edge polygon. This is intentionally
     /// strict: genuinely scattered points, ambiguous axes, duplicate lattice
     /// nodes, or coordinates that miss the inferred lattice by more than
-    /// `tolerance` return `GeoError::GeometryInference`.
+    /// `tolerance` return `GeoError::GeometryInference`. A curvilinear mesh — one
+    /// carrying `column`/`row` whose nodes do not sit on any regular lattice — is
+    /// likewise rejected; represent it with [`to_structured_surface`](Self::to_structured_surface).
     pub fn infer_geometry_with_edge(
         &self,
         tolerance: f64,
         edge: GeometryEdge,
     ) -> Result<(GridGeometry, PolygonSet)> {
-        let geom = match infer_grid_geometry_from_index_attrs(&self.coords, &self.attrs, tolerance)?
-        {
-            Some(geom) => geom,
-            None => infer_grid_geometry_from_coords(&self.coords, tolerance).map_err(|err| {
-                add_xy_only_inference_hint(err, &self.coords, &self.attrs, tolerance)
-            })?,
-        };
+        // The topology path resolves occupancy from `column`/`row`; the coordinate path
+        // hands back the lattice indices it derived. Either way the occupied footprint is
+        // already known — no point cloud needs triangulating to recover it.
+        let (geom, occupancy) =
+            match infer_grid_geometry_from_index_attrs(&self.coords, &self.attrs, tolerance)? {
+                Some(geom) => (geom, None),
+                None => {
+                    let (geom, occupancy) = infer_grid_geometry_from_coords(
+                        &self.coords,
+                        tolerance,
+                    )
+                    .map_err(|err| {
+                        add_xy_only_inference_hint(err, &self.coords, &self.attrs, tolerance)
+                    })?;
+                    (geom, Some(occupancy))
+                }
+            };
         let edge_polygon = match edge {
-            GeometryEdge::ConcaveHull => {
-                concave_edge_from_points(&self.coords, &self.attrs, Some(&geom))?
-            }
-            GeometryEdge::Occupied => occupied_rect_from_points(&self.coords, &geom)?,
-            GeometryEdge::Trimesh => triangulated_edge_from_points(&self.coords, Some(&geom))?,
+            GeometryEdge::Occupied => match &occupancy {
+                Some(occupancy) => occupied_edge_from_lattice_indices(&geom, occupancy)?,
+                None => topology_occupied_edge_from_points(&self.coords, &self.attrs)?,
+            },
             GeometryEdge::FullRect => PolygonSet::from_grid_geometry(&geom),
             GeometryEdge::ConvexHull => {
                 let pts = self
@@ -510,63 +518,6 @@ fn topology_indexed_points(
     Ok(indexed)
 }
 
-fn occupied_rect_from_points(coords: &[[f64; 3]], geom: &GridGeometry) -> Result<PolygonSet> {
-    let (s, c) = geom.rotation_deg.to_radians().sin_cos();
-    let mut min_u = f64::INFINITY;
-    let mut max_u = f64::NEG_INFINITY;
-    let mut min_v = f64::INFINITY;
-    let mut max_v = f64::NEG_INFINITY;
-    let mut any = false;
-
-    for p in coords {
-        if !p[0].is_finite() || !p[1].is_finite() {
-            continue;
-        }
-        let u = p[0] * c + p[1] * s;
-        let v = -p[0] * s + p[1] * c;
-        min_u = min_u.min(u);
-        max_u = max_u.max(u);
-        min_v = min_v.min(v);
-        max_v = max_v.max(v);
-        any = true;
-    }
-
-    if !any || min_u == max_u || min_v == max_v {
-        return Err(GeoError::GeometryInference(
-            "occupied rectangle requires a non-degenerate finite point footprint".into(),
-        ));
-    }
-
-    let to_xy = |u: f64, v: f64| [u * c - v * s, u * s + v * c, 0.0];
-    Ok(PolygonSet::from_rings(vec![vec![
-        to_xy(min_u, min_v),
-        to_xy(max_u, min_v),
-        to_xy(max_u, max_v),
-        to_xy(min_u, max_v),
-    ]]))
-}
-
-fn concave_edge_from_points(
-    coords: &[[f64; 3]],
-    attrs: &IndexMap<String, Vec<f64>>,
-    nominal_geometry: Option<&GridGeometry>,
-) -> Result<PolygonSet> {
-    topology_occupied_edge_from_points(coords, attrs)
-        .or_else(|_| triangulated_edge_from_points(coords, nominal_geometry))
-        .or_else(|_| {
-            let pts = coords
-                .iter()
-                .filter(|c| c[0].is_finite() && c[1].is_finite())
-                .map(|c| [c[0], c[1]])
-                .collect();
-            PolygonSet::convex_hull_xy(pts).ok_or_else(|| {
-                GeoError::GeometryInference(
-                    "concave hull edge requires at least three non-collinear points".into(),
-                )
-            })
-        })
-}
-
 fn topology_occupied_edge_from_points(
     coords: &[[f64; 3]],
     attrs: &IndexMap<String, Vec<f64>>,
@@ -574,7 +525,7 @@ fn topology_occupied_edge_from_points(
     let indexed = topology_indexed_points(coords, attrs)?;
     if indexed.len() < 4 {
         return Err(GeoError::GeometryInference(
-            "topology-aware concave hull requires at least four indexed points".into(),
+            "topology-aware occupied edge requires at least four indexed points".into(),
         ));
     }
 
@@ -584,7 +535,7 @@ fn topology_occupied_edge_from_points(
     let max_row = indexed.iter().map(|p| p.row).max().unwrap();
     if max_col <= min_col || max_row <= min_row {
         return Err(GeoError::GeometryInference(
-            "column/row attributes do not span a two-dimensional concave hull".into(),
+            "column/row attributes do not span a two-dimensional occupied edge".into(),
         ));
     }
 
@@ -614,222 +565,6 @@ fn topology_occupied_edge_from_points(
         .or_else(|_| convex_hull_from_node_arrays(&x, &y))
 }
 
-fn triangulated_edge_from_points(
-    coords: &[[f64; 3]],
-    nominal_geometry: Option<&GridGeometry>,
-) -> Result<PolygonSet> {
-    let mut pts: Vec<[f64; 2]> = coords
-        .iter()
-        .filter(|c| c[0].is_finite() && c[1].is_finite())
-        .map(|c| [c[0], c[1]])
-        .collect();
-    pts.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
-    pts.dedup_by(|a, b| a[0] == b[0] && a[1] == b[1]);
-    if pts.len() < 3 {
-        return Err(GeoError::GeometryInference(
-            "triangulated occupied edge requires at least three unique points".into(),
-        ));
-    }
-
-    let mp = MultiPoint::new(pts.iter().map(|p| Point::new(p[0], p[1])).collect());
-    let triangles = mp
-        .unconstrained_triangulation()
-        .map_err(|err| GeoError::GeometryInference(format!("point triangulation failed: {err}")))?;
-    if triangles.is_empty() {
-        return Err(GeoError::GeometryInference(
-            "point triangulation produced no triangles".into(),
-        ));
-    }
-
-    let cutoff = triangulated_edge_cutoff(&triangles, nominal_geometry)?;
-    let mut coords_by_key: HashMap<PointKey, [f64; 2]> = HashMap::new();
-    let mut edge_counts: HashMap<EdgeKey, usize> = HashMap::new();
-
-    for tri in triangles {
-        let vertices = tri.to_array();
-        let xy = [
-            [vertices[0].x, vertices[0].y],
-            [vertices[1].x, vertices[1].y],
-            [vertices[2].x, vertices[2].y],
-        ];
-        if xy.iter().any(|p| !p[0].is_finite() || !p[1].is_finite()) {
-            continue;
-        }
-        let lengths = [
-            dist2d(xy[0], xy[1]),
-            dist2d(xy[1], xy[2]),
-            dist2d(xy[2], xy[0]),
-        ];
-        if lengths.iter().any(|d| *d > cutoff) {
-            continue;
-        }
-
-        let keys = [
-            PointKey::new(xy[0]),
-            PointKey::new(xy[1]),
-            PointKey::new(xy[2]),
-        ];
-        for (key, point) in keys.into_iter().zip(xy) {
-            coords_by_key.entry(key).or_insert(point);
-        }
-        for (a, b) in [(keys[0], keys[1]), (keys[1], keys[2]), (keys[2], keys[0])] {
-            *edge_counts.entry(EdgeKey::new(a, b)).or_insert(0) += 1;
-        }
-    }
-
-    let boundary_edges: Vec<EdgeKey> = edge_counts
-        .into_iter()
-        .filter_map(|(edge, count)| (count == 1).then_some(edge))
-        .collect();
-    let rings = boundary_rings_from_edges(&boundary_edges, &coords_by_key)?;
-    if rings.is_empty() {
-        return Err(GeoError::GeometryInference(
-            "triangulated occupied edge has no closed boundary".into(),
-        ));
-    }
-    Ok(PolygonSet::from_rings(rings))
-}
-
-fn triangulated_edge_cutoff(
-    triangles: &[geo::Triangle<f64>],
-    nominal_geometry: Option<&GridGeometry>,
-) -> Result<f64> {
-    let mut lengths = Vec::with_capacity(triangles.len() * 3);
-    for tri in triangles {
-        let vertices = tri.to_array();
-        let xy = [
-            [vertices[0].x, vertices[0].y],
-            [vertices[1].x, vertices[1].y],
-            [vertices[2].x, vertices[2].y],
-        ];
-        for (a, b) in [(xy[0], xy[1]), (xy[1], xy[2]), (xy[2], xy[0])] {
-            let d = dist2d(a, b);
-            if d.is_finite() && d > 0.0 {
-                lengths.push(d);
-            }
-        }
-    }
-    if lengths.is_empty() {
-        return Err(GeoError::GeometryInference(
-            "point triangulation produced no finite edge lengths".into(),
-        ));
-    }
-    lengths.sort_by(f64::total_cmp);
-    let p75 = lengths[((lengths.len() - 1) * 3) / 4];
-    let data_cutoff = p75 * 1.5;
-    let geom_cutoff = nominal_geometry
-        .map(|g| g.xinc.hypot(g.yinc) * 1.25)
-        .filter(|d| d.is_finite() && *d > 0.0);
-    Ok(geom_cutoff.map_or(data_cutoff, |d| d.max(data_cutoff)))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct PointKey(u64, u64);
-
-impl PointKey {
-    fn new(p: [f64; 2]) -> PointKey {
-        PointKey(normalized_bits(p[0]), normalized_bits(p[1]))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct EdgeKey(PointKey, PointKey);
-
-impl EdgeKey {
-    fn new(a: PointKey, b: PointKey) -> EdgeKey {
-        if point_key_le(a, b) {
-            EdgeKey(a, b)
-        } else {
-            EdgeKey(b, a)
-        }
-    }
-}
-
-fn normalized_bits(v: f64) -> u64 {
-    if v == 0.0 {
-        0.0f64.to_bits()
-    } else {
-        v.to_bits()
-    }
-}
-
-fn point_key_le(a: PointKey, b: PointKey) -> bool {
-    a.0 < b.0 || (a.0 == b.0 && a.1 <= b.1)
-}
-
-fn dist2d(a: [f64; 2], b: [f64; 2]) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
-}
-
-fn boundary_rings_from_edges(
-    edges: &[EdgeKey],
-    coords_by_key: &HashMap<PointKey, [f64; 2]>,
-) -> Result<Vec<Vec<[f64; 3]>>> {
-    let mut adjacency: HashMap<PointKey, Vec<PointKey>> = HashMap::new();
-    let mut unused: HashSet<EdgeKey> = HashSet::new();
-    for &EdgeKey(a, b) in edges {
-        adjacency.entry(a).or_default().push(b);
-        adjacency.entry(b).or_default().push(a);
-        unused.insert(EdgeKey::new(a, b));
-    }
-
-    let mut rings = Vec::new();
-    while let Some(edge) = unused.iter().next().copied() {
-        unused.remove(&edge);
-        let EdgeKey(start, mut current) = edge;
-        let mut previous = start;
-        let mut ring_keys = vec![start];
-
-        while current != start {
-            ring_keys.push(current);
-            let next = adjacency
-                .get(&current)
-                .and_then(|neighbors| {
-                    neighbors
-                        .iter()
-                        .copied()
-                        .find(|candidate| {
-                            *candidate != previous
-                                && unused.contains(&EdgeKey::new(current, *candidate))
-                        })
-                        .or_else(|| {
-                            neighbors.iter().copied().find(|candidate| {
-                                unused.contains(&EdgeKey::new(current, *candidate))
-                            })
-                        })
-                })
-                .ok_or_else(|| {
-                    GeoError::GeometryInference(
-                        "triangulated occupied edge boundary is not closed".into(),
-                    )
-                })?;
-            unused.remove(&EdgeKey::new(current, next));
-            previous = current;
-            current = next;
-
-            if ring_keys.len() > edges.len() + 1 {
-                return Err(GeoError::GeometryInference(
-                    "triangulated occupied edge tracing did not close".into(),
-                ));
-            }
-        }
-
-        if ring_keys.len() >= 3 {
-            let mut ring = Vec::with_capacity(ring_keys.len());
-            for key in ring_keys {
-                let xy = coords_by_key.get(&key).ok_or_else(|| {
-                    GeoError::GeometryInference(
-                        "triangulated occupied edge lost boundary coordinates".into(),
-                    )
-                })?;
-                ring.push([xy[0], xy[1], 0.0]);
-            }
-            rings.push(ring);
-        }
-    }
-    Ok(rings)
-}
-
 fn structured_edge(
     x: &Array2<f64>,
     y: &Array2<f64>,
@@ -838,16 +573,14 @@ fn structured_edge(
     edge: GeometryEdge,
 ) -> Result<PolygonSet> {
     match edge {
-        GeometryEdge::ConcaveHull => occupied_edge_from_node_arrays(x, y, values)
-            .or_else(|_| triangulated_edge_from_node_arrays(x, y, values, nominal_geometry))
-            .or_else(|_| convex_hull_from_node_arrays(x, y)),
         GeometryEdge::ConvexHull => convex_hull_from_node_arrays(x, y),
-        GeometryEdge::Trimesh => triangulated_edge_from_node_arrays(x, y, values, nominal_geometry),
         GeometryEdge::FullRect => nominal_geometry
             .map(PolygonSet::from_grid_geometry)
             .ok_or_else(|| {
                 GeoError::GeometryInference(
-                    "full_rect edge requires a nominal regular geometry".into(),
+                    "full_rect edge requires a nominal regular geometry; this mesh is \
+                     curvilinear — use the occupied edge"
+                        .into(),
                 )
             }),
         GeometryEdge::Occupied => occupied_edge_from_node_arrays(x, y, values)
@@ -868,27 +601,6 @@ fn convex_hull_from_node_arrays(x: &Array2<f64>, y: &Array2<f64>) -> Result<Poly
             "structured surface edge requires at least three non-collinear nodes".into(),
         )
     })
-}
-
-fn triangulated_edge_from_node_arrays(
-    x: &Array2<f64>,
-    y: &Array2<f64>,
-    values: Option<&Array2<f64>>,
-    nominal_geometry: Option<&GridGeometry>,
-) -> Result<PolygonSet> {
-    let (ncol, nrow) = x.dim();
-    let mut coords = Vec::new();
-    for j in 0..nrow {
-        for i in 0..ncol {
-            let xi = x[[i, j]];
-            let yi = y[[i, j]];
-            let zi = values.map(|z| z[[i, j]]).unwrap_or(0.0);
-            if xi.is_finite() && yi.is_finite() && zi.is_finite() {
-                coords.push([xi, yi, zi]);
-            }
-        }
-    }
-    triangulated_edge_from_points(&coords, nominal_geometry)
 }
 
 fn perimeter_edge_from_node_arrays(x: &Array2<f64>, y: &Array2<f64>) -> Result<PolygonSet> {
@@ -1089,7 +801,12 @@ impl HasHistory for PointSet {
     }
 }
 
-fn infer_grid_geometry_from_coords(coords: &[[f64; 3]], tolerance: f64) -> Result<GridGeometry> {
+/// Infer a regular lattice from bare coordinates, returning it alongside the lattice
+/// index of every finite point — the occupancy the edge builders need.
+fn infer_grid_geometry_from_coords(
+    coords: &[[f64; 3]],
+    tolerance: f64,
+) -> Result<(GridGeometry, Vec<(usize, usize)>)> {
     if !tolerance.is_finite() || tolerance <= 0.0 {
         return Err(GeoError::GeometryInference(
             "tolerance must be a finite positive number".into(),
@@ -1186,7 +903,29 @@ fn infer_grid_geometry_from_coords(coords: &[[f64; 3]], tolerance: f64) -> Resul
             "maximum lattice residual {max_residual:.6} exceeds tolerance {tolerance:.6}"
         )));
     }
-    Ok(geom)
+    let occupancy = ij
+        .into_iter()
+        .map(|(i, j)| (i as usize, j as usize))
+        .collect();
+    Ok((geom, occupancy))
+}
+
+/// The occupied-node footprint of a lattice, from the node indices inference already
+/// resolved. Feeds the same edge builder the topology path uses, so a point set without
+/// `column`/`row` gets an identical footprint without triangulating the cloud.
+fn occupied_edge_from_lattice_indices(
+    geom: &GridGeometry,
+    occupancy: &[(usize, usize)],
+) -> Result<PolygonSet> {
+    let mut x = Array2::from_elem((geom.ncol, geom.nrow), f64::NAN);
+    let mut y = Array2::from_elem((geom.ncol, geom.nrow), f64::NAN);
+    for &(i, j) in occupancy {
+        let (nx, ny) = geom.node_xy(i, j);
+        x[[i, j]] = nx;
+        y[[i, j]] = ny;
+    }
+    occupied_edge_from_node_arrays(&x, &y, None)
+        .or_else(|_| perimeter_edge_from_node_arrays(&x, &y))
 }
 
 fn infer_grid_geometry_from_index_attrs(
@@ -1294,7 +1033,7 @@ fn infer_grid_geometry_from_index_attrs(
 
     let mut origins_x = Vec::with_capacity(indexed.len());
     let mut origins_y = Vec::with_capacity(indexed.len());
-    for (col, row, x, y) in indexed {
+    for (col, row, x, y) in &indexed {
         let i = (col - min_col) as f64;
         let j = (row - min_row) as f64;
         origins_x.push(x - i * xinc * e1[0] - j * yinc * ysign * perp[0]);
@@ -1305,7 +1044,7 @@ fn infer_grid_geometry_from_index_attrs(
     let yori = median_unsorted(&origins_y)
         .ok_or_else(|| GeoError::GeometryInference("could not infer indexed grid origin".into()))?;
 
-    Ok(Some(GridGeometry {
+    let geom = GridGeometry {
         xori,
         yori,
         xinc,
@@ -1314,7 +1053,38 @@ fn infer_grid_geometry_from_index_attrs(
         nrow: (max_row - min_row + 1) as usize,
         rotation_deg: e1[1].atan2(e1[0]).to_degrees(),
         yflip,
-    }))
+    };
+
+    // Spacing, rotation and origin above are *medians* over the indexed nodes, so a
+    // curvilinear or locally warped mesh still yields a plausible-looking regular
+    // lattice that no node actually sits on. Confirm the lattice really describes the
+    // mesh before handing it back, or callers get a silently wrong geometry.
+    //
+    // The test is the *median* node residual, not the max: isolated nodes that miss
+    // the lattice are an expected export artefact (Petrel collapses or clips single
+    // nodes, and topology is meant to win over those — see
+    // `infer_geometry_uses_explicit_column_row_topology`). A mesh whose nodes are
+    // mostly off-lattice is not a regular grid at all, and no GridGeometry can
+    // describe it.
+    let residuals: Vec<f64> = indexed
+        .iter()
+        .map(|(col, row, x, y)| {
+            let (nx, ny) = geom.node_xy((col - min_col) as usize, (row - min_row) as usize);
+            (x - nx).hypot(y - ny)
+        })
+        .collect();
+    let median_residual = median_unsorted(&residuals).unwrap_or(0.0);
+    if median_residual > tolerance {
+        let worst = residuals.iter().copied().fold(0.0_f64, f64::max);
+        return Err(GeoError::GeometryInference(format!(
+            "column/row nodes miss the inferred regular lattice by a median of \
+             {median_residual:.6} (worst {worst:.6}), above tolerance {tolerance:.6}; the mesh \
+             is curvilinear rather than a regular grid — use to_structured_surface, which \
+             carries explicit per-node XY"
+        )));
+    }
+
+    Ok(Some(geom))
 }
 
 fn find_attr<'a>(attrs: &'a IndexMap<String, Vec<f64>>, names: &[&str]) -> Option<&'a [f64]> {
@@ -1369,7 +1139,11 @@ fn add_xy_only_inference_hint(
         return GeoError::GeometryInference(message);
     }
     GeoError::GeometryInference(format!(
-        "{message}; duplicate XY nodes were found and no column/row topology attributes are available. Petrel surface point exports can lose grid topology in plain IRAP-points form; use an EarthVisionGrid export or a point file carrying column/row when exact geometry inference is required"
+        "{message}; duplicate XY nodes were found and no column/row topology attributes are \
+         available. Petrel surface point exports can lose grid topology in plain IRAP-points \
+         form; an EarthVisionGrid export (or a point file carrying column/row) restores it. Note \
+         that topology alone does not make a mesh regular — if the recovered mesh is curvilinear \
+         it has no GridGeometry at all, and to_structured_surface is the exact representation"
     ))
 }
 
@@ -1660,7 +1434,55 @@ mod tests {
     }
 
     #[test]
-    fn concave_hull_edge_uses_topology_occupied_cells_by_default() {
+    fn infer_geometry_rejects_curvilinear_mesh_carrying_column_row() {
+        // A curvilinear mesh: regular column/row topology, but the node spacing swells
+        // across the grid so no single (xinc, yinc, rotation) lattice fits it. The
+        // median-delta estimator will still produce a plausible GridGeometry; inference
+        // must refuse it rather than hand back a lattice the nodes do not sit on.
+        let (ncol, nrow) = (12usize, 12usize);
+        let mut coords = Vec::new();
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        for j in 0..nrow {
+            for i in 0..ncol {
+                let swell = 1.0 + 0.06 * i as f64;
+                let x = 1000.0 + 50.0 * i as f64 * swell;
+                let y = 2000.0 + 50.0 * j as f64 * (1.0 + 0.04 * j as f64);
+                coords.push([x, y, 10.0]);
+                columns.push((i + 1) as f64);
+                rows.push((j + 1) as f64);
+            }
+        }
+        let mut attrs = IndexMap::new();
+        attrs.insert("column".to_string(), columns);
+        attrs.insert("row".to_string(), rows);
+        let p = PointSet::from_parts(coords, attrs);
+
+        let msg = match p.infer_geometry_with_edge(1e-3, GeometryEdge::FullRect) {
+            Ok(_) => panic!("a curvilinear mesh has no regular GridGeometry"),
+            Err(err) => err.to_string(),
+        };
+        assert!(msg.contains("curvilinear"), "unexpected message: {msg}");
+        assert!(
+            msg.contains("to_structured_surface"),
+            "the error must point at the exact representation: {msg}"
+        );
+
+        // ...and the structured path, which stores explicit per-node XY, still works:
+        // a curvilinear mesh simply has no nominal regular geometry.
+        let mesh = p
+            .to_structured_surface(1e-3, GeometryEdge::Occupied)
+            .expect("structured surface represents a curvilinear mesh exactly");
+        assert_eq!(mesh.ncol(), ncol);
+        assert_eq!(mesh.nrow(), nrow);
+        assert!(
+            mesh.nominal_geometry().is_none(),
+            "a curvilinear mesh must not advertise a regular nominal geometry"
+        );
+    }
+
+    #[test]
+    fn occupied_edge_follows_topology_cells() {
         let mut coords = Vec::new();
         let mut columns = Vec::new();
         let mut rows = Vec::new();
@@ -1679,11 +1501,8 @@ mod tests {
         attrs.insert("row".to_string(), rows);
         let p = PointSet::from_parts(coords, attrs);
 
-        let (_, default_edge) = p
-            .infer_geometry_with_edge(1e-6, GeometryEdge::ConcaveHull)
-            .unwrap();
-        let (_, trimesh) = p
-            .infer_geometry_with_edge(1e-6, GeometryEdge::Trimesh)
+        let (_, occupied) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::Occupied)
             .unwrap();
         let (_, hull) = p
             .infer_geometry_with_edge(1e-6, GeometryEdge::ConvexHull)
@@ -1692,52 +1511,58 @@ mod tests {
             .infer_geometry_with_edge(1e-6, GeometryEdge::FullRect)
             .unwrap();
 
-        approx::assert_relative_eq!(default_edge.area(), 5.0, epsilon = 1e-12);
-        approx::assert_relative_eq!(trimesh.area(), 5.5, epsilon = 1e-12);
-        assert!(trimesh.area() > default_edge.area());
-        assert!(hull.area() > trimesh.area());
+        // The L-shaped footprint: `occupied` tracks it, the rectangle over-claims.
+        approx::assert_relative_eq!(occupied.area(), 5.0, epsilon = 1e-12);
         approx::assert_relative_eq!(full_rect.area(), 9.0, epsilon = 1e-12);
+        assert!(hull.area() > occupied.area());
+        assert!(full_rect.area() > hull.area());
     }
 
     #[test]
-    fn occupied_edge_is_tight_grid_oriented_rectangle() {
+    fn occupied_and_full_rect_agree_on_a_fully_populated_lattice() {
+        // When every node of the bounding lattice carries data there is no footprint to
+        // track, and the two edges must coincide. They diverge only where nodes are
+        // missing — which is precisely the case `full_rect` cannot express.
         let source = GridGeometry {
-            xori: 0.0,
-            yori: 0.0,
+            xori: 100.0,
+            yori: 200.0,
             xinc: 10.0,
-            yinc: 10.0,
-            ncol: 2,
-            nrow: 2,
-            rotation_deg: 0.0,
+            yinc: 25.0,
+            ncol: 5,
+            nrow: 4,
+            rotation_deg: 20.0,
             yflip: false,
         };
-        let coords = vec![
-            [0.0, 0.0, 100.0],
-            [10.0, 0.0, 101.0],
-            [0.0, 10.0, 102.0],
-            [12.0, 10.0, 103.0],
-        ];
-        let mut attrs = IndexMap::new();
-        attrs.insert("column".to_string(), vec![1.0, 2.0, 1.0, 2.0]);
-        attrs.insert("row".to_string(), vec![1.0, 1.0, 2.0, 2.0]);
-        let p = PointSet::from_parts(coords, attrs);
+        let mut coords = Vec::new();
+        for j in 0..source.nrow {
+            for i in 0..source.ncol {
+                let (x, y) = source.node_xy(i, j);
+                coords.push([x, y, 1.0]);
+            }
+        }
+        let p = PointSet::from_coords(coords);
 
         let (geom, occupied) = p
-            .infer_geometry_with_edge(1e-6, GeometryEdge::Occupied)
+            .infer_geometry_with_edge(1e-9, GeometryEdge::Occupied)
             .unwrap();
         let (_, full_rect) = p
-            .infer_geometry_with_edge(1e-6, GeometryEdge::FullRect)
+            .infer_geometry_with_edge(1e-9, GeometryEdge::FullRect)
             .unwrap();
 
         assert_eq!(geom.ncol, source.ncol);
         assert_eq!(geom.nrow, source.nrow);
-        approx::assert_relative_eq!(occupied.area(), 120.0, epsilon = 1e-12);
-        approx::assert_relative_eq!(occupied.bbox().xmax, 12.0, epsilon = 1e-12);
-        assert!(occupied.area() > full_rect.area());
+        let expected = (4.0 * 10.0) * (3.0 * 25.0);
+        approx::assert_relative_eq!(full_rect.area(), expected, epsilon = 1e-9);
+        approx::assert_relative_eq!(occupied.area(), expected, epsilon = 1e-9);
     }
 
     #[test]
-    fn trimesh_edge_works_without_topology() {
+    fn occupied_edge_without_topology_matches_the_topology_footprint() {
+        // Same L-shaped lattice as `occupied_edge_follows_topology_cells`, but with no
+        // column/row attributes. The coordinate path derives each point's lattice index
+        // anyway, so both paths must agree on the footprint — the occupancy is the same
+        // fact, however it arrives. (Before unification this path triangulated the cloud
+        // and answered 5.5.)
         let mut coords = Vec::new();
         for j in 0..4 {
             for i in 0..4 {
@@ -1748,18 +1573,14 @@ mod tests {
         }
         let p = PointSet::from_coords(coords);
 
-        let (_, default_edge) = p
-            .infer_geometry_with_edge(1e-6, GeometryEdge::ConcaveHull)
-            .unwrap();
-        let (_, trimesh) = p
-            .infer_geometry_with_edge(1e-6, GeometryEdge::Trimesh)
+        let (_, occupied) = p
+            .infer_geometry_with_edge(1e-6, GeometryEdge::Occupied)
             .unwrap();
         let (_, full_rect) = p
             .infer_geometry_with_edge(1e-6, GeometryEdge::FullRect)
             .unwrap();
 
-        approx::assert_relative_eq!(default_edge.area(), 5.5, epsilon = 1e-12);
-        approx::assert_relative_eq!(trimesh.area(), 5.5, epsilon = 1e-12);
+        approx::assert_relative_eq!(occupied.area(), 5.0, epsilon = 1e-12);
         approx::assert_relative_eq!(full_rect.area(), 9.0, epsilon = 1e-12);
     }
 

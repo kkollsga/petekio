@@ -5,10 +5,11 @@
 //! `(column, row)` topology, but it does **not** claim that all nodes lie on one
 //! global affine `GridGeometry`. Regular gridded surfaces stay in [`Surface`].
 
-use crate::core::PolygonSet;
+use crate::core::{PointSet, PolygonSet};
 use crate::foundation::{
     BBox, GeoError, GridGeometry, HasHistory, OperationHistory, Result, Stats,
 };
+use indexmap::IndexMap;
 use ndarray::Array2;
 
 /// A logically regular surface with explicit per-node coordinates.
@@ -109,6 +110,38 @@ impl StructuredMeshSurface {
         Ok(self.values[[i, j]])
     }
 
+    /// Explode the mesh back into a [`PointSet`] — one point per populated node,
+    /// carrying its `column`/`row` topology.
+    ///
+    /// Exact by construction: node XY/Z are **copied**, never resampled, so this is
+    /// the inverse of [`PointSet::to_structured_surface`](crate::PointSet::to_structured_surface).
+    /// Node order is row-major (`column` varies fastest) and the emitted indices are
+    /// renumbered 1-based, so a round trip preserves every coordinate and the
+    /// topology, though not an arbitrary input ordering or index origin.
+    pub fn to_points(&self) -> PointSet {
+        let mut coords = Vec::new();
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        for j in 0..self.nrow {
+            for i in 0..self.ncol {
+                let (x, y) = (self.x[[i, j]], self.y[[i, j]]);
+                if !x.is_finite() || !y.is_finite() {
+                    continue;
+                }
+                coords.push([x, y, self.values[[i, j]]]);
+                columns.push((i + 1) as f64);
+                rows.push((j + 1) as f64);
+            }
+        }
+        let mut attrs = IndexMap::new();
+        attrs.insert("column".to_string(), columns);
+        attrs.insert("row".to_string(), rows);
+        let mut out = PointSet::from_parts(coords, attrs);
+        *out.operation_history_mut() = self.history.clone();
+        out.record_history("structured_surface.to_points()");
+        out
+    }
+
     /// Summary statistics over finite primary values.
     pub fn stats(&self) -> Stats {
         Stats::of(&self.values.iter().copied().collect::<Vec<_>>())
@@ -195,5 +228,65 @@ mod tests {
         assert_eq!(s.node_xy(1, 1).unwrap(), (12.0, 10.0));
         assert_eq!(s.z(1, 1).unwrap(), 130.0);
         assert_eq!(s.stats().count, 4);
+    }
+
+    #[test]
+    fn points_to_mesh_to_points_is_bit_for_bit_exact() {
+        // A curvilinear, partially populated mesh with a locally shifted node — the
+        // shape petekIO must carry without moving a single coordinate.
+        let (ncol, nrow) = (7usize, 5usize);
+        let mut coords = Vec::new();
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        for j in 0..nrow {
+            for i in 0..ncol {
+                if i >= 5 && j >= 3 {
+                    continue; // an unpopulated corner: the footprint is not rectangular
+                }
+                let swell = 1.0 + 0.07 * i as f64;
+                let mut x = 1000.0 + 50.0 * i as f64 * swell;
+                let mut y = 2000.0 + 50.0 * j as f64 * (1.0 + 0.05 * j as f64);
+                if i == 2 && j == 2 {
+                    x += 9.75; // a fault-shifted node
+                    y -= 4.5;
+                }
+                coords.push([x, y, -1800.0 - (i * j) as f64]);
+                columns.push((i + 1) as f64);
+                rows.push((j + 1) as f64);
+            }
+        }
+        let mut attrs = IndexMap::new();
+        attrs.insert("column".to_string(), columns);
+        attrs.insert("row".to_string(), rows);
+        let original = PointSet::from_parts(coords, attrs);
+
+        let mesh = original
+            .to_structured_surface(1e-3, crate::GeometryEdge::Occupied)
+            .expect("a curvilinear mesh is exactly representable");
+        let back = mesh.to_points();
+
+        assert_eq!(back.len(), original.len());
+        // Key both sides by (column, row) and demand exact f64 equality — no epsilon.
+        let key = |p: &PointSet| {
+            let c = p.attr("column").unwrap().to_vec();
+            let r = p.attr("row").unwrap().to_vec();
+            let mut v: Vec<((u64, u64), [f64; 3])> = p
+                .coords()
+                .iter()
+                .enumerate()
+                .map(|(k, xyz)| ((c[k] as u64, r[k] as u64), *xyz))
+                .collect();
+            v.sort_by_key(|(k, _)| *k);
+            v
+        };
+        let (a, b) = (key(&original), key(&back));
+        assert_eq!(a.len(), b.len());
+        for ((ka, xa), (kb, xb)) in a.iter().zip(b.iter()) {
+            assert_eq!(ka, kb, "topology must survive the round trip");
+            assert_eq!(
+                xa, xb,
+                "coordinates must be bit-for-bit identical at {ka:?}"
+            );
+        }
     }
 }

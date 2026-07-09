@@ -287,53 +287,7 @@ def test_earthvision_pointset_infer_geometry_uses_column_row(tmp_path):
     assert math.isclose(geom.yinc, 10.0, abs_tol=1e-9)
 
 
-def test_pointset_concave_hull_edge_uses_topology_by_default():
-    x, y, z, col, row = [], [], [], [], []
-    for j in range(4):
-        for i in range(4):
-            if i <= 1 or j <= 1:
-                x.append(float(i))
-                y.append(float(j))
-                z.append(100.0 + i + j)
-                col.append(i + 1)
-                row.append(j + 1)
-
-    p = petekio.PointSet.from_xyz(x, y, z)
-    p.column = col
-    p.row = row
-
-    default = p.infer_geometry(tolerance=1e-6)
-    concave = p.infer_geometry(tolerance=1e-6, edge="concave_hull")
-    trimesh = p.infer_geometry(tolerance=1e-6, edge="trimesh")
-    hull = p.infer_geometry(tolerance=1e-6, edge="convex_hull")
-    full_rect = p.infer_geometry(tolerance=1e-6, edge="full_rect")
-
-    assert math.isclose(default.edge.area(), 5.0, abs_tol=1e-12)
-    assert math.isclose(concave.edge.area(), default.edge.area(), abs_tol=1e-12)
-    assert math.isclose(trimesh.edge.area(), 5.5, abs_tol=1e-12)
-    assert trimesh.edge.area() > default.edge.area()
-    assert hull.edge.area() > trimesh.edge.area()
-    assert math.isclose(full_rect.edge.area(), 9.0, abs_tol=1e-12)
-
-
-def test_pointset_occupied_edge_is_tight_grid_oriented_rectangle():
-    p = petekio.PointSet.from_xyz(
-        [0.0, 10.0, 0.0, 12.0],
-        [0.0, 0.0, 10.0, 10.0],
-        [100.0, 101.0, 102.0, 103.0],
-    )
-    p.column = [1, 2, 1, 2]
-    p.row = [1, 1, 2, 2]
-
-    occupied = p.infer_geometry(tolerance=1e-6, edge="occupied")
-    full_rect = p.infer_geometry(tolerance=1e-6, edge="full_rect")
-
-    assert math.isclose(occupied.edge.area(), 120.0, abs_tol=1e-12)
-    assert math.isclose(occupied.edge.bbox().xmax, 12.0, abs_tol=1e-12)
-    assert occupied.edge.area() > full_rect.edge.area()
-
-
-def test_pointset_trimesh_edge_works_without_topology():
+def _l_shaped_lattice():
     x, y, z = [], [], []
     for j in range(4):
         for i in range(4):
@@ -341,16 +295,126 @@ def test_pointset_trimesh_edge_works_without_topology():
                 x.append(float(i))
                 y.append(float(j))
                 z.append(100.0 + i + j)
+    return x, y, z
+
+
+def test_pointset_occupied_edge_follows_topology_cells():
+    x, y, z = _l_shaped_lattice()
+    col = [int(v) + 1 for v in x]
+    row = [int(v) + 1 for v in y]
 
     p = petekio.PointSet.from_xyz(x, y, z)
+    p.column = col
+    p.row = row
 
+    occupied = p.infer_geometry(tolerance=1e-6, edge="occupied")
+    hull = p.infer_geometry(tolerance=1e-6, edge="convex_hull")
+    full_rect = p.infer_geometry(tolerance=1e-6, edge="full_rect")
     default = p.infer_geometry(tolerance=1e-6)
-    trimesh = p.infer_geometry(tolerance=1e-6, edge="tin")
+
+    # `occupied` tracks the L; the bounding rectangle over-claims it.
+    assert math.isclose(occupied.edge.area(), 5.0, abs_tol=1e-12)
+    assert math.isclose(full_rect.edge.area(), 9.0, abs_tol=1e-12)
+    assert hull.edge.area() > occupied.edge.area()
+    # full_rect is the default.
+    assert math.isclose(default.edge.area(), full_rect.edge.area(), abs_tol=1e-12)
+
+
+def test_pointset_occupied_edge_without_topology_matches_topology_footprint():
+    # The coordinate path derives each point's lattice index anyway, so it must agree
+    # with the topology path on the footprint. (It used to triangulate and answer 5.5.)
+    x, y, z = _l_shaped_lattice()
+    p = petekio.PointSet.from_xyz(x, y, z)
+
+    occupied = p.infer_geometry(tolerance=1e-6, edge="occupied")
     full_rect = p.infer_geometry(tolerance=1e-6, edge="full_rect")
 
-    assert math.isclose(default.edge.area(), 5.5, abs_tol=1e-12)
-    assert math.isclose(trimesh.edge.area(), 5.5, abs_tol=1e-12)
+    assert math.isclose(occupied.edge.area(), 5.0, abs_tol=1e-12)
     assert math.isclose(full_rect.edge.area(), 9.0, abs_tol=1e-12)
+
+
+def test_pointset_occupied_and_full_rect_agree_on_full_lattice():
+    x, y, z = [], [], []
+    for j in range(4):
+        for i in range(5):
+            x.append(i * 10.0)
+            y.append(j * 25.0)
+            z.append(1.0)
+    p = petekio.PointSet.from_xyz(x, y, z)
+
+    occupied = p.infer_geometry(tolerance=1e-9, edge="occupied")
+    full_rect = p.infer_geometry(tolerance=1e-9, edge="full_rect")
+
+    expected = (4 * 10.0) * (3 * 25.0)
+    assert math.isclose(occupied.edge.area(), expected, rel_tol=1e-9)
+    assert math.isclose(full_rect.edge.area(), expected, rel_tol=1e-9)
+
+
+@pytest.mark.parametrize("removed", ["concave_hull", "alpha", "outer", "trimesh", "tin"])
+def test_pointset_removed_geometry_edges_raise(removed):
+    x, y, z = _l_shaped_lattice()
+    p = petekio.PointSet.from_xyz(x, y, z)
+    with pytest.raises(ValueError, match="has been removed"):
+        p.infer_geometry(tolerance=1e-6, edge=removed)
+
+
+def test_structured_surface_round_trips_points_exactly():
+    # A curvilinear, partially populated mesh with a fault-shifted node: the exact
+    # shape a Petrel surface export takes. Nothing may move.
+    x, y, z, col, row = [], [], [], [], []
+    for j in range(5):
+        for i in range(7):
+            if i >= 5 and j >= 3:
+                continue
+            px = 1000.0 + 50.0 * i * (1.0 + 0.07 * i)
+            py = 2000.0 + 50.0 * j * (1.0 + 0.05 * j)
+            if i == 2 and j == 2:
+                px += 9.75
+                py -= 4.5
+            x.append(px)
+            y.append(py)
+            z.append(-1800.0 - i * j)
+            col.append(i + 1)
+            row.append(j + 1)
+    p = petekio.PointSet.from_xyz(x, y, z)
+    p.column = col
+    p.row = row
+
+    back = p.to_structured_surface().to_points()
+
+    assert len(back) == len(p)
+    before = sorted(zip(col, row, x, y, z))
+    bx = back.xyz()
+    after = sorted(
+        (int(c), int(r), q[0], q[1], q[2])
+        for c, r, q in zip(back.attr("column"), back.attr("row"), bx)
+    )
+    assert before == after, "points -> structured surface -> points must be exact"
+
+
+def test_pointset_infer_geometry_rejects_curvilinear_mesh_with_topology():
+    # Regular column/row, but the node spacing swells across the grid: no single
+    # (xinc, yinc, rotation) lattice fits it, so inference must refuse rather than
+    # return a lattice the nodes do not sit on.
+    x, y, z, col, row = [], [], [], [], []
+    for j in range(12):
+        for i in range(12):
+            x.append(1000.0 + 50.0 * i * (1.0 + 0.06 * i))
+            y.append(2000.0 + 50.0 * j * (1.0 + 0.04 * j))
+            z.append(10.0)
+            col.append(i + 1)
+            row.append(j + 1)
+    p = petekio.PointSet.from_xyz(x, y, z)
+    p.column = col
+    p.row = row
+
+    with pytest.raises(ValueError, match="curvilinear"):
+        p.infer_geometry(tolerance=1e-3)
+
+    # The exact representation still works, and reports no regular geometry.
+    mesh = p.to_structured_surface(tolerance=1e-3)
+    assert mesh.ncol == 12 and mesh.nrow == 12
+    assert mesh.nominal_geometry is None
 
 
 def test_pointset_to_structured_surface_preserves_explicit_xy():

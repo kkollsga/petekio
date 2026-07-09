@@ -6,14 +6,46 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- `StructuredMeshSurface.to_points()` — explodes the mesh back into a `PointSet` with
+  its `column`/`row` topology, copying node XY/Z rather than resampling. It is the
+  exact inverse of `PointSet.to_structured_surface(...)`, and a round-trip test now
+  pins the pair as bit-for-bit lossless (previously true, but unenforced).
+- `API.md` now declares `StructuredMeshSurface` and `PointSet::to_structured_surface`,
+  which the implementation had grown without the contract.
+
+### Fixed
+- `PointSet.infer_geometry(...)` no longer returns a silently wrong geometry for a
+  **curvilinear** mesh. When `column`/`row` topology is present the lattice was
+  estimated from median node deltas and never checked against the nodes, so a mesh
+  with varying cell size or a non-90° cell angle yielded a plausible-looking
+  `GridGeometry` that no node sat on. Inference now verifies the lattice against the
+  nodes and raises `GeometryInference` — pointing at `to_structured_surface(...)`,
+  which represents such a mesh exactly — matching the strictness the coordinate-only
+  path already enforced. Isolated off-lattice nodes (a collapsed or clipped export
+  node) are still tolerated.
+
 ### Changed
-- `PointSet.infer_geometry(...)` now defaults to `edge="concave_hull"`. When
-  `column`/`row` topology exists, the edge traces the outer occupied-cell
-  footprint using the actual point XY nodes; without topology it falls back to
-  the triangulated point-cloud boundary.
-- `PointSet.to_structured_surface(...)` now uses the same `edge="concave_hull"`
-  default, keeping point-derived regular geometries and structured mesh surfaces
-  on one public edge vocabulary.
+- **Breaking:** `GeometryEdge` is now `{ Occupied, ConvexHull, FullRect }`, matching
+  the locked `API.md` contract. The `ConcaveHull` and `Trimesh` variants are removed,
+  along with the `"concave_hull"`/`"alpha"`/`"outer"`/`"default"`/`"trimesh"`/`"tin"`
+  Python aliases, which now raise `ValueError`.
+- **Breaking:** `edge="occupied"` now means the **outline of the occupied lattice
+  nodes** — the true data footprint, tracking interior holes and a non-rectangular
+  boundary — on both `infer_geometry(...)` and `to_structured_surface(...)`. It
+  previously meant a bounding rectangle on the former and the occupied-cell outline
+  on the latter: one name, two unrelated behaviours. Use `edge="full_rect"` for the
+  bounding rectangle.
+- `PointSet.infer_geometry(...)` now defaults to `edge="full_rect"` (four corners of
+  the bounding lattice); `to_structured_surface(...)` defaults to `edge="occupied"`,
+  since a curvilinear mesh has no bounding regular lattice to report.
+
+### Performance
+- The occupied footprint no longer triangulates the point cloud. `infer_geometry`
+  already derives every point's lattice index, so the occupancy is reused directly:
+  the Delaunay pass and its two float-keyed hash maps are gone. On a topology-less
+  250k-point grid the footprint edge went from ~1057 ms to ~42 ms (~25x), and now
+  costs the same as `full_rect`.
 - Updated docs for point-derived surfaces to make the distinction explicit:
   point sets render as points, inferred geometries render clipped regular grid
   lines, and structured surfaces preserve locally shifted Petrel nodes.

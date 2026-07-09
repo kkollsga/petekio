@@ -196,12 +196,10 @@ impl PointSet {
     /// Infer a regular grid geometry from the points. Raises `ValueError` when
     /// the point cloud is not grid-like within `tolerance`.
     ///
-    /// `edge` controls `geometry.edge`: `"concave_hull"` (default;
-    /// topology-aware outer footprint when column/row exist, otherwise
-    /// triangulated point footprint), `"trimesh"`/`"tin"`, `"occupied"`
-    /// (tight grid-oriented rectangle over all point XYs), `"convex_hull"`,
-    /// or `"full_rect"`.
-    #[pyo3(signature = (tolerance = 1e-3, edge = "concave_hull"))]
+    /// `edge` controls `geometry.edge`: `"full_rect"` (default; the four corners of
+    /// the bounding lattice), `"occupied"` (the outline of the nodes that carry
+    /// data — use this when the footprint is not rectangular), or `"convex_hull"`.
+    #[pyo3(signature = (tolerance = 1e-3, edge = "full_rect"))]
     fn infer_geometry(&self, py: Python<'_>, tolerance: f64, edge: &str) -> PyResult<GridGeometry> {
         let edge = parse_geometry_edge(edge)?;
         self.with(py, |p| {
@@ -228,7 +226,7 @@ impl PointSet {
 
     /// Promote topology-bearing points (`column`/`row` attributes) to a
     /// structured mesh surface with explicit XY at every logical node.
-    #[pyo3(signature = (tolerance = 1e-3, edge = "concave_hull"))]
+    #[pyo3(signature = (tolerance = 1e-3, edge = "occupied"))]
     fn to_structured_surface(
         &self,
         py: Python<'_>,
@@ -288,14 +286,20 @@ fn parse_geometry_edge(s: &str) -> PyResult<GeometryEdge> {
         .replace([' ', '-'], "_")
         .as_str()
     {
-        "concave_hull" | "concavehull" | "concave" | "alpha" | "alpha_shape" | "outer"
-        | "default" => Ok(GeometryEdge::ConcaveHull),
-        "trimesh" | "tin" | "triangulated" | "triangulated_mesh" => Ok(GeometryEdge::Trimesh),
         "occupied" => Ok(GeometryEdge::Occupied),
         "convex_hull" | "convexhull" | "hull" => Ok(GeometryEdge::ConvexHull),
         "full_rect" | "fullrect" | "rect" | "rectangle" => Ok(GeometryEdge::FullRect),
+        // Removed: the triangulated point-cloud hull was slow (a full Delaunay over
+        // every point) and produced a stair-stepped ring. 'occupied' now yields the
+        // same footprint from the lattice occupancy inference already resolves.
+        removed @ ("concave_hull" | "concavehull" | "concave" | "alpha" | "alpha_shape"
+        | "outer" | "default" | "trimesh" | "tin" | "triangulated"
+        | "triangulated_mesh") => Err(PyValueError::new_err(format!(
+            "geometry edge '{removed}' has been removed; use 'occupied' for the data \
+                 footprint, 'full_rect' for the bounding lattice rectangle, or 'convex_hull'"
+        ))),
         other => Err(PyValueError::new_err(format!(
-            "unknown geometry edge '{other}' (expected 'concave_hull', 'trimesh', 'occupied', 'convex_hull', or 'full_rect')"
+            "unknown geometry edge '{other}' (expected 'occupied', 'convex_hull', or 'full_rect')"
         ))),
     }
 }

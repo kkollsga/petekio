@@ -39,7 +39,7 @@ attributes), EarthVision/Petrel point grids, or RMS/IRAP plain `X Y Z`.
 ```python
 pts = geo.load_points("picks", "picks.geojson")
 pts.bbox
-geom = pts.infer_geometry()                    # default edge="concave_hull"
+geom = pts.infer_geometry()                    # default edge="full_rect"
 grid = pts.to_surface(grid_geom)               # or grid scattered points onto an explicit model grid
 mesh = pts.to_structured_surface()             # topology-bearing points, explicit shifted XY nodes
 ```
@@ -69,13 +69,17 @@ affine grid. EarthVision/Petrel exports that carry `column` and `row` fields can
 also be promoted with `to_structured_surface(...)`; that keeps the logical
 row/column topology while preserving each node's actual XY coordinate. This is
 the right home for Petrel surfaces that are locally shifted around faults.
-`edge="concave_hull"` is the default point footprint: it uses the outer
-occupied-cell footprint when `column`/`row` topology exists, and falls back to
-the locally connected point triangulation otherwise. `edge="trimesh"` is still
-available explicitly for triangulated-boundary QC. `edge="occupied"` is the
-tight grid-oriented rectangle that covers all point XYs. `edge="full_rect"` is
-the inferred regular geometry rectangle, and `edge="convex_hull"` is
-intentionally broader for envelope/QC comparison.
+A mesh whose nodes do not sit on any regular lattice — varying cell size, a cell
+angle away from 90° — is **curvilinear**, and `infer_geometry(...)` rejects it
+rather than return a lattice the nodes miss. `to_structured_surface(...)` is its
+exact home.
+
+`edge="full_rect"` is the default point footprint: the four corners of the
+inferred lattice. It over-claims whenever the data does not fill its bounding
+lattice. `edge="occupied"` is the true footprint — the outline of the nodes that
+carry data, following interior holes and a non-rectangular boundary — and is the
+default for `to_structured_surface(...)`. `edge="convex_hull"` is intentionally
+broader for envelope/QC comparison.
 
 During `Project.import_data(...)`, same-stem Petrel IRAP point exports are
 enriched from matching EarthVision topology files when both are present.

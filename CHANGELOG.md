@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-07-10
+
 ### Added
 - **Producer-side LOD for the viewer seam (display-only; geometry never
   decimated).** Three additive extensions compute exact level-of-detail
@@ -73,6 +75,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
   fallback but emits a `UserWarning` naming the fit failure (silently
   swapping return types hid points-vs-surface confusion downstream).
   `max_bridge` is documented as applying only to that fallback.
+  **Migration:** pass `fallback="error"` to make the failure fatal, or
+  silence it with `warnings.filterwarnings("ignore", category=UserWarning)`
+  if you relied on the silent fallback.
 
 ## [0.3.11] - 2026-07-10
 

@@ -394,6 +394,7 @@ def test_dataset_name_propagates_to_derived_objects(tmp_path):
     surf = pts.to_surface(geom)
     assert surf.name == "Top Agat"
     assert surf.geometry.name == "Top Agat geometry"
+    assert pts.to_surface().name == "Top Agat"  # geometry inferred internally
 
     structured = pts.to_structured_surface(tolerance=1e-3)
     assert structured.name == "Top Agat"

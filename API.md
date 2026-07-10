@@ -844,7 +844,14 @@ data-gap edges up to that length (`None` = strictly lattice-closed) and has no
 effect on an inferred `GridGeometry`. Both possible results carry a
 discoverable `.kind` for import-free dispatch — every geometry/surface/point
 object exposes it: `"grid_geometry"` | `"surface"` | `"structured_mesh"` |
-`"tri_surface"` | `"point_set"` | `"polygon_set"`;
+`"tri_surface"` | `"point_set"` | `"polygon_set"`.
+`PointSet.to_surface(geom=None, method="idw", tolerance=1e-3) -> Surface`
+grids z onto `geom`; `geom=None` (default) infers the lattice internally
+(`tolerance` as in `infer_geometry`) and **raises a `ValueError`** when the
+points are not lattice-regular — it never grids onto an arbitrary bounding
+lattice (pass an explicit `GridGeometry` or use `to_tri_surface()`); passing
+the `infer_geometry` TriSurface fallback as `geom` is a `TypeError` pointing
+at `tri_surface.resample(geom, method)`;
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
 **Dataset names (duck-typed viewer seam):** every project-accessor hand-back
 (`project.points[...]`, `project.surfaces[...]`, `project.polygons[...]`,

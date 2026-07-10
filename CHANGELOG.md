@@ -23,6 +23,12 @@ All notable changes to petekIO are recorded here. The format loosely follows
 - **`infer_geometry(fallback=...)`.** `fallback="tri"` (default) keeps the
   TriSurface fallback; `fallback="error"` raises a `ValueError` when no
   regular lattice fits the points.
+- **Geometry-optional `PointSet.to_surface`.** Python
+  `to_surface(geom=None, method="idw", tolerance=1e-3)` now infers the
+  lattice internally when `geom` is omitted, raising a clear `ValueError`
+  when the points are not lattice-regular (never gridding onto an arbitrary
+  bounding lattice) and a clear `TypeError` when the `infer_geometry`
+  TriSurface fallback (or any non-`GridGeometry`) is passed as `geom`.
 
 ### Changed
 - **`infer_geometry`'s TriSurface fallback is now loud.** When the regular

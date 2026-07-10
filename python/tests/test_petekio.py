@@ -548,6 +548,58 @@ def test_infer_geometry_fallback_is_loud_and_controllable():
         p.infer_geometry(tolerance=1e-3, fallback="bogus")
 
 
+def test_pointset_to_surface_infers_geometry_when_omitted():
+    source = petekio.GridGeometry(1000.0, 2000.0, 25.0, 50.0, 6, 5, 15.0)
+    x, y, z = [], [], []
+    for j in range(source.nrow):
+        for i in range(source.ncol):
+            xi, yi = source.node_xy(i, j)
+            x.append(xi)
+            y.append(yi)
+            z.append(100.0 + i + 2.0 * j)
+    p = petekio.PointSet.from_xyz(x, y, z)
+
+    auto = p.to_surface()
+    explicit = p.to_surface(p.infer_geometry(tolerance=1e-3), "idw")
+
+    assert auto.kind == "surface"
+    assert (auto.ncol, auto.nrow) == (explicit.ncol, explicit.nrow) == (6, 5)
+    ag, eg = auto.geometry, explicit.geometry
+    assert (ag.xori, ag.yori, ag.xinc, ag.yinc, ag.rotation_deg) == (
+        eg.xori,
+        eg.yori,
+        eg.xinc,
+        eg.yinc,
+        eg.rotation_deg,
+    )
+    assert auto.stats().count == explicit.stats().count
+    assert auto.stats().mean == explicit.stats().mean
+    assert auto.stats().min == explicit.stats().min
+    assert auto.stats().max == explicit.stats().max
+
+
+def test_pointset_to_surface_rejects_non_lattice_clouds_and_wrong_geom_types():
+    fx, fy, fz = _faulted_blocks()
+    p = petekio.PointSet.from_xyz(fx, fy, fz)
+
+    # No geom + no regular lattice: a clear error, never an arbitrary bounding grid.
+    with pytest.raises(ValueError, match="not lattice-regular"):
+        p.to_surface()
+
+    # The infer_geometry TriSurface fallback passed by mistake names itself.
+    with pytest.warns(UserWarning):
+        tri = p.infer_geometry(tolerance=1e-3)
+    with pytest.raises(TypeError, match="TriSurface"):
+        p.to_surface(tri)
+
+    # Any other wrong type names what was received.
+    with pytest.raises(TypeError, match="GridGeometry"):
+        p.to_surface("not a geometry")
+
+    with pytest.raises(ValueError, match="tolerance"):
+        p.to_surface(tolerance=-1.0)
+
+
 def test_infer_geometry_results_carry_discoverable_kinds():
     x, y, z = [], [], []
     for j in range(3):

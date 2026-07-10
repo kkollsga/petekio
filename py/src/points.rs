@@ -14,8 +14,8 @@ use crate::surface::Surface;
 use crate::tri_surface::TriSurface;
 use crate::{parse_grid_method, to_pyerr};
 use petekio::{
-    GeometryEdge, PointSet as RsPointSet, PolygonSet as RsPolygonSet,
-    TopologyReport as RsTopologyReport,
+    GeometryEdge, GridGeometry as RsGridGeometry, PointSet as RsPointSet,
+    PolygonSet as RsPolygonSet, TopologyReport as RsTopologyReport,
 };
 use pyo3::exceptions::{PyAttributeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -339,12 +339,61 @@ impl PointSet {
         })
     }
 
-    /// Grid the points' Z values onto `geom` using `method` (`"nearest"`,
-    /// `"idw"`, or `"min_curvature"`), returning a new `Surface`.
-    #[pyo3(signature = (geom, method = "idw"))]
-    fn to_surface(&self, py: Python<'_>, geom: &GridGeometry, method: &str) -> PyResult<Surface> {
+    /// Grid the points' Z values onto a regular lattice using `method`
+    /// (`"nearest"`, `"idw"`, or `"min_curvature"`), returning a new `Surface`.
+    ///
+    /// `geom=None` (the default) infers the lattice from the points themselves
+    /// (the same machinery as `infer_geometry(tolerance)`). When no regular
+    /// lattice fits, this raises a `ValueError` — it never grids onto an
+    /// arbitrary bounding lattice; pass an explicit `GridGeometry` or represent
+    /// the cloud with `to_tri_surface()` instead. Passing the `infer_geometry`
+    /// `TriSurface` fallback as `geom` is a `TypeError` pointing at
+    /// `tri_surface.resample(...)`. `tolerance` is used only when `geom` is
+    /// `None`.
+    #[pyo3(signature = (geom = None, method = "idw", tolerance = 1e-3))]
+    fn to_surface(
+        &self,
+        py: Python<'_>,
+        geom: Option<&Bound<'_, PyAny>>,
+        method: &str,
+        tolerance: f64,
+    ) -> PyResult<Surface> {
         let gm = parse_grid_method(method)?;
-        let g = geom.inner.clone();
+        let g: RsGridGeometry = match geom {
+            Some(obj) => {
+                if let Ok(gg) = obj.cast::<GridGeometry>() {
+                    gg.borrow().inner.clone()
+                } else if obj.cast::<TriSurface>().is_ok() {
+                    return Err(PyTypeError::new_err(
+                        "to_surface: received a TriSurface (the infer_geometry fallback for \
+                         non-lattice-regular points), not a GridGeometry — grid it with \
+                         tri_surface.resample(geom, method), or pass to_surface() an explicit \
+                         GridGeometry",
+                    ));
+                } else {
+                    return Err(PyTypeError::new_err(format!(
+                        "to_surface: geom must be a GridGeometry (or None to infer one), got {}",
+                        obj.get_type().name()?
+                    )));
+                }
+            }
+            None => {
+                if !tolerance.is_finite() || tolerance <= 0.0 {
+                    return Err(PyValueError::new_err(
+                        "to_surface: tolerance must be a finite positive number",
+                    ));
+                }
+                self.with(py, |p| {
+                    p.infer_geometry(tolerance).map_err(|e| {
+                        PyValueError::new_err(format!(
+                            "to_surface: no regular lattice fits these points ({e}) — the \
+                             points are not lattice-regular; pass an explicit GridGeometry \
+                             or use to_tri_surface()"
+                        ))
+                    })
+                })?
+            }
+        };
         // Gridding (esp. min-curvature) is compute-heavy pure Rust — release the GIL.
         self.with(py, |p| {
             py.detach(|| p.to_surface(g, gm))

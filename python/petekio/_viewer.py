@@ -302,7 +302,7 @@ class LogSession:
         except ImportError as exc:  # pragma: no cover - exercised only when absent
             raise ImportError(
                 "well.view() renders through the viewer unit, which is not "
-                "installed. Install it with `pip install petektools` "
+                "installed. Install it with `pip install 'petekio[toolkit]'` "
                 "(provides petektools.viewer). petekio produces the "
                 "WellLogBundle; petektools.viewer renders it."
             ) from exc

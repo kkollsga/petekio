@@ -6,6 +6,12 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Changed
+- The `petektools` Python package is now an optional `petekio[toolkit]` extra.
+  The Rust extension still uses the petekTools crate; base Python installs keep
+  the existing interpolation fallback, while viewer methods explain how to
+  install the optional renderer.
+
 ## [0.3.9] - 2026-07-09
 
 ### Added

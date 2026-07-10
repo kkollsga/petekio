@@ -347,26 +347,37 @@ impl Surface {
     /// Iso-lines of a property lane: `[(level, [[(x, y), ...], ...]), ...]`.
     /// Explicit `levels` win over `interval` (levels aligned to interval
     /// multiples across the value range). NaN-aware: holes break lines.
-    #[pyo3(signature = (interval = None, levels = None, attr = None))]
+    /// `simplify=tol` runs Douglas–Peucker on each polyline (world-unit
+    /// tolerance; endpoints + ring closure preserved).
+    #[pyo3(signature = (interval = None, levels = None, attr = None, simplify = None))]
     fn iso_lines(
         &self,
         py: Python<'_>,
         interval: Option<f64>,
         levels: Option<Vec<f64>>,
         attr: Option<&str>,
+        simplify: Option<f64>,
     ) -> PyResult<crate::shell::PyIsoLines> {
-        self.with(py, |s| py.detach(|| s.iso_lines(interval, levels, attr)))?
-            .map(crate::shell::iso_lines_py)
-            .map_err(to_pyerr)
+        self.with(py, |s| {
+            py.detach(|| s.iso_lines(interval, levels, attr, simplify))
+        })?
+        .map(crate::shell::iso_lines_py)
+        .map_err(to_pyerr)
     }
 
     /// A property lane as the viewer's trimesh dict: `{"kind": "trimesh",
     /// "name", "nodes", "triangles", "values", "range"}` (nodes/triangles from
-    /// the quad-split grid).
-    #[pyo3(signature = (attr = None))]
-    fn value_layer(&self, py: Python<'_>, attr: Option<&str>) -> PyResult<Py<pyo3::types::PyDict>> {
+    /// the quad-split grid). `stride=k` returns the coarse-LOD decimation
+    /// (per-block `(i,j)` striding; `range` from the full-resolution lane).
+    #[pyo3(signature = (attr = None, stride = None))]
+    fn value_layer(
+        &self,
+        py: Python<'_>,
+        attr: Option<&str>,
+        stride: Option<usize>,
+    ) -> PyResult<Py<pyo3::types::PyDict>> {
         let layer = self
-            .with(py, |s| py.detach(|| s.value_layer(attr)))?
+            .with(py, |s| py.detach(|| s.value_layer(attr, stride)))?
             .map_err(to_pyerr)?;
         crate::shell::value_layer_dict(py, layer)
     }

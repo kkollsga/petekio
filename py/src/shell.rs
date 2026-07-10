@@ -127,9 +127,13 @@ impl MeshShell {
     }
 
     /// The quad-dominant wireframe as `(i, j)` index pairs into `nodes()`.
-    fn wireframe_edges(&self) -> Vec<(u32, u32)> {
+    /// `stride=k` (k ≥ 2) returns the coarse-LOD lattice wireframe (every k-th
+    /// grid line per block, outline + seams + fringe kept); `None`/`1` is the
+    /// full wireframe. Display-only — geometry is never decimated.
+    #[pyo3(signature = (stride = None))]
+    fn wireframe_edges(&self, stride: Option<usize>) -> Vec<(u32, u32)> {
         self.inner
-            .wireframe_edges()
+            .wireframe_edges(stride)
             .into_iter()
             .map(|e| (e[0], e[1]))
             .collect()

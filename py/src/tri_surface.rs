@@ -89,10 +89,13 @@ impl TriSurface {
 
     /// Unique triangle edges minus interior cell diagonals, as `(i, j)` index
     /// pairs into `points()` — the quad-dominant wireframe (a full lattice
-    /// cell draws as a square).
-    fn wireframe_edges(&self) -> Vec<(u32, u32)> {
+    /// cell draws as a square). `stride=k` (k ≥ 2) returns the coarse-LOD
+    /// lattice wireframe (every k-th grid line per block, outline + seams +
+    /// fringe kept); `None`/`1` is the full wireframe. Display-only.
+    #[pyo3(signature = (stride = None))]
+    fn wireframe_edges(&self, stride: Option<usize>) -> Vec<(u32, u32)> {
         self.inner
-            .wireframe_edges()
+            .wireframe_edges(stride)
             .into_iter()
             .map(|e| (e[0], e[1]))
             .collect()
@@ -205,24 +208,34 @@ impl TriSurface {
     /// Iso-lines of a property lane: `[(level, [[(x, y), ...], ...]), ...]`.
     /// Explicit `levels` win over `interval` (levels aligned to interval
     /// multiples across the value range). NaN-aware: holes break lines.
-    #[pyo3(signature = (interval = None, levels = None, attr = None))]
+    /// `simplify=tol` runs Douglas–Peucker on each polyline (world-unit
+    /// tolerance; endpoints + ring closure preserved).
+    #[pyo3(signature = (interval = None, levels = None, attr = None, simplify = None))]
     fn iso_lines(
         &self,
         py: Python<'_>,
         interval: Option<f64>,
         levels: Option<Vec<f64>>,
         attr: Option<&str>,
+        simplify: Option<f64>,
     ) -> PyResult<PyIsoLines> {
-        py.detach(|| self.inner.iso_lines(interval, levels, attr))
+        py.detach(|| self.inner.iso_lines(interval, levels, attr, simplify))
             .map(iso_lines_py)
             .map_err(to_pyerr)
     }
 
     /// A property lane as the viewer's trimesh dict: `{"kind": "trimesh",
-    /// "name", "nodes", "triangles", "values", "range"}`.
-    #[pyo3(signature = (attr = None))]
-    fn value_layer(&self, py: Python<'_>, attr: Option<&str>) -> PyResult<Py<PyDict>> {
-        let layer = self.inner.value_layer(attr).map_err(to_pyerr)?;
+    /// "name", "nodes", "triangles", "values", "range"}`. `stride=k` returns
+    /// the coarse-LOD decimation (per-block `(i,j)`-label striding; `range`
+    /// from the full-resolution lane). Display-only.
+    #[pyo3(signature = (attr = None, stride = None))]
+    fn value_layer(
+        &self,
+        py: Python<'_>,
+        attr: Option<&str>,
+        stride: Option<usize>,
+    ) -> PyResult<Py<PyDict>> {
+        let layer = self.inner.value_layer(attr, stride).map_err(to_pyerr)?;
         value_layer_dict(py, layer)
     }
 

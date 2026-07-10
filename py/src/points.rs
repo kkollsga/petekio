@@ -238,20 +238,31 @@ impl PointSet {
         })
     }
 
-    /// Infer a regular grid geometry from the points. Raises `ValueError` when
-    /// the point cloud is not grid-like within `tolerance`.
+    /// Infer a regular grid geometry from the points, falling back to a
+    /// `TriSurface` when no regular lattice describes the point cloud.
     ///
     /// `edge` controls `geometry.edge`: `"full_rect"` (default; the four corners of
     /// the bounding lattice), `"occupied"` (the outline of the nodes that carry
     /// data — use this when the footprint is not rectangular), or `"convex_hull"`.
+    /// It applies only to a successfully inferred `GridGeometry`; the fallback
+    /// `TriSurface` carries the boundary of its retained triangles.
     #[pyo3(signature = (tolerance = 1e-3, edge = "full_rect"))]
-    fn infer_geometry(&self, py: Python<'_>, tolerance: f64, edge: &str) -> PyResult<GridGeometry> {
+    fn infer_geometry(&self, py: Python<'_>, tolerance: f64, edge: &str) -> PyResult<Py<PyAny>> {
         let edge = parse_geometry_edge(edge)?;
-        self.with(py, |p| {
-            let (geom, edge_polygon) = p
-                .infer_geometry_with_edge(tolerance, edge)
-                .map_err(to_pyerr)?;
-            Ok(GridGeometry::with_edge(geom, edge_polygon))
+        if !tolerance.is_finite() || tolerance <= 0.0 {
+            return Err(PyValueError::new_err(
+                "geometry inference failed: tolerance must be a finite positive number",
+            ));
+        }
+        self.with(py, |p| match p.infer_geometry_with_edge(tolerance, edge) {
+            Ok((geom, edge_polygon)) => Ok(GridGeometry::with_edge(geom, edge_polygon)
+                .into_pyobject(py)?
+                .into_any()
+                .unbind()),
+            Err(regular_error) => match py.detach(|| p.to_tri_surface(None)) {
+                Ok(tri) => Ok(TriSurface::wrap(tri).into_pyobject(py)?.into_any().unbind()),
+                Err(_) => Err(to_pyerr(regular_error)),
+            },
         })
     }
 

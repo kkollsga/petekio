@@ -1468,6 +1468,12 @@ mod tests {
             "the error must point at the exact representation: {msg}"
         );
 
+        let tri = p
+            .to_tri_surface(None)
+            .expect("a rejected regular lattice must remain representable as a TIN");
+        assert!(!tri.triangles().is_empty());
+        assert!(tri.points().len() <= p.len());
+
         // ...and the structured path, which stores explicit per-node XY, still works:
         // a curvilinear mesh simply has no nominal regular geometry.
         let mesh = p

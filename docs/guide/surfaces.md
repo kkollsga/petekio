@@ -39,7 +39,7 @@ attributes), EarthVision/Petrel point grids, or RMS/IRAP plain `X Y Z`.
 ```python
 pts = geo.load_points("picks", "picks.geojson")
 pts.bbox
-geom = pts.infer_geometry()                    # default edge="full_rect"
+geom = pts.infer_geometry()                    # GridGeometry, or TriSurface fallback
 grid = pts.to_surface(grid_geom)               # or grid scattered points onto an explicit model grid
 mesh = pts.to_structured_surface()             # topology-bearing points, explicit shifted XY nodes
 ```
@@ -70,9 +70,10 @@ also be promoted with `to_structured_surface(...)`; that keeps the logical
 row/column topology while preserving each node's actual XY coordinate. This is
 the right home for Petrel surfaces that are locally shifted around faults.
 A mesh whose nodes do not sit on any regular lattice — varying cell size, a cell
-angle away from 90° — is **curvilinear**, and `infer_geometry(...)` rejects it
-rather than return a lattice the nodes miss. `to_structured_surface(...)` is its
-exact home.
+angle away from 90° — is **curvilinear**. `infer_geometry(...)` refuses to invent a
+regular lattice and returns a `TriSurface` over the original points instead.
+`to_structured_surface(...)` remains its exact row/column representation when
+topology attributes are present.
 
 `edge="full_rect"` is the default point footprint: the four corners of the
 inferred lattice. It over-claims whenever the data does not fill its bounding

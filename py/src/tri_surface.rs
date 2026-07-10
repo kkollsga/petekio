@@ -53,6 +53,11 @@ impl TriSurface {
             .collect()
     }
 
+    /// Vertices through the generic point/viewer protocol.
+    fn xyz(&self) -> Vec<(f64, f64, f64)> {
+        self.points()
+    }
+
     /// Triangles as `(i, j, k)` index triples into `points()`.
     fn triangles(&self) -> Vec<(u32, u32, u32)> {
         self.inner

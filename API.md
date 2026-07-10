@@ -686,11 +686,12 @@ petekio.ViewSettings(serve=True, save=None)                  # HOW view() delive
 Python rules: `Stats` fields exposed as read-only attributes; operators (`+ - * /`)
 on `Surface`; `surface.attr["name"]` indexed access; `surface.edge` and
 `surface.geometry.edge` expose matching `PolygonSet` outlines; `PointSet`
-exposes `infer_geometry(tolerance=1e-3, edge="full_rect")` and
+exposes `infer_geometry(tolerance=1e-3, edge="full_rect") -> GridGeometry | TriSurface` and
 `to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
 `edge="occupied"|"convex_hull"|"full_rect"`; `detect_topology(nominal_cell=None)`
 returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
-`to_tri_surface(max_link=None)` is the fallback when it does not;
+`infer_geometry` preserves strict regular inference but automatically delegates to
+`to_tri_surface(max_link=None)` when no regular lattice describes the points;
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
 Bindings are thin: every method delegates to the Rust API above. The spec
 value-objects (`NetSettings`, `IngestSpec`, `ViewSpec`, `ViewSettings`) follow

@@ -6,6 +6,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+- Python `PointSet.infer_geometry(...)` now returns the established unstructured
+  `TriSurface` fallback when strict regular-lattice inference fails, so irregular
+  and curvilinear point surfaces remain directly viewable. Successful regular
+  inference still returns `GridGeometry`; the strict Rust inference API is unchanged.
+  `TriSurface.xyz()` supplies the generic `view2d` point protocol.
+
 ### Changed
 - The `petektools` Python package is now an optional `petekio[toolkit]` extra.
   The Rust extension still uses the petekTools crate; base Python installs keep

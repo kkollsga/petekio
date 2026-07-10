@@ -276,7 +276,7 @@ impl PointSet {
     pub fn to_surface(&self, geom: GridGeometry, method: GridMethod) -> Result<Surface>;
     pub fn to_structured_surface(&self, tolerance: f64, edge: GeometryEdge) -> Result<StructuredMeshSurface>;
     pub fn detect_topology(&self, nominal_cell: Option<f64>) -> Result<(Option<PointSet>, TopologyReport)>;
-    pub fn to_tri_surface(&self, max_link: Option<f64>) -> Result<TriSurface>;   // max_link in CELLS, in (sqrt2, 2); None = 1.8
+    pub fn to_tri_surface(&self, max_link: Option<f64>, max_bridge: Option<f64>) -> Result<TriSurface>;   // both in CELLS; max_link in (sqrt2, 2), None = 1.8; max_bridge >= max_link admits open-seam edges (fringe/fault/gap), None = strictly lattice-closed
     pub fn regrid_min_curvature(&self, prior: &Surface) -> Result<Surface>;  // warm-started incremental re-grid on prior's lattice
 }
 pub enum GridMethod { Nearest, InverseDistance, MinimumCurvature }
@@ -687,12 +687,14 @@ petekio.ViewSettings(serve=True, save=None)                  # HOW view() delive
 Python rules: `Stats` fields exposed as read-only attributes; operators (`+ - * /`)
 on `Surface`; `surface.attr["name"]` indexed access; `surface.edge` and
 `surface.geometry.edge` expose matching `PolygonSet` outlines; `PointSet`
-exposes `infer_geometry(tolerance=1e-3, edge="full_rect") -> GridGeometry | TriSurface` and
-`to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
+exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=None) -> GridGeometry | TriSurface`
+and `to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
 `edge="occupied"|"convex_hull"|"full_rect"`; `detect_topology(nominal_cell=None)`
 returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
 `infer_geometry` preserves strict regular inference but automatically delegates to
-`to_tri_surface(max_link=None)` when no regular lattice describes the points;
+`to_tri_surface(max_link=None, max_bridge=...)` when no regular lattice describes
+the points (`max_bridge`, in cells, closes boundary-fringe/fault-seam/data-gap
+edges up to that length; `None` = strictly lattice-closed);
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
 Bindings are thin: every method delegates to the Rust API above. The spec
 value-objects (`NetSettings`, `IngestSpec`, `ViewSpec`, `ViewSettings`) follow

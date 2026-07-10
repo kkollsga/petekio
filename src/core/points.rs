@@ -1469,7 +1469,7 @@ mod tests {
         );
 
         let tri = p
-            .to_tri_surface(None)
+            .to_tri_surface(None, None)
             .expect("a rejected regular lattice must remain representable as a TIN");
         assert!(!tri.triangles().is_empty());
         assert!(tri.points().len() <= p.len());

@@ -67,15 +67,16 @@ impl TriSurface {
         &self.edge
     }
 
-    /// Unique triangle edges with interior cell diagonals removed — the
-    /// quad-dominant wireframe a structured-surface display draws (a full
+    /// Unique triangle edges with flat interior cell diagonals removed — the
+    /// quad-dominant wireframe a structured-surface display draws (a flat
     /// lattice cell shows as a square, not two triangles).
     ///
     /// A diagonal — an edge whose endpoints the topology walk labelled
     /// `(±1, ±1)` apart within one fault block — is dropped only when both of
-    /// its triangles survived; a diagonal on the mesh boundary keeps its
-    /// triangle drawable. Legacy payloads stored before the classification
-    /// fall back to every unique edge.
+    /// its triangles survived *and* the quad is planar within a relative
+    /// tolerance; a kinked cell keeps its triangles visible, and a diagonal on
+    /// the mesh boundary keeps its lone triangle drawable. Legacy payloads
+    /// stored before the classification fall back to every unique edge.
     pub fn wireframe_edges(&self) -> Vec<[u32; 2]> {
         if !self.wireframe.is_empty() {
             return self.wireframe.clone();
@@ -150,11 +151,22 @@ impl PointSet {
     /// [`detect_topology`](Self::detect_topology) cannot verify a structured mesh.
     ///
     /// `max_link` is the longest triangle edge to keep, **in cells** of the detected
-    /// grid; it must lie in `(√2, 2)`. `None` uses [`DEFAULT_MAX_LINK`]. The result is
-    /// a single connected component: triangles outside the largest one are dropped,
-    /// as are triangles that bridge a fault (those using an adjacency the topology
-    /// walk refused).
-    pub fn to_tri_surface(&self, max_link: Option<f64>) -> Result<TriSurface> {
+    /// grid; it must lie in `(√2, 2)`. `None` uses [`DEFAULT_MAX_LINK`].
+    ///
+    /// `max_bridge` (also **in cells**, `>= max_link`) opt-in relaxes the closed-lattice
+    /// rules exactly where the geometry does not close: an edge the strict rules reject —
+    /// an unlabelled boundary-fringe node, a fault-seam adjacency the walk refused, an
+    /// interior data gap — is admitted anyway when it is no longer than `max_bridge`.
+    /// The interior lattice keeps the strict rules regardless. `None` (the default)
+    /// keeps the mesh strictly lattice-closed: no fault is bridged, and triangles using
+    /// an adjacency the topology walk refused are dropped. Large values readmit the
+    /// spanning slivers a Delaunay hull throws across concave bays — keep it near the
+    /// gap size being closed.
+    pub fn to_tri_surface(
+        &self,
+        max_link: Option<f64>,
+        max_bridge: Option<f64>,
+    ) -> Result<TriSurface> {
         let max_link = max_link.unwrap_or(DEFAULT_MAX_LINK);
         if !(MIN_LINK..MAX_LINK).contains(&max_link) {
             return Err(GeoError::GeometryInference(format!(
@@ -162,26 +174,38 @@ impl PointSet {
                  the mesh shreds, at two cells a triangle skips a node (got {max_link})"
             )));
         }
+        if let Some(b) = max_bridge {
+            if !b.is_finite() || b < max_link {
+                return Err(GeoError::GeometryInference(format!(
+                    "max_bridge must be a finite length in cells >= max_link ({max_link}), \
+                     got {b}"
+                )));
+            }
+        }
 
         let d = self.detect_grid(None)?;
         let normalized = normalize(&d);
         let faces = delaunay(&normalized)?;
 
-        // Every adjacency the walk refused straddles a fault. Never triangulate across one.
+        // Every adjacency the walk refused straddles a fault. The strict rules never
+        // triangulate across one; `max_bridge` admits it like any other open seam.
         let mut forbidden: HashSet<(usize, usize)> = HashSet::new();
         for &(a, b) in &d.frontier {
             forbidden.insert(ordered(a, b));
         }
 
         let max2 = max_link * max_link;
+        let bridge2 = max_bridge.map(|b| b * b);
         let kept: Vec<[usize; 3]> = faces
             .into_iter()
             .filter(|t| {
                 let e = [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])];
                 e.iter().all(|&(a, b)| {
-                    !forbidden.contains(&ordered(a, b))
+                    let d2 = sq_dist(normalized[a], normalized[b]);
+                    let strict = !forbidden.contains(&ordered(a, b))
                         && index_adjacent(&d, a, b)
-                        && sq_dist(normalized[a], normalized[b]) <= max2
+                        && d2 <= max2;
+                    strict || bridge2.is_some_and(|b2| d2 <= b2)
                 })
             })
             .collect();
@@ -194,7 +218,7 @@ impl PointSet {
         let kept = drop_small_islands(&kept);
         let (points, triangles, labels) = compact(&kept, &d);
         let edge = boundary_rings(&triangles, &points)?;
-        let wireframe = wireframe(&triangles, &labels);
+        let wireframe = wireframe(&triangles, &labels, &points);
 
         let mut out = TriSurface {
             points,
@@ -204,7 +228,10 @@ impl PointSet {
             history: OperationHistory::new(),
         };
         *out.operation_history_mut() = self.operation_history().clone();
-        out.record_history(format!("points.to_tri_surface(max_link={max_link})"));
+        out.record_history(match max_bridge {
+            Some(b) => format!("points.to_tri_surface(max_link={max_link}, max_bridge={b})"),
+            None => format!("points.to_tri_surface(max_link={max_link})"),
+        });
         Ok(out)
     }
 }
@@ -367,25 +394,67 @@ fn compact(
     (points, triangles, labels)
 }
 
-/// Unique triangle edges minus interior cell diagonals — the quad-dominant
-/// wireframe. A diagonal is hidden only when both triangles of its cell
-/// survived (the edge is carried twice); a boundary diagonal stays so its lone
-/// triangle keeps all three sides.
-fn wireframe(triangles: &[[u32; 3]], labels: &[Option<NodeIndex>]) -> Vec<[u32; 2]> {
-    let mut count: BTreeMap<(u32, u32), u8> = BTreeMap::new();
+/// Off-plane offset of a quad's fourth corner, relative to its diagonal length,
+/// above which the cell is not flat and its two triangles stay visible. On the
+/// faulted reference surface, smooth structural curvature sits far below this
+/// (p50 ≈ 0) while fault-drag kinks sit well above it.
+const PLANAR_REL_TOL: f64 = 0.05;
+
+/// Unique triangle edges minus **flat** interior cell diagonals — the
+/// quad-dominant wireframe. A diagonal is hidden only when both triangles of
+/// its cell survived (the edge is carried twice) *and* the quad is planar
+/// within [`PLANAR_REL_TOL`]; a kinked cell keeps its triangles visible, and a
+/// boundary diagonal stays so its lone triangle keeps all three sides.
+fn wireframe(
+    triangles: &[[u32; 3]],
+    labels: &[Option<NodeIndex>],
+    points: &[[f64; 3]],
+) -> Vec<[u32; 2]> {
+    // For each undirected edge, the opposite vertex of every triangle carrying it.
+    let mut opposite: BTreeMap<(u32, u32), Vec<u32>> = BTreeMap::new();
     for t in triangles {
-        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+        for &(a, b, o) in &[(t[0], t[1], t[2]), (t[1], t[2], t[0]), (t[2], t[0], t[1])] {
             let key = if a <= b { (a, b) } else { (b, a) };
-            *count.entry(key).or_insert(0) += 1;
+            opposite.entry(key).or_default().push(o);
         }
     }
-    count
-        .into_iter()
-        .filter(|&((a, b), n)| {
-            !(n == 2 && is_cell_diagonal(labels[a as usize], labels[b as usize]))
-        })
-        .map(|((a, b), _)| [a, b])
-        .collect()
+    let mut out = Vec::new();
+    for ((a, b), opp) in opposite {
+        let hide = opp.len() == 2
+            && is_cell_diagonal(labels[a as usize], labels[b as usize])
+            && quad_is_planar(
+                points[a as usize],
+                points[b as usize],
+                points[opp[0] as usize],
+                points[opp[1] as usize],
+            );
+        if !hide {
+            out.push([a, b]);
+        }
+    }
+    out
+}
+
+/// Is the quad split by diagonal `(a, b)` flat? The offset of `o2` from the
+/// plane through `(a, b, o1)` must stay within [`PLANAR_REL_TOL`] of the
+/// diagonal's length. Tilt alone never trips this — a planar dipping cell has
+/// zero offset; only twist/kink across the cell does.
+fn quad_is_planar(a: [f64; 3], b: [f64; 3], o1: [f64; 3], o2: [f64; 3]) -> bool {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ao1 = [o1[0] - a[0], o1[1] - a[1], o1[2] - a[2]];
+    let ao2 = [o2[0] - a[0], o2[1] - a[1], o2[2] - a[2]];
+    let n = [
+        ab[1] * ao1[2] - ab[2] * ao1[1],
+        ab[2] * ao1[0] - ab[0] * ao1[2],
+        ab[0] * ao1[1] - ab[1] * ao1[0],
+    ];
+    let nn = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    let diag = (ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2]).sqrt();
+    if nn <= f64::EPSILON || diag <= f64::EPSILON {
+        return true; // degenerate triangle: nothing meaningful to keep visible
+    }
+    let offset = (n[0] * ao2[0] + n[1] * ao2[1] + n[2] * ao2[2]).abs() / nn;
+    offset <= PLANAR_REL_TOL * diag
 }
 
 /// Are `a` and `b` opposite corners of one lattice cell in the same fault block?
@@ -523,7 +592,7 @@ mod tests {
     fn triangulates_a_full_grid_into_one_sheet() {
         let coords = lattice(9, 7, 50.0, 50.0, 25.0);
         let tin = PointSet::from_coords(coords.clone())
-            .to_tri_surface(None)
+            .to_tri_surface(None, None)
             .unwrap();
         assert_eq!(tin.kind(), "tri_surface");
         assert_eq!(tin.points().len(), coords.len());
@@ -548,7 +617,9 @@ mod tests {
         // no *world-unit* max link can both keep the diagonals and reject a skipped
         // node. In the normalized frame the cell is a unit square and 1.8 works.
         let coords = lattice(9, 7, 50.0, 20.0, 40.0);
-        let tin = PointSet::from_coords(coords).to_tri_surface(None).unwrap();
+        let tin = PointSet::from_coords(coords)
+            .to_tri_surface(None, None)
+            .unwrap();
         assert_eq!(tin.triangles().len(), 2 * 8 * 6);
         assert_eq!(tin.edge().rings().len(), 1);
     }
@@ -577,7 +648,7 @@ mod tests {
 
         assert!(report.blocks >= 2, "the fixture must split into blocks");
 
-        let tin = p.to_tri_surface(None).unwrap();
+        let tin = p.to_tri_surface(None, None).unwrap();
         // Both blocks survive. A fault-cut surface really *is* two sheets, and keeping
         // only the largest would silently discard real data. What must not happen is a
         // triangle spanning the throw.
@@ -595,13 +666,56 @@ mod tests {
         // the emitted rings from run to run on the same triangles.
         let coords = lattice(11, 9, 50.0, 30.0, 17.0);
         let p = PointSet::from_coords(coords);
-        let first = p.to_tri_surface(None).unwrap();
+        let first = p.to_tri_surface(None, None).unwrap();
         for _ in 0..8 {
-            let again = p.to_tri_surface(None).unwrap();
+            let again = p.to_tri_surface(None, None).unwrap();
             assert_eq!(again.triangles(), first.triangles());
             assert_eq!(again.points(), first.points());
             assert_eq!(again.edge().rings(), first.edge().rings());
         }
+    }
+
+    #[test]
+    fn max_bridge_closes_fault_seams_and_fringe() {
+        // The faulted fixture from `does_not_bridge_a_fault`: two blocks separated by
+        // a ~3.4-cell gap. Strict rules keep them apart; max_bridge=4 closes the seam.
+        let mut coords = Vec::new();
+        for j in 0..9 {
+            for i in 0..6 {
+                coords.push([50.0 * i as f64, 50.0 * j as f64, -1800.0]);
+            }
+        }
+        for j in 0..9 {
+            for i in 8..14 {
+                coords.push([50.0 * i as f64 + 20.0, 50.0 * j as f64 + 25.0, -1900.0]);
+            }
+        }
+        let p = PointSet::from_coords(coords);
+        assert_eq!(p.to_tri_surface(None, None).unwrap().components(), 2);
+        let bridged = p.to_tri_surface(None, Some(4.0)).unwrap();
+        assert_eq!(bridged.components(), 1, "the seam closes at max_bridge=4");
+
+        // A fringe point 2.5 cells off the lattice boundary: dropped strictly,
+        // attached under max_bridge=3.
+        let mut coords = lattice(9, 7, 50.0, 50.0, 0.0);
+        coords.push([1000.0 + 8.0 * 50.0 + 125.0, 2000.0 + 150.0, -1800.0]);
+        let p = PointSet::from_coords(coords.clone());
+        assert_eq!(p.to_tri_surface(None, None).unwrap().points().len(), 63);
+        let tin = p.to_tri_surface(None, Some(3.0)).unwrap();
+        assert_eq!(tin.points().len(), 64, "the fringe point joins the mesh");
+        assert_eq!(tin.components(), 1);
+    }
+
+    #[test]
+    fn rejects_a_max_bridge_below_max_link() {
+        let p = PointSet::from_coords(lattice(6, 6, 50.0, 50.0, 0.0));
+        for bad in [0.5, 1.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                p.to_tri_surface(None, Some(bad)).is_err(),
+                "max_bridge {bad} must be rejected"
+            );
+        }
+        assert!(p.to_tri_surface(None, Some(1.8)).is_ok());
     }
 
     #[test]
@@ -610,7 +724,7 @@ mod tests {
         // lattice edges alone — 9*6 verticals + 7*8 horizontals — every one 50 m,
         // while triangles() still carries the diagonals.
         let tin = PointSet::from_coords(lattice(9, 7, 50.0, 50.0, 0.0))
-            .to_tri_surface(None)
+            .to_tri_surface(None, None)
             .unwrap();
         let wf = tin.wireframe_edges();
         assert_eq!(wf.len(), 9 * 6 + 7 * 8);
@@ -622,9 +736,28 @@ mod tests {
     }
 
     #[test]
+    fn wireframe_keeps_triangles_in_non_planar_cells() {
+        // Flat 9 x 7 lattice with one interior node spiked 20 m: the four cells
+        // around it are kinked far past the planarity tolerance, so their
+        // diagonals stay visible while the rest of the sheet stays quads.
+        let mut coords = lattice(9, 7, 50.0, 50.0, 0.0);
+        for c in coords.iter_mut() {
+            if (c[0] - 1200.0).abs() < 1e-9 && (c[1] - 2150.0).abs() < 1e-9 {
+                c[2] = -1780.0;
+            }
+        }
+        let tin = PointSet::from_coords(coords)
+            .to_tri_surface(None, None)
+            .unwrap();
+        let lattice_only = 9 * 6 + 7 * 8;
+        let extra = tin.wireframe_edges().len() - lattice_only;
+        assert_eq!(extra, 4, "the four kinked cells keep their diagonals");
+    }
+
+    #[test]
     fn wireframe_falls_back_to_all_edges_on_legacy_payloads() {
         let tin = PointSet::from_coords(lattice(9, 7, 50.0, 50.0, 0.0))
-            .to_tri_surface(None)
+            .to_tri_surface(None, None)
             .unwrap();
         let mut v = serde_json::to_value(&tin).unwrap();
         v.as_object_mut().unwrap().remove("wireframe");
@@ -638,10 +771,10 @@ mod tests {
         let p = PointSet::from_coords(lattice(6, 6, 50.0, 50.0, 0.0));
         for bad in [1.0, 1.41, 2.0, 2.5] {
             assert!(
-                p.to_tri_surface(Some(bad)).is_err(),
+                p.to_tri_surface(Some(bad), None).is_err(),
                 "max_link {bad} is outside (sqrt2, 2)"
             );
         }
-        assert!(p.to_tri_surface(Some(1.8)).is_ok());
+        assert!(p.to_tri_surface(Some(1.8), None).is_ok());
     }
 }

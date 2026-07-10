@@ -696,10 +696,10 @@ project.inventory()                       # counts + loaded names + stable skipp
 project.surfaces["Top reservoir"]         # named access over the underlying GeoData
 project.well("15/9-A1")
 project.geodata                           # the underlying GeoData substrate
-project.rename_surface("Top reservoir", "structure/top agat")
-project.surfaces.structure.top_agat       # folder view + unique leaf lookup
+project.rename_surface("Top reservoir", "structure/top dome")
+project.surfaces.structure.top_dome       # folder view + unique leaf lookup
 project.surfaces.all_names()              # canonical names with folders
-project.delete_surface("structure/top agat")
+project.delete_surface("structure/top dome")
 project.save("field.pproj")               # compact .pproj write
 pproj_project = petekio.Project.load("field.pproj")  # compact .pproj read
 
@@ -862,7 +862,7 @@ at `tri_surface.resample(geom, method)`;
 (`project.points[...]`, `project.surfaces[...]`, `project.polygons[...]`,
 `geo.points(name)`, `geo.surface(name)`, `geo.polygons(name)`, and the
 `load_*` project loaders) carries a read-only `.name` property — the lookup
-key's leaf (`"Surfaces/IrapClassic_points/Top Agat"` → `"Top Agat"`).
+key's leaf (`"Surfaces/IrapClassic_points/Top Dome"` → `"Top Dome"`).
 Derived objects propagate it: `infer_geometry`/`surface.geometry`/`infer_grid`
 → `"<name> geometry"`; `to_surface`/`to_tri_surface`/`to_structured_surface`/
 `to_structured_mesh`/`to_points`/`resample`/`detect_topology`'s labelled

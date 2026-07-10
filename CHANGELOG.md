@@ -40,13 +40,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
     points are preserved; a polyline never drops below 2 points (rings below 4).
     Measured ≈7×/≈39× fewer contour vertices at tol 1 m/50 m.
 - **Dataset names on Python hand-backs (duck-typed viewer seam).** Objects
-  resolved through a project lookup (`project.points["…/Top Agat"]`,
+  resolved through a project lookup (`project.points["…/Top Dome"]`,
   `project.surfaces[...]`, `geo.points(name)`, …) now carry a read-only
-  `.name` property — the lookup key's leaf, e.g. `"Top Agat"` — so downstream
+  `.name` property — the lookup key's leaf, e.g. `"Top Dome"` — so downstream
   consumers (the petektools viewer legend) can show the real dataset name.
-  Derived objects propagate it (`infer_geometry` → `"Top Agat geometry"`;
+  Derived objects propagate it (`infer_geometry` → `"Top Dome geometry"`;
   `to_surface`/`to_tri_surface`/`to_structured_surface`/`to_points`/`resample`
-  keep `"Top Agat"`). Anonymous/in-memory objects return `None`.
+  keep `"Top Dome"`). Anonymous/in-memory objects return `None`.
 - **Discoverable `kind` labels.** `GridGeometry` (`"grid_geometry"`),
   `Surface` (`"surface"`), `PointSet` (`"point_set"`) and `PolygonSet`
   (`"polygon_set"`) now expose a `.kind` property (matching the existing
@@ -311,9 +311,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `Project.import_data(...)` with `ImportSettings`. `Project.load(...)` and
   `Project.save(...)` now deal only with compact `.pproj` projects.
 - Added folder-aware project collections. Object names can use `/` folders
-  such as `structure/top agat`; `project.surfaces` shows immediate children,
+  such as `structure/top dome`; `project.surfaces` shows immediate children,
   `project.surfaces.structure` descends into the folder, `.all_names()` returns
-  canonical names, and unique leaf lookup such as `project.surfaces.top_agat`
+  canonical names, and unique leaf lookup such as `project.surfaces.top_dome`
   resolves when unambiguous. Project objects can now be renamed/deleted through
   typed methods (`rename_surface`, `delete_points`, etc.) or generic
   `rename(kind, old, new)` / `delete(kind, name)`.

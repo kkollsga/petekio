@@ -74,8 +74,8 @@ project = petekio.Project.import_data(
 )
 project.inventory()
 geo = project.geodata
-project.rename_surface("Top reservoir", "structure/top agat")
-project.surfaces.structure.top_agat
+project.rename_surface("Top reservoir", "structure/top dome")
+project.surfaces.structure.top_dome
 project.save("field.pproj")
 project = petekio.Project.load("field.pproj")
 

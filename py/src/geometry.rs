@@ -101,7 +101,7 @@ impl GridGeometry {
     }
 
     /// The dataset display name this geometry derives from (e.g.
-    /// `"Top Agat geometry"` for a geometry inferred from the `"Top Agat"`
+    /// `"Top Dome geometry"` for a geometry inferred from the `"Top Dome"`
     /// point set), or `None` for anonymous geometries. Duck-typed viewer seam.
     #[getter]
     fn name(&self) -> Option<String> {

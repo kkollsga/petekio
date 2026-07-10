@@ -144,7 +144,7 @@ impl PointSet {
     }
 
     /// The dataset name this point set was resolved under (the project lookup
-    /// leaf, e.g. `"Top Agat"`), or `None` for anonymous/in-memory point sets.
+    /// leaf, e.g. `"Top Dome"`), or `None` for anonymous/in-memory point sets.
     /// Duck-typed viewer seam; derived objects propagate it.
     #[getter]
     fn name(&self) -> Option<String> {

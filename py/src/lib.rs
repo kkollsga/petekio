@@ -45,7 +45,7 @@ pub(crate) fn to_pyerr(e: GeoError) -> PyErr {
 }
 
 /// The display leaf of a project object key: the part after the last `/`
-/// (`"Surfaces/IrapClassic_points/Top Agat"` → `"Top Agat"`). This is the
+/// (`"Surfaces/IrapClassic_points/Top Dome"` → `"Top Dome"`). This is the
 /// dataset name recorded on project-accessor hand-backs (the duck-typed
 /// `.name` viewer seam).
 pub(crate) fn leaf_name(key: &str) -> String {

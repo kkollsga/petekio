@@ -230,6 +230,13 @@ def test_pointset_to_surface():
         p.to_surface(g, "bogus")
 
 
+def test_anonymous_objects_carry_no_dataset_name():
+    p = petekio.PointSet.from_xyz([0.0, 1.0], [0.0, 1.0], [0.0, 1.0])
+    assert p.name is None
+    g = petekio.GridGeometry(0.0, 0.0, 5.0, 5.0, 3, 3)
+    assert g.name is None
+
+
 def test_pointset_infer_geometry_and_edge_options():
     source = petekio.GridGeometry(456123.5, 6712345.25, 37.0, 83.0, 5, 4, 27.5)
     x, y, z = [], [], []

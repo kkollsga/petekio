@@ -44,6 +44,14 @@ pub(crate) fn to_pyerr(e: GeoError) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
+/// The display leaf of a project object key: the part after the last `/`
+/// (`"Surfaces/IrapClassic_points/Top Agat"` → `"Top Agat"`). This is the
+/// dataset name recorded on project-accessor hand-backs (the duck-typed
+/// `.name` viewer seam).
+pub(crate) fn leaf_name(key: &str) -> String {
+    key.rsplit('/').next().unwrap_or(key).trim().to_string()
+}
+
 /// Emit a Python `DeprecationWarning` with `msg` (via the `warnings` module, so
 /// it respects the interpreter's filters). Used by the legacy sticky-mutation
 /// sugar (`load_well(aliases=)`, `strat_hint(...)`) now superseded by

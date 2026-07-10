@@ -39,6 +39,7 @@ enum SurfaceBacking {
 #[pyclass(name = "Surface")]
 pub struct Surface {
     backing: SurfaceBacking,
+    name: Option<String>,
 }
 
 impl Surface {
@@ -46,14 +47,23 @@ impl Surface {
     pub(crate) fn wrap(inner: RsSurface) -> Surface {
         Surface {
             backing: SurfaceBacking::Owned(Arc::new(inner)),
+            name: None,
         }
     }
 
     /// A cheap view into project `geo`'s surface `name` (no grid copy).
     pub(crate) fn view(geo: Py<GeoData>, name: String) -> Surface {
+        let display = crate::leaf_name(&name);
         Surface {
             backing: SurfaceBacking::InGeo { geo, name },
+            name: Some(display),
         }
+    }
+
+    /// Attach a dataset display name (the duck-typed viewer seam).
+    pub(crate) fn named(mut self, name: Option<String>) -> Surface {
+        self.name = name;
+        self
     }
 
     /// Resolve the borrowed Rust surface and run `f` over it.
@@ -271,6 +281,14 @@ impl Surface {
         self.with(py, |s| s.hypsometry())
     }
 
+    /// The dataset name this surface was resolved under (the project lookup
+    /// leaf) or derives from (e.g. `points.to_surface()` propagates the point
+    /// set's name), or `None` for anonymous surfaces. Duck-typed viewer seam.
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.name.clone()
+    }
+
     // ---- attribute access ----
 
     /// The attribute accessor: `surface.attr["seismic"]` (or `surface.attr(name)`)
@@ -306,7 +324,9 @@ impl Surface {
         py: Python<'_>,
     ) -> PyResult<crate::structured_surface::StructuredMeshSurface> {
         self.with(py, |s| py.detach(|| s.to_structured_mesh()))?
-            .map(crate::structured_surface::StructuredMeshSurface::wrap)
+            .map(|s| {
+                crate::structured_surface::StructuredMeshSurface::wrap(s).named(self.name.clone())
+            })
             .map_err(to_pyerr)
     }
 
@@ -314,7 +334,7 @@ impl Surface {
     /// consistent diagonal; all attribute lanes carried 1:1 per node).
     fn to_tri_surface(&self, py: Python<'_>) -> PyResult<crate::tri_surface::TriSurface> {
         self.with(py, |s| py.detach(|| s.to_tri_surface()))?
-            .map(crate::tri_surface::TriSurface::wrap)
+            .map(|t| crate::tri_surface::TriSurface::wrap(t).named(self.name.clone()))
             .map_err(to_pyerr)
     }
 
@@ -352,6 +372,7 @@ impl Surface {
     fn geometry(&self, py: Python<'_>) -> PyResult<GridGeometry> {
         self.with(py, |s| {
             GridGeometry::with_edge(s.geom.clone(), surface_edge(s))
+                .named(self.name.as_ref().map(|n| format!("{n} geometry")))
         })
     }
 

@@ -50,6 +50,7 @@ impl BBox {
 pub struct GridGeometry {
     pub(crate) inner: RsGeom,
     edge: Option<RsPolygonSet>,
+    name: Option<String>,
 }
 
 impl GridGeometry {
@@ -57,7 +58,14 @@ impl GridGeometry {
         GridGeometry {
             inner,
             edge: Some(edge),
+            name: None,
         }
+    }
+
+    /// Attach a dataset display name (the duck-typed viewer seam).
+    pub(crate) fn named(mut self, name: Option<String>) -> GridGeometry {
+        self.name = name;
+        self
     }
 }
 
@@ -88,7 +96,16 @@ impl GridGeometry {
                 yflip,
             },
             edge: None,
+            name: None,
         }
+    }
+
+    /// The dataset display name this geometry derives from (e.g.
+    /// `"Top Agat geometry"` for a geometry inferred from the `"Top Agat"`
+    /// point set), or `None` for anonymous geometries. Duck-typed viewer seam.
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.name.clone()
     }
 
     #[getter]

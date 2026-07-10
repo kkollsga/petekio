@@ -6,6 +6,16 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Dataset names on Python hand-backs (duck-typed viewer seam).** Objects
+  resolved through a project lookup (`project.points["…/Top Agat"]`,
+  `project.surfaces[...]`, `geo.points(name)`, …) now carry a read-only
+  `.name` property — the lookup key's leaf, e.g. `"Top Agat"` — so downstream
+  consumers (the petektools viewer legend) can show the real dataset name.
+  Derived objects propagate it (`infer_geometry` → `"Top Agat geometry"`;
+  `to_surface`/`to_tri_surface`/`to_structured_surface`/`to_points`/`resample`
+  keep `"Top Agat"`). Anonymous/in-memory objects return `None`.
+
 ## [0.3.11] - 2026-07-10
 
 > **Rust API note:** this release reshapes `TriSurface`/`StructuredMeshSurface`

@@ -31,19 +31,29 @@ enum PointBacking {
 #[pyclass(name = "PointSet")]
 pub struct PointSet {
     backing: PointBacking,
+    name: Option<String>,
 }
 
 impl PointSet {
     pub(crate) fn owned(inner: RsPointSet) -> PointSet {
         PointSet {
             backing: PointBacking::Owned(Arc::new(inner)),
+            name: None,
         }
     }
 
     pub(crate) fn view(geo: Py<GeoData>, name: String) -> PointSet {
+        let display = crate::leaf_name(&name);
         PointSet {
             backing: PointBacking::InGeo { geo, name },
+            name: Some(display),
         }
+    }
+
+    /// Attach a dataset display name (the duck-typed viewer seam).
+    pub(crate) fn named(mut self, name: Option<String>) -> PointSet {
+        self.name = name;
+        self
     }
 
     fn with<R>(&self, py: Python<'_>, f: impl FnOnce(&RsPointSet) -> PyResult<R>) -> PyResult<R> {
@@ -133,6 +143,14 @@ impl PointSet {
         self.with(py, |p| Ok(p.len()))
     }
 
+    /// The dataset name this point set was resolved under (the project lookup
+    /// leaf, e.g. `"Top Agat"`), or `None` for anonymous/in-memory point sets.
+    /// Duck-typed viewer seam; derived objects propagate it.
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.name.clone()
+    }
+
     /// Human-readable operation history for this point set.
     fn history(&self, py: Python<'_>) -> PyResult<Vec<String>> {
         self.with(py, |p| Ok(p.history().to_vec()))
@@ -216,7 +234,7 @@ impl PointSet {
                 .detach(|| p.detect_topology(nominal_cell))
                 .map_err(to_pyerr)?;
             Ok((
-                labelled.map(PointSet::owned),
+                labelled.map(|pts| PointSet::owned(pts).named(self.name.clone())),
                 TopologyReport { inner: report },
             ))
         })
@@ -238,7 +256,7 @@ impl PointSet {
     ) -> PyResult<TriSurface> {
         self.with(py, |p| {
             py.detach(|| p.to_tri_surface(max_link, max_bridge))
-                .map(TriSurface::wrap)
+                .map(|t| TriSurface::wrap(t).named(self.name.clone()))
                 .map_err(to_pyerr)
         })
     }
@@ -272,11 +290,16 @@ impl PointSet {
         }
         self.with(py, |p| match p.infer_geometry_with_edge(tolerance, edge) {
             Ok((geom, edge_polygon)) => Ok(GridGeometry::with_edge(geom, edge_polygon)
+                .named(self.name.as_ref().map(|n| format!("{n} geometry")))
                 .into_pyobject(py)?
                 .into_any()
                 .unbind()),
             Err(regular_error) => match py.detach(|| p.to_tri_surface(None, max_bridge)) {
-                Ok(tri) => Ok(TriSurface::wrap(tri).into_pyobject(py)?.into_any().unbind()),
+                Ok(tri) => Ok(TriSurface::wrap(tri)
+                    .named(self.name.clone())
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind()),
                 Err(_) => Err(to_pyerr(regular_error)),
             },
         })
@@ -291,7 +314,7 @@ impl PointSet {
         // Gridding (esp. min-curvature) is compute-heavy pure Rust — release the GIL.
         self.with(py, |p| {
             py.detach(|| p.to_surface(g, gm))
-                .map(Surface::wrap)
+                .map(|s| Surface::wrap(s).named(self.name.clone()))
                 .map_err(to_pyerr)
         })
     }
@@ -308,7 +331,7 @@ impl PointSet {
         let edge = parse_geometry_edge(edge)?;
         self.with(py, |p| {
             p.to_structured_surface(tolerance, edge)
-                .map(StructuredMeshSurface::wrap)
+                .map(|s| StructuredMeshSurface::wrap(s).named(self.name.clone()))
                 .map_err(to_pyerr)
         })
     }
@@ -386,18 +409,22 @@ enum PolyBacking {
 #[pyclass(name = "PolygonSet")]
 pub struct PolygonSet {
     backing: PolyBacking,
+    name: Option<String>,
 }
 
 impl PolygonSet {
     pub(crate) fn owned(inner: RsPolygonSet) -> PolygonSet {
         PolygonSet {
             backing: PolyBacking::Owned(Arc::new(inner)),
+            name: None,
         }
     }
 
     pub(crate) fn view(geo: Py<GeoData>, name: String) -> PolygonSet {
+        let display = crate::leaf_name(&name);
         PolygonSet {
             backing: PolyBacking::InGeo { geo, name },
+            name: Some(display),
         }
     }
 
@@ -789,6 +816,14 @@ impl PolygonSet {
 
     fn __len__(&self, py: Python<'_>) -> PyResult<usize> {
         self.with(py, |p| Ok(p.len()))
+    }
+
+    /// The dataset name this polygon set was resolved under (the project
+    /// lookup leaf), or `None` for anonymous/in-memory polygon sets.
+    /// Duck-typed viewer seam.
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.name.clone()
     }
 
     /// Human-readable operation history for this polygon set.

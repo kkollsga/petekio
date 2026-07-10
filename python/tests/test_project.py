@@ -339,6 +339,72 @@ def test_project_import_enriches_irap_points_from_matching_earthvision_topology(
     assert geom.nrow == 2
 
 
+def _top_agat_tree(tmp_path: Path) -> Path:
+    root = tmp_path / "Data"
+    _write(
+        root / "Surfaces" / "EarthVision_grid" / "Top Agat.EarthVisionGrid",
+        """# Type: scattered data
+# Field: 1 x
+# Field: 2 y
+# Field: 3 z meters
+# Field: 4 column
+# Field: 5 row
+# Grid_size: 3 x 2
+# End:
+100.0 200.0 -50.0 1 1
+110.0 200.0 -51.0 2 1
+110.0 200.0 -51.0 3 1
+100.0 210.0 -52.0 1 2
+110.0 210.0 -53.0 2 2
+120.0 210.0 -54.0 3 2
+""",
+    )
+    _write(
+        root / "Surfaces" / "IrapClassic_points" / "Top Agat.IrapClassicPoints",
+        """100.0 200.0 -50.0
+110.0 200.0 -51.0
+100.0 210.0 -52.0
+110.0 210.0 -53.0
+120.0 210.0 -54.0
+""",
+    )
+    return root
+
+
+def test_project_lookup_records_dataset_name(tmp_path):
+    root = _top_agat_tree(tmp_path)
+    _write(root / "Surfaces" / "Top reservoir.irap", _irap())
+
+    project = petekio.Project.import_data(root)
+
+    pts = project.points.Surfaces.IrapClassic_points["Top Agat"]
+    assert pts.name == "Top Agat"
+    # The full-path lookup resolves to the same dataset leaf name.
+    assert project.points["Surfaces/IrapClassic_points/Top Agat"].name == "Top Agat"
+    assert project.surfaces["Top reservoir"].name == "Top reservoir"
+
+
+def test_dataset_name_propagates_to_derived_objects(tmp_path):
+    project = petekio.Project.import_data(_top_agat_tree(tmp_path))
+    pts = project.points.Surfaces.IrapClassic_points["Top Agat"]
+
+    geom = pts.infer_geometry(tolerance=1e-3)
+    assert geom.name == "Top Agat geometry"
+
+    surf = pts.to_surface(geom)
+    assert surf.name == "Top Agat"
+    assert surf.geometry.name == "Top Agat geometry"
+
+    structured = pts.to_structured_surface(tolerance=1e-3)
+    assert structured.name == "Top Agat"
+    assert structured.to_tri_surface().name == "Top Agat"
+    assert structured.to_points().name == "Top Agat"
+
+    labelled, report = pts.detect_topology()
+    assert report.verified
+    assert labelled.name == "Top Agat"
+
+
 def test_project_load_pproj_delegates_to_geodata_open(tmp_path):
     geo = petekio.GeoData(unit="m")
     geo.load_surface("top", str(_write(tmp_path / "top.irap", _irap())))

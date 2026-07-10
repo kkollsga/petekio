@@ -840,6 +840,16 @@ returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
 the points (`max_bridge`, in cells, closes boundary-fringe/fault-seam/data-gap
 edges up to that length; `None` = strictly lattice-closed);
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
+**Dataset names (duck-typed viewer seam):** every project-accessor hand-back
+(`project.points[...]`, `project.surfaces[...]`, `project.polygons[...]`,
+`geo.points(name)`, `geo.surface(name)`, `geo.polygons(name)`, and the
+`load_*` project loaders) carries a read-only `.name` property — the lookup
+key's leaf (`"Surfaces/IrapClassic_points/Top Agat"` → `"Top Agat"`).
+Derived objects propagate it: `infer_geometry`/`surface.geometry`/`infer_grid`
+→ `"<name> geometry"`; `to_surface`/`to_tri_surface`/`to_structured_surface`/
+`to_structured_mesh`/`to_points`/`resample`/`detect_topology`'s labelled
+points/attr promotion keep `"<name>"`. Anonymous/in-memory objects
+(`from_xyz`, `Surface.load_*`, arithmetic results, …) return `None`.
 `TriSurface.points()`/`.xyz()` keep returning `(x, y, z)` tuples (shell XY
 zipped with z); `StructuredMeshSurface`/`TriSurface` attribute access is
 method-style (`attr(name)` promotes the lane on the same shared shell;

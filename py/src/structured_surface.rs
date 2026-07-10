@@ -18,13 +18,21 @@ use std::sync::Arc;
 #[pyclass(name = "StructuredMeshSurface")]
 pub struct StructuredMeshSurface {
     inner: Arc<RsStructuredMeshSurface>,
+    name: Option<String>,
 }
 
 impl StructuredMeshSurface {
     pub(crate) fn wrap(inner: RsStructuredMeshSurface) -> StructuredMeshSurface {
         StructuredMeshSurface {
             inner: Arc::new(inner),
+            name: None,
         }
+    }
+
+    /// Attach a dataset display name (the duck-typed viewer seam).
+    pub(crate) fn named(mut self, name: Option<String>) -> StructuredMeshSurface {
+        self.name = name;
+        self
     }
 }
 
@@ -33,6 +41,14 @@ impl StructuredMeshSurface {
     #[getter]
     fn kind(&self) -> &'static str {
         self.inner.kind()
+    }
+
+    /// The dataset name this surface derives from (propagated from the source
+    /// point set / surface), or `None` for anonymous meshes. Duck-typed
+    /// viewer seam.
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.name.clone()
     }
 
     #[getter]
@@ -94,7 +110,7 @@ impl StructuredMeshSurface {
     /// its `column`/`row` topology. Exact — coordinates are copied, not resampled —
     /// so `points.to_structured_surface().to_points()` round-trips losslessly.
     fn to_points(&self) -> PointSet {
-        PointSet::owned(self.inner.to_points())
+        PointSet::owned(self.inner.to_points()).named(self.name.clone())
     }
 
     /// Summary statistics over finite primary values.
@@ -124,7 +140,7 @@ impl StructuredMeshSurface {
     fn attr(&self, name: &str) -> PyResult<StructuredMeshSurface> {
         self.inner
             .as_attr_surface(name)
-            .map(StructuredMeshSurface::wrap)
+            .map(|s| StructuredMeshSurface::wrap(s).named(self.name.clone()))
             .ok_or_else(|| {
                 pyo3::exceptions::PyKeyError::new_err(format!("no attribute layer '{name}'"))
             })
@@ -157,7 +173,7 @@ impl StructuredMeshSurface {
         }
         let mut out = (*self.inner).clone();
         out.set_attr(name, lane).map_err(to_pyerr)?;
-        Ok(StructuredMeshSurface::wrap(out))
+        Ok(StructuredMeshSurface::wrap(out).named(self.name.clone()))
     }
 
     // ---- conversions ----
@@ -166,7 +182,7 @@ impl StructuredMeshSurface {
     /// attribute lanes carried 1:1).
     fn to_tri_surface(&self, py: Python<'_>) -> PyResult<TriSurface> {
         py.detach(|| self.inner.to_tri_surface())
-            .map(TriSurface::wrap)
+            .map(|t| TriSurface::wrap(t).named(self.name.clone()))
             .map_err(to_pyerr)
     }
 
@@ -176,7 +192,10 @@ impl StructuredMeshSurface {
     fn infer_grid(&self, tolerance: f64) -> PyResult<GridGeometry> {
         self.inner
             .infer_grid(tolerance)
-            .map(|g| GridGeometry::with_edge(g, self.inner.edge().clone()))
+            .map(|g| {
+                GridGeometry::with_edge(g, self.inner.edge().clone())
+                    .named(self.name.as_ref().map(|n| format!("{n} geometry")))
+            })
             .map_err(to_pyerr)
     }
 
@@ -193,7 +212,7 @@ impl StructuredMeshSurface {
         let gm = parse_grid_method(method)?;
         let t = target.inner.clone();
         py.detach(|| self.inner.resample(&t, gm))
-            .map(crate::surface::Surface::wrap)
+            .map(|s| crate::surface::Surface::wrap(s).named(self.name.clone()))
             .map_err(to_pyerr)
     }
 

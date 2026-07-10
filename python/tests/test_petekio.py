@@ -548,6 +548,22 @@ def test_infer_geometry_fallback_is_loud_and_controllable():
         p.infer_geometry(tolerance=1e-3, fallback="bogus")
 
 
+def test_infer_geometry_reports_both_failures_when_fallback_also_fails():
+    # Five scattered points: no regular lattice fits, and the cloud is too
+    # degenerate for the TriSurface fallback to triangulate — the error must
+    # chain BOTH causes, not swallow the fallback's.
+    p = petekio.PointSet.from_xyz(
+        [0.0, 7.3, 2.9, 11.7, 5.5],
+        [0.0, 1.1, 8.4, 9.2, 4.9],
+        [-1.0, -2.0, -3.0, -4.0, -5.0],
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"no regular lattice fits these points.*TriSurface fallback also failed",
+    ):
+        p.infer_geometry(tolerance=1e-3, max_bridge=3.5)
+
+
 def test_pointset_to_surface_infers_geometry_when_omitted():
     source = petekio.GridGeometry(1000.0, 2000.0, 25.0, 50.0, 6, 5, 15.0)
     x, y, z = [], [], []

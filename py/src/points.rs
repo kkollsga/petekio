@@ -333,7 +333,12 @@ impl PointSet {
                             .into_any()
                             .unbind())
                     }
-                    Err(_) => Err(to_pyerr(regular_error)),
+                    Err(tri_error) => Err(PyValueError::new_err(format!(
+                        "geometry inference failed: no regular lattice fits these points \
+                         ({regular_error}); the TriSurface fallback also failed \
+                         ({tri_error}) — pass an explicit GridGeometry or fix the input \
+                         cloud"
+                    ))),
                 }
             }
         })

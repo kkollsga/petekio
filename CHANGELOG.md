@@ -30,6 +30,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
   bounding lattice) and a clear `TypeError` when the `infer_geometry`
   TriSurface fallback (or any non-`GridGeometry`) is passed as `geom`.
 
+### Fixed
+- **`infer_geometry` no longer swallows the fallback's failure cause.** When
+  the lattice fit fails *and* the TriSurface fallback also fails (e.g. a
+  tiny/degenerate cloud), the raised `ValueError` now chains both causes
+  ("no regular lattice fits … the TriSurface fallback also failed …")
+  instead of reporting only the lattice-fit error.
+
 ### Changed
 - **`infer_geometry`'s TriSurface fallback is now loud.** When the regular
   lattice fit fails, the default behaviour still returns the `TriSurface`

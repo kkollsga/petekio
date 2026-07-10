@@ -155,7 +155,22 @@ impl MeshShell {
     /// quad-dominant wireframe (a full lattice cell shows as a square, not two
     /// triangles). Purely topological. Legacy payloads stored before the
     /// classification fall back to every unique edge.
-    pub fn wireframe_edges(&self) -> Vec<[u32; 2]> {
+    ///
+    /// `stride = None` or `Some(1)` returns the full wireframe (byte-identical
+    /// to the pre-LOD behaviour). `stride = Some(k)` (k ≥ 2) returns the
+    /// **coarse lattice wireframe**: per fault block, only the every-k-th
+    /// row/column grid lines survive (an in-block edge `(i,j)–(i+1,j)` is kept
+    /// when `j % k == 0`, an edge `(i,j)–(i,j+1)` when `i % k == 0`), plus
+    /// **all boundary edges** and **all edges touching an unlabelled node**
+    /// (fringe / bridges) or crossing a block seam — so the outline and every
+    /// seam stay intact at every LOD. This is display-only: the geometry is
+    /// never decimated. It reproduces the same line set as striding a lattice's
+    /// grid lines (`GridGeometry`'s `_grid_lines`).
+    pub fn wireframe_edges(&self, stride: Option<usize>) -> Vec<[u32; 2]> {
+        let k = stride.unwrap_or(1);
+        if k > 1 {
+            return strided_wireframe(&self.triangles, &self.labels, k);
+        }
         if !self.wireframe.is_empty() {
             return self.wireframe.clone();
         }
@@ -166,6 +181,52 @@ impl MeshShell {
             }
         }
         seen.into_iter().map(|(a, b)| [a, b]).collect()
+    }
+
+    /// The coarse mesh at `stride = k`: per fault block, only the labelled
+    /// nodes with `i % k == 0 && j % k == 0` are kept, re-triangulated as the
+    /// coarse quad-split (two CCW triangles per coarse cell, only where all
+    /// four coarse corners exist). Unlabelled (fringe/bridge) nodes are dropped
+    /// — re-attaching them would need a full re-triangulation, disproportionate
+    /// for a display LOD. Returns `(nodes, triangles, orig_index)` where
+    /// `orig_index[c]` is the coarse node's index in this shell's `nodes()`, so
+    /// a caller can pull any per-node lane onto the coarse mesh.
+    pub(crate) fn strided_lattice(
+        &self,
+        stride: usize,
+    ) -> (Vec<[f64; 2]>, Vec<[u32; 3]>, Vec<usize>) {
+        let k = stride.max(1) as i32;
+        let mut map: HashMap<(u32, i32, i32), u32> = HashMap::new();
+        let mut nodes: Vec<[f64; 2]> = Vec::new();
+        let mut orig: Vec<usize> = Vec::new();
+        for (idx, lab) in self.labels.iter().enumerate() {
+            if let Some((b, i, j)) = *lab {
+                if i.rem_euclid(k) == 0 && j.rem_euclid(k) == 0 {
+                    map.entry((b, i, j)).or_insert_with(|| {
+                        let new = nodes.len() as u32;
+                        nodes.push(self.nodes[idx]);
+                        orig.push(idx);
+                        new
+                    });
+                }
+            }
+        }
+        let mut triangles: Vec<[u32; 3]> = Vec::new();
+        for (c, &orig_idx) in orig.iter().enumerate() {
+            let (b, i, j) = self.labels[orig_idx].expect("coarse nodes are labelled");
+            let n00 = c as u32;
+            let (Some(&n10), Some(&n01), Some(&n11)) = (
+                map.get(&(b, i + k, j)),
+                map.get(&(b, i, j + k)),
+                map.get(&(b, i + k, j + k)),
+            ) else {
+                continue;
+            };
+            // Consistent diagonal (i,j)–(i+k,j+k), CCW-corrected in world XY.
+            push_ccw_edge(&mut triangles, &nodes, [n00, n10, n11]);
+            push_ccw_edge(&mut triangles, &nodes, [n00, n11, n01]);
+        }
+        (nodes, triangles, orig)
     }
 
     /// Axis-aligned bounding box over the nodes.
@@ -277,6 +338,70 @@ pub(crate) fn quad_wireframe(
         })
         .map(|((a, b), _)| [a, b])
         .collect()
+}
+
+/// The coarse-LOD wireframe at `stride = k` (k ≥ 2). Same base as
+/// [`quad_wireframe`] (interior cell diagonals hidden), then keep only edges
+/// that either bound the mesh, touch an unlabelled node, cross a block seam, or
+/// lie on an every-k-th grid line of their block — see
+/// [`MeshShell::wireframe_edges`]. Boundary edges (carried by a single
+/// triangle) are always kept, which is exactly what preserves the outline and
+/// makes the retained line set match `_grid_lines` striding.
+pub(crate) fn strided_wireframe(
+    triangles: &[[u32; 3]],
+    labels: &[Option<WalkLabel>],
+    stride: usize,
+) -> Vec<[u32; 2]> {
+    let k = stride.max(1) as i32;
+    let mut count: BTreeMap<(u32, u32), u8> = BTreeMap::new();
+    for t in triangles {
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let key = if a <= b { (a, b) } else { (b, a) };
+            *count.entry(key).or_insert(0) += 1;
+        }
+    }
+    count
+        .into_iter()
+        .filter(|&((a, b), n)| {
+            let (la, lb) = (labels[a as usize], labels[b as usize]);
+            // Interior cell diagonals stay hidden (as in the full wireframe).
+            if n == 2 && is_cell_diagonal(la, lb) {
+                return false;
+            }
+            // Boundary edges always survive — the outline stays intact.
+            if n == 1 {
+                return true;
+            }
+            match (la, lb) {
+                (Some((ba, ia, ja)), Some((bb, ib, jb))) if ba == bb => {
+                    if ja == jb && (ia - ib).abs() == 1 {
+                        ja.rem_euclid(k) == 0 // a row line: kept every k-th row
+                    } else if ia == ib && (ja - jb).abs() == 1 {
+                        ia.rem_euclid(k) == 0 // a column line: kept every k-th column
+                    } else {
+                        true // any other in-block edge (e.g. a diagonal) is kept
+                    }
+                }
+                // Unlabelled node (fringe/bridge) or a cross-block seam: keep.
+                _ => true,
+            }
+        })
+        .map(|((a, b), _)| [a, b])
+        .collect()
+}
+
+/// Push a triangle, flipping its winding when it is clockwise in world XY.
+fn push_ccw_edge(triangles: &mut Vec<[u32; 3]>, nodes: &[[f64; 2]], t: [u32; 3]) {
+    let (a, b, c) = (
+        nodes[t[0] as usize],
+        nodes[t[1] as usize],
+        nodes[t[2] as usize],
+    );
+    if signed_area2(a, b, c) < 0.0 {
+        triangles.push([t[0], t[2], t[1]]);
+    } else {
+        triangles.push(t);
+    }
 }
 
 /// Are `a` and `b` opposite corners of one lattice cell in the same fault block?
@@ -438,10 +563,57 @@ mod tests {
                 );
             }
             // Wireframe = lattice edges only: 5*3 verticals + 4*4 horizontals.
-            assert_eq!(shell.wireframe_edges().len(), 5 * 3 + 4 * 4);
+            assert_eq!(shell.wireframe_edges(None).len(), 5 * 3 + 4 * 4);
             // Labels carry (0, i, j) for every node.
             assert!(shell.labels().iter().all(|l| matches!(l, Some((0, _, _)))));
             assert_eq!(shell.edge().rings().len(), 1);
+        }
+    }
+
+    #[test]
+    fn strided_wireframe_is_the_coarse_lattice_line_set() {
+        // A flat single-block lattice: striding must keep exactly the every-k-th
+        // row/column grid lines (full resolution along each) plus the outline —
+        // the same line set as `_grid_lines` line striding.
+        let g = GridGeometry {
+            xori: 0.0,
+            yori: 0.0,
+            xinc: 10.0,
+            yinc: 10.0,
+            ncol: 7,
+            nrow: 5,
+            rotation_deg: 0.0,
+            yflip: false,
+        };
+        let shell = g.to_mesh_shell().unwrap();
+        // stride None / 1 is byte-identical to the full wireframe.
+        let full = shell.wireframe_edges(None);
+        assert_eq!(shell.wireframe_edges(Some(1)), full);
+        assert_eq!(full.len(), 7 * (5 - 1) + 5 * (7 - 1)); // 58
+
+        // Number of kept lines = the `_grid_lines` sampled-index count.
+        let sampled = |n: usize, k: usize| {
+            let mut v: Vec<usize> = (0..n).step_by(k).collect();
+            if *v.last().unwrap() != n - 1 {
+                v.push(n - 1);
+            }
+            v.len()
+        };
+        for k in [2usize, 3] {
+            let wf = shell.wireframe_edges(Some(k));
+            let expected = sampled(5, k) * (7 - 1) + sampled(7, k) * (5 - 1);
+            assert_eq!(wf.len(), expected, "coarse wireframe count at stride {k}");
+            // Every kept in-block axis edge lies on a kept grid line.
+            let lab = |n: u32| shell.labels()[n as usize].unwrap();
+            for [a, b] in &wf {
+                let ((_, ia, ja), (_, ib, jb)) = (lab(*a), lab(*b));
+                if ja == jb && (ia - ib).abs() == 1 {
+                    // horizontal: kept row (k-th) or the top boundary row.
+                    assert!(ja.rem_euclid(k as i32) == 0 || ja == 4);
+                } else if ia == ib && (ja - jb).abs() == 1 {
+                    assert!(ia.rem_euclid(k as i32) == 0 || ia == 6);
+                }
+            }
         }
     }
 
@@ -508,7 +680,7 @@ mod tests {
         let back: MeshShell = crate::io::serial::from_bytes(&bytes).unwrap();
         assert_eq!(back.nodes(), shell.nodes());
         assert_eq!(back.triangles(), shell.triangles());
-        assert_eq!(back.wireframe_edges(), shell.wireframe_edges());
+        assert_eq!(back.wireframe_edges(None), shell.wireframe_edges(None));
         assert_eq!(back.labels(), shell.labels());
         // The corner table is derived, never serialized — and rebuilt lazily.
         let json = serde_json::to_string(&shell).unwrap();
@@ -520,7 +692,7 @@ mod tests {
         let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
         v.as_object_mut().unwrap().remove("wireframe");
         let legacy: MeshShell = serde_json::from_value(v).unwrap();
-        assert!(legacy.wireframe_edges().len() > shell.wireframe_edges().len());
+        assert!(legacy.wireframe_edges(None).len() > shell.wireframe_edges(None).len());
 
         // A corrupted payload (non-manifold) is refused at decode.
         let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();

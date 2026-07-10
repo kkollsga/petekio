@@ -295,7 +295,7 @@ def test_project_import_uses_relative_names_for_duplicate_spatial_stems(tmp_path
 def test_project_import_enriches_irap_points_from_matching_earthvision_topology(tmp_path):
     root = tmp_path / "Data"
     _write(
-        root / "Surfaces" / "EarthVision_grid" / "Top Agat.EarthVisionGrid",
+        root / "Surfaces" / "EarthVision_grid" / "Top Dome.EarthVisionGrid",
         """# Type: scattered data
 # Field: 1 x
 # Field: 2 y
@@ -313,7 +313,7 @@ def test_project_import_enriches_irap_points_from_matching_earthvision_topology(
 """,
     )
     _write(
-        root / "Surfaces" / "IrapClassic_points" / "Top Agat.IrapClassicPoints",
+        root / "Surfaces" / "IrapClassic_points" / "Top Dome.IrapClassicPoints",
         """100.0 200.0 -50.0
 110.0 200.0 -51.0
 100.0 210.0 -52.0
@@ -323,11 +323,11 @@ def test_project_import_enriches_irap_points_from_matching_earthvision_topology(
     )
 
     project = petekio.Project.import_data(root)
-    pts = project.points["Surfaces/IrapClassic_points/Top Agat"]
+    pts = project.points["Surfaces/IrapClassic_points/Top Dome"]
 
     assert pts.attr("column") == [1.0, 2.0, 1.0, 2.0, 3.0]
     assert pts.attr("row") == [1.0, 1.0, 2.0, 2.0, 2.0]
-    assert project.points.Surfaces.IrapClassic_points.top_agat.attr("row") == [
+    assert project.points.Surfaces.IrapClassic_points.top_dome.attr("row") == [
         1.0,
         1.0,
         2.0,
@@ -337,6 +337,73 @@ def test_project_import_enriches_irap_points_from_matching_earthvision_topology(
     geom = pts.infer_geometry(tolerance=1e-3, edge="convex_hull")
     assert geom.ncol == 3
     assert geom.nrow == 2
+
+
+def _top_dome_tree(tmp_path: Path) -> Path:
+    root = tmp_path / "Data"
+    _write(
+        root / "Surfaces" / "EarthVision_grid" / "Top Dome.EarthVisionGrid",
+        """# Type: scattered data
+# Field: 1 x
+# Field: 2 y
+# Field: 3 z meters
+# Field: 4 column
+# Field: 5 row
+# Grid_size: 3 x 2
+# End:
+100.0 200.0 -50.0 1 1
+110.0 200.0 -51.0 2 1
+110.0 200.0 -51.0 3 1
+100.0 210.0 -52.0 1 2
+110.0 210.0 -53.0 2 2
+120.0 210.0 -54.0 3 2
+""",
+    )
+    _write(
+        root / "Surfaces" / "IrapClassic_points" / "Top Dome.IrapClassicPoints",
+        """100.0 200.0 -50.0
+110.0 200.0 -51.0
+100.0 210.0 -52.0
+110.0 210.0 -53.0
+120.0 210.0 -54.0
+""",
+    )
+    return root
+
+
+def test_project_lookup_records_dataset_name(tmp_path):
+    root = _top_dome_tree(tmp_path)
+    _write(root / "Surfaces" / "Top reservoir.irap", _irap())
+
+    project = petekio.Project.import_data(root)
+
+    pts = project.points.Surfaces.IrapClassic_points["Top Dome"]
+    assert pts.name == "Top Dome"
+    # The full-path lookup resolves to the same dataset leaf name.
+    assert project.points["Surfaces/IrapClassic_points/Top Dome"].name == "Top Dome"
+    assert project.surfaces["Top reservoir"].name == "Top reservoir"
+
+
+def test_dataset_name_propagates_to_derived_objects(tmp_path):
+    project = petekio.Project.import_data(_top_dome_tree(tmp_path))
+    pts = project.points.Surfaces.IrapClassic_points["Top Dome"]
+
+    geom = pts.infer_geometry(tolerance=1e-3)
+    assert geom.name == "Top Dome geometry"
+
+    surf = pts.to_surface(geom)
+    assert surf.name == "Top Dome"
+    assert surf.geometry.name == "Top Dome geometry"
+    assert pts.to_surface().name == "Top Dome"  # geometry inferred internally
+
+    structured = pts.to_structured_surface(tolerance=1e-3)
+    assert structured.name == "Top Dome"
+    assert structured.to_tri_surface().name == "Top Dome"
+    assert structured.to_points().name == "Top Dome"
+
+    labelled, report = pts.detect_topology()
+    assert report.verified
+    assert labelled.name == "Top Dome"
 
 
 def test_project_load_pproj_delegates_to_geodata_open(tmp_path):
@@ -395,13 +462,13 @@ def test_project_folder_navigation_and_object_management(tmp_path):
 
     project = petekio.Project.import_data(root)
 
-    project.rename_surface("Top reservoir", "structure/top agat")
+    project.rename_surface("Top reservoir", "structure/top dome")
     assert project.surfaces == ["structure/"]
     assert project.structures == ["structure/"]
-    assert project.surfaces.structure == ["top agat"]
-    assert project.surfaces.structure.top_agat.stats().count == 4
-    assert project.surfaces.top_agat.stats().count == 4
-    assert project.inventory()["surfaces"] == ["structure/top agat"]
+    assert project.surfaces.structure == ["top dome"]
+    assert project.surfaces.structure.top_dome.stats().count == 4
+    assert project.surfaces.top_dome.stats().count == 4
+    assert project.inventory()["surfaces"] == ["structure/top dome"]
 
     project.rename_points("samples", "data/samples")
     project.rename_polygons("ModelEdge", "maps/model edge")
@@ -419,10 +486,10 @@ def test_project_folder_navigation_and_object_management(tmp_path):
     project.save(pproj)
     reopened = petekio.Project.load(pproj)
     assert reopened.surfaces == ["structure/"]
-    assert reopened.surfaces.top_agat.stats().count == 4
+    assert reopened.surfaces.top_dome.stats().count == 4
     assert reopened.points.data.samples.stats("poro").count == 2
 
-    reopened.delete_surface("top agat")
+    reopened.delete_surface("top dome")
     reopened.delete_points("data/samples")
     reopened.delete_polygons("maps/model edge")
     reopened.delete_well("wells/A1")

@@ -238,12 +238,12 @@ project = petekio.Project.import_data("Data", settings=petekio.ImportSettings(cr
 project.save("field.pproj")                      # atomic compact-project write
 project = petekio.Project.load("field.pproj")    # compact-project read
 
-project.rename_surface("Top reservoir", "structure/top agat")
+project.rename_surface("Top reservoir", "structure/top dome")
 project.surfaces                                 # ["structure/"]
-project.surfaces.structure                       # ["top agat"]
-project.surfaces.top_agat                        # unique leaf lookup
-project.surfaces.all_names()                     # ["structure/top agat"]
-project.delete_surface("structure/top agat")
+project.surfaces.structure                       # ["top dome"]
+project.surfaces.top_dome                        # unique leaf lookup
+project.surfaces.all_names()                     # ["structure/top dome"]
+project.delete_surface("structure/top dome")
 
 geo.save("field.pproj")                          # lower-level GeoData write
 petekio.GeoData.inspect("field.pproj")           # manifest dict: unit, owner, elements

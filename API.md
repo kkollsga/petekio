@@ -139,9 +139,9 @@ impl Surface {
     pub fn to_tri_surface(&self) -> Result<TriSurface>;      // grid quad-split (consistent diagonal)
 
     // iso-lines + value layer (all three surface levels expose these — see "Geometry shells")
-    pub fn iso_lines(&self, interval: Option<f64>, levels: Option<Vec<f64>>, attr: Option<&str>)
-        -> Result<Vec<(f64, Vec<Vec<[f64; 2]>>)>>;           // NaN-aware marching triangles; explicit levels win; interval → levels aligned to its multiples over the value range; deterministic chaining
-    pub fn value_layer(&self, attr: Option<&str>) -> Result<ValueLayer>;  // the viewer trimesh bundle
+    pub fn iso_lines(&self, interval: Option<f64>, levels: Option<Vec<f64>>, attr: Option<&str>, simplify: Option<f64>)
+        -> Result<Vec<(f64, Vec<Vec<[f64; 2]>>)>>;           // NaN-aware marching triangles; explicit levels win; interval → levels aligned to its multiples over the value range; deterministic chaining. simplify=Some(tol) → Douglas–Peucker per polyline (world-unit tol; endpoints + ring closure preserved; open≥2, ring≥4 pts)
+    pub fn value_layer(&self, attr: Option<&str>, stride: Option<usize>) -> Result<ValueLayer>;  // the viewer trimesh bundle; stride=Some(k) → coarse-LOD decimation (per-block i%k==0 && j%k==0 nodes, coarse quad-split; node values verbatim, no averaging; range from the FULL-res lane so colours stay stable; fringe/bridge nodes dropped). Display-only
 
     // cube extraction (Phase 3) → a surface attribute
     pub fn slice_cube(&self, cube: &Cube, sampling: Sampling) -> Surface;
@@ -353,7 +353,7 @@ impl MeshShell {
         // validates node refs + labels len + EDGE-MANIFOLD (no undirected edge in >2 triangles)
     pub fn nodes(&self) -> &[[f64; 2]];                        // 2-D by design — never a function of z
     pub fn triangles(&self) -> &[[u32; 3]];                    // CCW
-    pub fn wireframe_edges(&self) -> Vec<[u32; 2]>;            // quad-dominant (interior cell diagonals hidden)
+    pub fn wireframe_edges(&self, stride: Option<usize>) -> Vec<[u32; 2]>; // quad-dominant (interior cell diagonals hidden); stride=Some(k) → coarse-LOD lattice (every k-th grid line per block; outline + seams + fringe kept); None/Some(1) = full. Display-only, geometry never decimated
     pub fn labels(&self) -> &[Option<WalkLabel>];              // per node; kept on the shell
     pub fn edge(&self) -> &PolygonSet;
     pub fn n_nodes(&self) -> usize;
@@ -399,7 +399,7 @@ impl TriSurface {
     pub fn points(&self) -> Vec<[f64; 3]>;      // shell XY zipped with z — the input points, unmoved (was &[[f64;3]] pre-shell)
     pub fn values(&self) -> &[f64];             // primary per-node lane (z); NaN = undefined
     pub fn triangles(&self) -> &[[u32; 3]];     // CCW, indices into points()
-    pub fn wireframe_edges(&self) -> Vec<[u32; 2]>; // unique edges minus interior cell diagonals — the geometry's flat-shell wireframe (purely topological, never a function of z)
+    pub fn wireframe_edges(&self, stride: Option<usize>) -> Vec<[u32; 2]>; // unique edges minus interior cell diagonals — the geometry's flat-shell wireframe (purely topological, never a function of z); stride=Some(k) → coarse-LOD lattice (outline + seams + fringe kept)
     pub fn edge(&self) -> &PolygonSet;
     pub fn components(&self) -> usize;          // >1 means the mesh honours a fault
     pub fn to_points(&self) -> PointSet;
@@ -413,9 +413,9 @@ impl TriSurface {
     // conversions (down = lossy) + iso/value-layer (same signatures as Surface)
     pub fn infer_grid(&self, tolerance: f64) -> Result<GridGeometry>;  // fit; Err when not regular
     pub fn resample(&self, target: &GridGeometry, method: GridMethod) -> Result<Surface>;  // grids primary + ALL attr lanes
-    pub fn iso_lines(&self, interval: Option<f64>, levels: Option<Vec<f64>>, attr: Option<&str>)
-        -> Result<Vec<(f64, Vec<Vec<[f64; 2]>>)>>;
-    pub fn value_layer(&self, attr: Option<&str>) -> Result<ValueLayer>;
+    pub fn iso_lines(&self, interval: Option<f64>, levels: Option<Vec<f64>>, attr: Option<&str>, simplify: Option<f64>)
+        -> Result<Vec<(f64, Vec<Vec<[f64; 2]>>)>>;           // simplify=Some(tol) → Douglas–Peucker per polyline (endpoints + ring closure preserved)
+    pub fn value_layer(&self, attr: Option<&str>, stride: Option<usize>) -> Result<ValueLayer>;  // stride=Some(k) → coarse-LOD decimation (range from the full-res lane)
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()>;          // one-section .pproj; shell stored ONCE + N lanes
     pub fn load(path: impl AsRef<Path>) -> Result<TriSurface>;
 }
@@ -453,9 +453,9 @@ impl StructuredMeshSurface {
     pub fn to_tri_surface(&self) -> Result<TriSurface>;               // quad-split; node identity on labels
     pub fn infer_grid(&self, tolerance: f64) -> Result<GridGeometry>; // fit; Err when curvilinear
     pub fn resample(&self, target: &GridGeometry, method: GridMethod) -> Result<Surface>;  // grids primary + ALL attr lanes
-    pub fn iso_lines(&self, interval: Option<f64>, levels: Option<Vec<f64>>, attr: Option<&str>)
-        -> Result<Vec<(f64, Vec<Vec<[f64; 2]>>)>>;
-    pub fn value_layer(&self, attr: Option<&str>) -> Result<ValueLayer>;
+    pub fn iso_lines(&self, interval: Option<f64>, levels: Option<Vec<f64>>, attr: Option<&str>, simplify: Option<f64>)
+        -> Result<Vec<(f64, Vec<Vec<[f64; 2]>>)>>;           // simplify=Some(tol) → Douglas–Peucker per polyline (endpoints + ring closure preserved)
+    pub fn value_layer(&self, attr: Option<&str>, stride: Option<usize>) -> Result<ValueLayer>;  // stride=Some(k) → coarse-LOD decimation (range from the full-res lane)
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()>;         // one-section .pproj; shell stored ONCE + N lanes
     pub fn load(path: impl AsRef<Path>) -> Result<StructuredMeshSurface>;
 }
@@ -696,10 +696,10 @@ project.inventory()                       # counts + loaded names + stable skipp
 project.surfaces["Top reservoir"]         # named access over the underlying GeoData
 project.well("15/9-A1")
 project.geodata                           # the underlying GeoData substrate
-project.rename_surface("Top reservoir", "structure/top agat")
-project.surfaces.structure.top_agat       # folder view + unique leaf lookup
+project.rename_surface("Top reservoir", "structure/top dome")
+project.surfaces.structure.top_dome       # folder view + unique leaf lookup
 project.surfaces.all_names()              # canonical names with folders
-project.delete_surface("structure/top agat")
+project.delete_surface("structure/top dome")
 project.save("field.pproj")               # compact .pproj write
 pproj_project = petekio.Project.load("field.pproj")  # compact .pproj read
 
@@ -721,9 +721,14 @@ ongrid = top.resample(grid_geom)
 top.iso_lines(interval=25.0)             # [(level, [[(x, y), ...], ...]), ...]
 top.iso_lines(levels=[1800.0, 1850.0])   # explicit levels win over interval
 top.iso_lines(interval=5.0, attr="twt")  # contour an attribute lane
+top.iso_lines(interval=25.0, simplify=2.0)  # Douglas–Peucker per polyline (2 m tol;
+                                         #  endpoints + ring closure preserved)
 top.value_layer()                        # {"kind": "trimesh", "name", "nodes",
                                          #  "triangles", "values", "range"} — the
                                          #  petektools-viewer bundle (do not change)
+top.value_layer(stride=4)                # coarse-LOD trimesh (per-block i,j striding;
+                                         #  range from the full-res lane — colours stable)
+tri.wireframe_edges(stride=4)            # coarse-LOD lattice (outline + seams + fringe kept)
 sm = top.to_structured_mesh()            # level 1 → 2 (free; attrs carried 1:1)
 tri = top.to_tri_surface()               # level 1 → 3 (quad-split; attrs carried 1:1)
 sm.to_tri_surface()                      # level 2 → 3
@@ -831,15 +836,38 @@ petekio.ViewSettings(serve=True, save=None)                  # HOW view() delive
 Python rules: `Stats` fields exposed as read-only attributes; operators (`+ - * /`)
 on `Surface`; `surface.attr["name"]` indexed access; `surface.edge` and
 `surface.geometry.edge` expose matching `PolygonSet` outlines; `PointSet`
-exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=None) -> GridGeometry | TriSurface`
+exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=None, fallback="tri") -> GridGeometry | TriSurface`
 and `to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
 `edge="occupied"|"convex_hull"|"full_rect"`; `detect_topology(nominal_cell=None)`
 returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
-`infer_geometry` preserves strict regular inference but automatically delegates to
-`to_tri_surface(max_link=None, max_bridge=...)` when no regular lattice describes
-the points (`max_bridge`, in cells, closes boundary-fringe/fault-seam/data-gap
-edges up to that length; `None` = strictly lattice-closed);
+`infer_geometry` preserves strict regular inference; when no regular lattice
+describes the points it delegates to `to_tri_surface(max_link=None,
+max_bridge=...)` **with a `UserWarning`** (`fallback="tri"`, the default) or
+raises a `ValueError` (`fallback="error"`). `max_bridge` (in cells) applies
+**only to the TriSurface fallback** — it closes boundary-fringe/fault-seam/
+data-gap edges up to that length (`None` = strictly lattice-closed) and has no
+effect on an inferred `GridGeometry`. Both possible results carry a
+discoverable `.kind` for import-free dispatch — every geometry/surface/point
+object exposes it: `"grid_geometry"` | `"surface"` | `"structured_mesh"` |
+`"tri_surface"` | `"point_set"` | `"polygon_set"`.
+`PointSet.to_surface(geom=None, method="idw", tolerance=1e-3) -> Surface`
+grids z onto `geom`; `geom=None` (default) infers the lattice internally
+(`tolerance` as in `infer_geometry`) and **raises a `ValueError`** when the
+points are not lattice-regular — it never grids onto an arbitrary bounding
+lattice (pass an explicit `GridGeometry` or use `to_tri_surface()`); passing
+the `infer_geometry` TriSurface fallback as `geom` is a `TypeError` pointing
+at `tri_surface.resample(geom, method)`;
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
+**Dataset names (duck-typed viewer seam):** every project-accessor hand-back
+(`project.points[...]`, `project.surfaces[...]`, `project.polygons[...]`,
+`geo.points(name)`, `geo.surface(name)`, `geo.polygons(name)`, and the
+`load_*` project loaders) carries a read-only `.name` property — the lookup
+key's leaf (`"Surfaces/IrapClassic_points/Top Dome"` → `"Top Dome"`).
+Derived objects propagate it: `infer_geometry`/`surface.geometry`/`infer_grid`
+→ `"<name> geometry"`; `to_surface`/`to_tri_surface`/`to_structured_surface`/
+`to_structured_mesh`/`to_points`/`resample`/`detect_topology`'s labelled
+points/attr promotion keep `"<name>"`. Anonymous/in-memory objects
+(`from_xyz`, `Surface.load_*`, arithmetic results, …) return `None`.
 `TriSurface.points()`/`.xyz()` keep returning `(x, y, z)` tuples (shell XY
 zipped with z); `StructuredMeshSurface`/`TriSurface` attribute access is
 method-style (`attr(name)` promotes the lane on the same shared shell;

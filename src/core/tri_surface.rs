@@ -152,8 +152,13 @@ impl TriSurface {
     /// wireframe of the geometry as a flat empty shell (a full lattice cell
     /// shows as a square, not two triangles). Purely topological, never a
     /// function of z. See [`MeshShell::wireframe_edges`].
-    pub fn wireframe_edges(&self) -> Vec<[u32; 2]> {
-        self.shell.wireframe_edges()
+    ///
+    /// `stride = Some(k)` (k ≥ 2) returns the coarse-LOD lattice wireframe
+    /// (every k-th grid line per block, outline + seams + fringe kept);
+    /// `None`/`Some(1)` is the full wireframe. Display-only — geometry is never
+    /// decimated.
+    pub fn wireframe_edges(&self, stride: Option<usize>) -> Vec<[u32; 2]> {
+        self.shell.wireframe_edges(stride)
     }
 
     /// Outer boundary ring(s) of the retained triangles.
@@ -628,7 +633,7 @@ mod tests {
         let tin = PointSet::from_coords(lattice(9, 7, 50.0, 50.0, 0.0))
             .to_tri_surface(None, None)
             .unwrap();
-        let wf = tin.wireframe_edges();
+        let wf = tin.wireframe_edges(None);
         assert_eq!(wf.len(), 9 * 6 + 7 * 8);
         let pts = tin.points();
         for [a, b] in &wf {
@@ -653,16 +658,74 @@ mod tests {
         let wf_flat = PointSet::from_coords(flat)
             .to_tri_surface(None, None)
             .unwrap()
-            .wireframe_edges();
+            .wireframe_edges(None);
         let wf_spiked = PointSet::from_coords(spiked)
             .to_tri_surface(None, None)
             .unwrap()
-            .wireframe_edges();
+            .wireframe_edges(None);
         assert_eq!(wf_flat.len(), 9 * 6 + 7 * 8);
         assert_eq!(
             wf_flat, wf_spiked,
             "z must not leak into the geometry wireframe"
         );
+    }
+
+    #[test]
+    fn strided_wireframe_keeps_seams_and_boundary_on_a_faulted_mesh() {
+        // The faulted two-block fixture: striding must reduce the interior lattice
+        // while keeping every boundary edge and every edge touching an unlabelled
+        // fault-trace node (the seam), at every stride.
+        let mut coords = Vec::new();
+        for j in 0..12 {
+            for i in 0..8 {
+                coords.push([50.0 * i as f64, 50.0 * j as f64, -1800.0]);
+            }
+        }
+        for j in 0..12 {
+            for i in 10..18 {
+                coords.push([50.0 * i as f64 + 20.0, 50.0 * j as f64 + 25.0, -1900.0]);
+            }
+        }
+        let tin = PointSet::from_coords(coords)
+            .to_tri_surface(None, None)
+            .unwrap();
+        assert_eq!(tin.components(), 2, "the fixture is faulted");
+
+        let full = tin.wireframe_edges(None);
+        let labels = tin.shell().labels();
+        // Boundary edges (carried by exactly one triangle) and edges touching an
+        // unlabelled node must survive every stride.
+        let mut count: std::collections::BTreeMap<(u32, u32), u8> = Default::default();
+        for t in tin.triangles() {
+            for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                *count
+                    .entry(if a <= b { (a, b) } else { (b, a) })
+                    .or_insert(0) += 1;
+            }
+        }
+        for k in [2usize, 4] {
+            let wf = tin.wireframe_edges(Some(k));
+            let set: HashSet<(u32, u32)> = wf
+                .iter()
+                .map(|e| ordered(e[0] as usize, e[1] as usize))
+                .map(|(a, b)| (a as u32, b as u32))
+                .collect();
+            assert!(
+                wf.len() < full.len(),
+                "stride {k} must reduce the wireframe"
+            );
+            for [a, b] in &full {
+                let key = if a <= b { (*a, *b) } else { (*b, *a) };
+                let boundary = count.get(&key) == Some(&1);
+                let touches_fringe = labels[*a as usize].is_none() || labels[*b as usize].is_none();
+                if boundary || touches_fringe {
+                    assert!(
+                        set.contains(&key),
+                        "seam/boundary edge {key:?} dropped at stride {k}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -697,7 +760,7 @@ mod tests {
         let back: TriSurface = serde_json::from_str(&json).unwrap();
         assert_eq!(back.points(), tin.points());
         assert_eq!(back.triangles(), tin.triangles());
-        assert_eq!(back.wireframe_edges(), tin.wireframe_edges());
+        assert_eq!(back.wireframe_edges(None), tin.wireframe_edges(None));
         assert_eq!(back.attr("amp").unwrap(), tin.attr("amp").unwrap());
         assert_eq!(back.shell().labels(), tin.shell().labels());
     }

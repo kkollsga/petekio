@@ -10,7 +10,7 @@
 //! * [`value_layer`](Surface::value_layer) — the [`ValueLayer`] bundle the
 //!   petektools viewer renders (`kind = "trimesh"`).
 
-use crate::algorithms::surfaces::{aligned_levels, contour_trimesh};
+use crate::algorithms::surfaces::{aligned_levels, contour_trimesh, douglas_peucker};
 use crate::core::shell::MeshShell;
 use crate::core::{StructuredMeshSurface, Surface, TriSurface};
 use crate::foundation::{GeoError, Result};
@@ -106,6 +106,53 @@ fn build_layer(
     }
 }
 
+/// Assemble the [`ValueLayer`] from a mesh shell and its per-node lane, applying
+/// the display-only LOD `stride` when requested. `None`/`Some(1)` is the full
+/// mesh (byte-identical to the pre-LOD behaviour). `Some(k)` decimates each
+/// fault block to its `i % k == 0 && j % k == 0` nodes, re-triangulated as the
+/// coarse quad-split; node values are the nodes' own values (no averaging — a
+/// display LOD, not a resample). The `range` is always the **full-resolution**
+/// finite min/max, so a lane's colours stay stable across LODs.
+fn build_layer_strided(
+    shell: &MeshShell,
+    name: String,
+    mesh_values: Vec<f64>,
+    stride: Option<usize>,
+) -> ValueLayer {
+    match stride {
+        None | Some(0) | Some(1) => build_layer(
+            name,
+            shell.nodes().to_vec(),
+            shell.triangles().to_vec(),
+            mesh_values,
+        ),
+        Some(k) => {
+            let (nodes, triangles, orig) = shell.strided_lattice(k);
+            let values = orig.iter().map(|&idx| mesh_values[idx]).collect();
+            ValueLayer {
+                name,
+                nodes,
+                triangles,
+                values,
+                range: finite_range(&mesh_values), // stable colours: full-res range
+            }
+        }
+    }
+}
+
+/// Simplify each iso-line polyline in place with Douglas–Peucker when a
+/// `simplify` tolerance (world units) is given. A no-op otherwise.
+fn simplify_iso_lines(mut out: IsoLines, simplify: Option<f64>) -> IsoLines {
+    if let Some(tol) = simplify {
+        for (_, lines) in out.iter_mut() {
+            for line in lines.iter_mut() {
+                *line = douglas_peucker(line, tol);
+            }
+        }
+    }
+    out
+}
+
 impl Surface {
     fn lane(&self, attr: Option<&str>) -> Result<(&Array2<f64>, String)> {
         match attr {
@@ -127,31 +174,24 @@ impl Surface {
         interval: Option<f64>,
         levels: Option<Vec<f64>>,
         attr: Option<&str>,
+        simplify: Option<f64>,
     ) -> Result<IsoLines> {
         let shell = self.geom.to_mesh_shell()?;
         let (lane, _) = self.lane(attr)?;
         let values = grid_lane_on_mesh(&shell, lane);
         let levels = resolve_levels(&values, interval, levels)?;
-        Ok(contour_trimesh(
-            shell.nodes(),
-            shell.triangles(),
-            &values,
-            &levels,
-        ))
+        let out = contour_trimesh(shell.nodes(), shell.triangles(), &values, &levels);
+        Ok(simplify_iso_lines(out, simplify))
     }
 
     /// A property lane as a trimesh [`ValueLayer`] (nodes/triangles from the
-    /// quad-split grid, XY computed from the geometry).
-    pub fn value_layer(&self, attr: Option<&str>) -> Result<ValueLayer> {
+    /// quad-split grid, XY computed from the geometry). `stride = Some(k)`
+    /// returns the coarse-LOD decimation (see [`build_layer_strided`]).
+    pub fn value_layer(&self, attr: Option<&str>, stride: Option<usize>) -> Result<ValueLayer> {
         let shell = self.geom.to_mesh_shell()?;
         let (lane, name) = self.lane(attr)?;
         let values = grid_lane_on_mesh(&shell, lane);
-        Ok(build_layer(
-            name,
-            shell.nodes().to_vec(),
-            shell.triangles().to_vec(),
-            values,
-        ))
+        Ok(build_layer_strided(&shell, name, values, stride))
     }
 }
 
@@ -173,31 +213,24 @@ impl StructuredMeshSurface {
         interval: Option<f64>,
         levels: Option<Vec<f64>>,
         attr: Option<&str>,
+        simplify: Option<f64>,
     ) -> Result<IsoLines> {
         let mesh = self.shell().to_mesh_shell()?;
         let (lane, _) = self.lane(attr)?;
         let values = grid_lane_on_mesh(&mesh, lane);
         let levels = resolve_levels(&values, interval, levels)?;
-        Ok(contour_trimesh(
-            mesh.nodes(),
-            mesh.triangles(),
-            &values,
-            &levels,
-        ))
+        let out = contour_trimesh(mesh.nodes(), mesh.triangles(), &values, &levels);
+        Ok(simplify_iso_lines(out, simplify))
     }
 
     /// A property lane as a trimesh [`ValueLayer`] (nodes/triangles from the
-    /// shell's quad-split).
-    pub fn value_layer(&self, attr: Option<&str>) -> Result<ValueLayer> {
+    /// shell's quad-split). `stride = Some(k)` returns the coarse-LOD
+    /// decimation (see [`build_layer_strided`]).
+    pub fn value_layer(&self, attr: Option<&str>, stride: Option<usize>) -> Result<ValueLayer> {
         let mesh = self.shell().to_mesh_shell()?;
         let (lane, name) = self.lane(attr)?;
         let values = grid_lane_on_mesh(&mesh, lane);
-        Ok(build_layer(
-            name,
-            mesh.nodes().to_vec(),
-            mesh.triangles().to_vec(),
-            values,
-        ))
+        Ok(build_layer_strided(&mesh, name, values, stride))
     }
 }
 
@@ -219,26 +252,29 @@ impl TriSurface {
         interval: Option<f64>,
         levels: Option<Vec<f64>>,
         attr: Option<&str>,
+        simplify: Option<f64>,
     ) -> Result<IsoLines> {
         let (values, _) = self.lane(attr)?;
         let levels = resolve_levels(values, interval, levels)?;
-        Ok(contour_trimesh(
+        let out = contour_trimesh(
             self.shell().nodes(),
             self.shell().triangles(),
             values,
             &levels,
-        ))
+        );
+        Ok(simplify_iso_lines(out, simplify))
     }
 
     /// A property lane as a trimesh [`ValueLayer`] — the shell's own nodes
-    /// and triangles.
-    pub fn value_layer(&self, attr: Option<&str>) -> Result<ValueLayer> {
+    /// and triangles. `stride = Some(k)` returns the coarse-LOD decimation
+    /// (see [`build_layer_strided`]).
+    pub fn value_layer(&self, attr: Option<&str>, stride: Option<usize>) -> Result<ValueLayer> {
         let (values, name) = self.lane(attr)?;
-        Ok(build_layer(
+        Ok(build_layer_strided(
+            self.shell(),
             name,
-            self.shell().nodes().to_vec(),
-            self.shell().triangles().to_vec(),
             values.to_vec(),
+            stride,
         ))
     }
 }
@@ -275,7 +311,7 @@ mod tests {
     #[test]
     fn tilted_plane_gives_straight_iso_lines_at_exact_x() {
         let s = tilted_plane();
-        let out = s.iso_lines(Some(50.0), None, None).unwrap();
+        let out = s.iso_lines(Some(50.0), None, None, None).unwrap();
         // Values span [100, 300] → levels 100, 150, 200, 250, 300.
         let levels: Vec<f64> = out.iter().map(|(l, _)| *l).collect();
         assert_eq!(levels, vec![100.0, 150.0, 200.0, 250.0, 300.0]);
@@ -305,7 +341,7 @@ mod tests {
         let mut v = s.values().clone();
         v[[5, 2]] = f64::NAN;
         s = Surface::new(s.geom.clone(), v).unwrap();
-        let out = s.iso_lines(None, Some(vec![200.0]), None).unwrap();
+        let out = s.iso_lines(None, Some(vec![200.0]), None, None).unwrap();
         let lines = &out[0].1;
         assert!(
             lines.len() >= 2,
@@ -327,12 +363,12 @@ mod tests {
     fn explicit_levels_win_over_interval() {
         let s = tilted_plane();
         let out = s
-            .iso_lines(Some(50.0), Some(vec![137.0, 253.0]), None)
+            .iso_lines(Some(50.0), Some(vec![137.0, 253.0]), None, None)
             .unwrap();
         let levels: Vec<f64> = out.iter().map(|(l, _)| *l).collect();
         assert_eq!(levels, vec![137.0, 253.0]);
         assert!(
-            s.iso_lines(None, None, None).is_err(),
+            s.iso_lines(None, None, None, None).is_err(),
             "no interval, no levels"
         );
     }
@@ -349,13 +385,15 @@ mod tests {
             }
         }
         s.set_attr("twt", a).unwrap();
-        let out = s.iso_lines(None, Some(vec![25.0]), Some("twt")).unwrap();
+        let out = s
+            .iso_lines(None, Some(vec![25.0]), Some("twt"), None)
+            .unwrap();
         let lines = &out[0].1;
         assert_eq!(lines.len(), 1);
         for p in &lines[0] {
             assert_relative_eq!(p[1], 25.0, epsilon = 1e-9);
         }
-        assert!(s.iso_lines(Some(1.0), None, Some("missing")).is_err());
+        assert!(s.iso_lines(Some(1.0), None, Some("missing"), None).is_err());
     }
 
     #[test]
@@ -366,7 +404,7 @@ mod tests {
             v[[10, j]] = f64::NAN; // NaN out the whole max column (value 300)
         }
         s = Surface::new(s.geom.clone(), v).unwrap();
-        let layer = s.value_layer(None).unwrap();
+        let layer = s.value_layer(None, None).unwrap();
         assert_eq!(ValueLayer::KIND, "trimesh");
         assert_eq!(layer.name, "values");
         assert_eq!(layer.nodes.len(), 11 * 5);
@@ -383,6 +421,110 @@ mod tests {
             if got.is_finite() {
                 assert_relative_eq!(got, expect, epsilon = 1e-9);
             }
+        }
+    }
+
+    /// A wider flat lattice (z = 2x + 100) for the LOD tests.
+    fn wide_plane(ncol: usize, nrow: usize) -> Surface {
+        let geom = GridGeometry {
+            xori: 0.0,
+            yori: 0.0,
+            xinc: 10.0,
+            yinc: 10.0,
+            ncol,
+            nrow,
+            rotation_deg: 0.0,
+            yflip: false,
+        };
+        let mut v = Array2::zeros((ncol, nrow));
+        for j in 0..nrow {
+            for i in 0..ncol {
+                let (x, _) = geom.node_xy(i, j);
+                v[[i, j]] = 2.0 * x + 100.0;
+            }
+        }
+        Surface::new(geom, v).unwrap()
+    }
+
+    #[test]
+    fn value_layer_stride_is_the_coarse_quad_triangulation() {
+        // 9 x 7 flat lattice; stride 2 keeps the i,j-even nodes, re-triangulated
+        // as the coarse quad-split. Node count / triangles match the ceil grid.
+        let s = wide_plane(9, 7);
+        let full = s.value_layer(None, None).unwrap();
+        assert_eq!(
+            s.value_layer(None, Some(1)).unwrap().nodes.len(),
+            full.nodes.len()
+        );
+
+        let even = |n: usize| (0..n).filter(|i| i % 2 == 0).count();
+        let (nc, nr) = (even(9), even(7)); // 5 x 4 coarse nodes
+        let lod = s.value_layer(None, Some(2)).unwrap();
+        assert_eq!(lod.nodes.len(), nc * nr);
+        assert_eq!(lod.triangles.len(), 2 * (nc - 1) * (nr - 1));
+        // Fewer triangles than full — the whole point.
+        assert!(lod.triangles.len() < full.triangles.len());
+        // Range comes from the FULL-resolution lane (stable colours).
+        assert_eq!(lod.range, full.range);
+        // Values are the nodes' own values (no averaging) — the plane holds.
+        for (node, &val) in lod.nodes.iter().zip(&lod.values) {
+            assert_relative_eq!(val, 2.0 * node[0] + 100.0, epsilon = 1e-9);
+        }
+    }
+
+    #[test]
+    fn value_layer_stride_keeps_faulted_blocks_separate() {
+        // Two blocks → the coarse layer must still honour the fault (both
+        // blocks decimated independently, no bridge triangle across the seam).
+        let mut coords = Vec::new();
+        for j in 0..12 {
+            for i in 0..8 {
+                coords.push([50.0 * i as f64, 50.0 * j as f64, -1800.0]);
+            }
+        }
+        for j in 0..12 {
+            for i in 10..18 {
+                coords.push([50.0 * i as f64 + 20.0, 50.0 * j as f64 + 25.0, -1900.0]);
+            }
+        }
+        let tin = crate::core::PointSet::from_coords(coords)
+            .to_tri_surface(None, None)
+            .unwrap();
+        assert_eq!(tin.components(), 2);
+        let full = tin.value_layer(None, None).unwrap();
+        let lod = tin.value_layer(None, Some(2)).unwrap();
+        assert!(lod.triangles.len() < full.triangles.len());
+        assert!(!lod.nodes.is_empty());
+        assert_eq!(lod.range, full.range, "range from the full-res lane");
+        // No coarse triangle spans the fault: the seam gap (~170 m) exceeds any
+        // legitimate coarse in-block edge (a 100 m cell's diagonal ≈ 141 m), so
+        // every triangle edge staying under 160 m proves the blocks never merged.
+        for t in &lod.triangles {
+            for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let (p, q) = (lod.nodes[a as usize], lod.nodes[b as usize]);
+                let len = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt();
+                assert!(len < 160.0, "a coarse triangle bridged the fault: {len} m");
+            }
+        }
+    }
+
+    #[test]
+    fn iso_lines_simplify_collapses_a_straight_contour() {
+        // The tilted plane's contours are straight; DP with a small tolerance
+        // collapses each to its two endpoints without moving them.
+        let s = wide_plane(21, 5);
+        let full = s.iso_lines(None, Some(vec![200.0]), None, None).unwrap();
+        let simp = s
+            .iso_lines(None, Some(vec![200.0]), None, Some(1.0))
+            .unwrap();
+        let (lf, ls) = (&full[0].1, &simp[0].1);
+        assert_eq!(lf.len(), ls.len(), "same number of polylines");
+        for (a, b) in lf.iter().zip(ls) {
+            assert!(b.len() <= a.len(), "simplify never adds points");
+            assert_eq!(b.first(), a.first(), "endpoints preserved");
+            assert_eq!(b.last(), a.last());
+            // A straight contour collapses to exactly its two endpoints.
+            assert_eq!(b.len(), 2);
         }
     }
 }

@@ -15,13 +15,21 @@ use std::sync::Arc;
 #[pyclass(name = "TriSurface")]
 pub struct TriSurface {
     inner: Arc<RsTriSurface>,
+    name: Option<String>,
 }
 
 impl TriSurface {
     pub(crate) fn wrap(inner: RsTriSurface) -> TriSurface {
         TriSurface {
             inner: Arc::new(inner),
+            name: None,
         }
+    }
+
+    /// Attach a dataset display name (the duck-typed viewer seam).
+    pub(crate) fn named(mut self, name: Option<String>) -> TriSurface {
+        self.name = name;
+        self
     }
 }
 
@@ -30,6 +38,14 @@ impl TriSurface {
     #[getter]
     fn kind(&self) -> &'static str {
         self.inner.kind()
+    }
+
+    /// The dataset name this surface derives from (propagated from the source
+    /// point set / surface), or `None` for anonymous meshes. Duck-typed
+    /// viewer seam.
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.name.clone()
     }
 
     #[getter]
@@ -73,10 +89,13 @@ impl TriSurface {
 
     /// Unique triangle edges minus interior cell diagonals, as `(i, j)` index
     /// pairs into `points()` — the quad-dominant wireframe (a full lattice
-    /// cell draws as a square).
-    fn wireframe_edges(&self) -> Vec<(u32, u32)> {
+    /// cell draws as a square). `stride=k` (k ≥ 2) returns the coarse-LOD
+    /// lattice wireframe (every k-th grid line per block, outline + seams +
+    /// fringe kept); `None`/`1` is the full wireframe. Display-only.
+    #[pyo3(signature = (stride = None))]
+    fn wireframe_edges(&self, stride: Option<usize>) -> Vec<(u32, u32)> {
         self.inner
-            .wireframe_edges()
+            .wireframe_edges(stride)
             .into_iter()
             .map(|e| (e[0], e[1]))
             .collect()
@@ -100,7 +119,7 @@ impl TriSurface {
 
     /// The vertices as a `PointSet` — exact, nothing resampled.
     fn to_points(&self) -> PointSet {
-        PointSet::owned(self.inner.to_points())
+        PointSet::owned(self.inner.to_points()).named(self.name.clone())
     }
 
     /// Human-readable operation history.
@@ -129,7 +148,7 @@ impl TriSurface {
     fn attr(&self, name: &str) -> PyResult<TriSurface> {
         self.inner
             .as_attr_surface(name)
-            .map(TriSurface::wrap)
+            .map(|t| TriSurface::wrap(t).named(self.name.clone()))
             .ok_or_else(|| {
                 pyo3::exceptions::PyKeyError::new_err(format!("no attribute layer '{name}'"))
             })
@@ -149,7 +168,7 @@ impl TriSurface {
     fn set_attr(&self, name: &str, values: Vec<f64>) -> PyResult<TriSurface> {
         let mut out = (*self.inner).clone();
         out.set_attr(name, values).map_err(to_pyerr)?;
-        Ok(TriSurface::wrap(out))
+        Ok(TriSurface::wrap(out).named(self.name.clone()))
     }
 
     // ---- conversions ----
@@ -160,7 +179,10 @@ impl TriSurface {
     fn infer_grid(&self, tolerance: f64) -> PyResult<GridGeometry> {
         self.inner
             .infer_grid(tolerance)
-            .map(|g| GridGeometry::with_edge(g, self.inner.edge().clone()))
+            .map(|g| {
+                GridGeometry::with_edge(g, self.inner.edge().clone())
+                    .named(self.name.as_ref().map(|n| format!("{n} geometry")))
+            })
             .map_err(to_pyerr)
     }
 
@@ -177,7 +199,7 @@ impl TriSurface {
         let gm = parse_grid_method(method)?;
         let t = target.inner.clone();
         py.detach(|| self.inner.resample(&t, gm))
-            .map(crate::surface::Surface::wrap)
+            .map(|s| crate::surface::Surface::wrap(s).named(self.name.clone()))
             .map_err(to_pyerr)
     }
 
@@ -186,24 +208,34 @@ impl TriSurface {
     /// Iso-lines of a property lane: `[(level, [[(x, y), ...], ...]), ...]`.
     /// Explicit `levels` win over `interval` (levels aligned to interval
     /// multiples across the value range). NaN-aware: holes break lines.
-    #[pyo3(signature = (interval = None, levels = None, attr = None))]
+    /// `simplify=tol` runs Douglas–Peucker on each polyline (world-unit
+    /// tolerance; endpoints + ring closure preserved).
+    #[pyo3(signature = (interval = None, levels = None, attr = None, simplify = None))]
     fn iso_lines(
         &self,
         py: Python<'_>,
         interval: Option<f64>,
         levels: Option<Vec<f64>>,
         attr: Option<&str>,
+        simplify: Option<f64>,
     ) -> PyResult<PyIsoLines> {
-        py.detach(|| self.inner.iso_lines(interval, levels, attr))
+        py.detach(|| self.inner.iso_lines(interval, levels, attr, simplify))
             .map(iso_lines_py)
             .map_err(to_pyerr)
     }
 
     /// A property lane as the viewer's trimesh dict: `{"kind": "trimesh",
-    /// "name", "nodes", "triangles", "values", "range"}`.
-    #[pyo3(signature = (attr = None))]
-    fn value_layer(&self, py: Python<'_>, attr: Option<&str>) -> PyResult<Py<PyDict>> {
-        let layer = self.inner.value_layer(attr).map_err(to_pyerr)?;
+    /// "name", "nodes", "triangles", "values", "range"}`. `stride=k` returns
+    /// the coarse-LOD decimation (per-block `(i,j)`-label striding; `range`
+    /// from the full-resolution lane). Display-only.
+    #[pyo3(signature = (attr = None, stride = None))]
+    fn value_layer(
+        &self,
+        py: Python<'_>,
+        attr: Option<&str>,
+        stride: Option<usize>,
+    ) -> PyResult<Py<PyDict>> {
+        let layer = self.inner.value_layer(attr, stride).map_err(to_pyerr)?;
         value_layer_dict(py, layer)
     }
 

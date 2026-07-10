@@ -6,6 +6,79 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-07-10
+
+### Added
+- **Producer-side LOD for the viewer seam (display-only; geometry never
+  decimated).** Three additive extensions compute exact level-of-detail
+  reductions from the shell's own structure:
+  - `MeshShell::wireframe_edges(stride)` / `TriSurface::wireframe_edges(stride)`
+    (Python `wireframe_edges(stride=None)`): `stride=k` returns the coarse
+    lattice wireframe — per fault block only the every-k-th row/column grid
+    lines survive (an in-block edge `(i,j)–(i+1,j)` kept when `j % k == 0`, an
+    edge `(i,j)–(i,j+1)` when `i % k == 0`), plus **all** boundary edges and
+    **all** edges touching an unlabelled node (fringe/bridge) or crossing a
+    block seam — so the outline and every seam stay intact at every LOD. It
+    reproduces the same line set as striding a grid's lines. `None`/`1` is the
+    full wireframe, byte-identical to before. Measured ≈2×/≈3.9× fewer edges at
+    stride 2/4 on a 200×200 faulted lattice.
+  - `Surface`/`StructuredMeshSurface`/`TriSurface` `value_layer(attr, stride)`
+    (Python `value_layer(attr=None, stride=None)`): `stride=k` builds the
+    trimesh on the decimated node set — per block, the `i % k == 0 && j % k == 0`
+    nodes, re-triangulated as the coarse quad-split (two triangles per coarse
+    cell where all four corners exist). Node values are the nodes' own values
+    (no averaging — a display LOD, not a resample); `range` comes from the
+    **full-resolution** lane so colours stay stable across LODs. Unlabelled
+    fringe/bridge nodes are dropped at coarse LOD (re-attaching them needs a
+    full re-triangulation — disproportionate for a display reduction; the
+    outline is carried by the wireframe/edge). The dict shape is unchanged.
+    Measured ≈4×/≈16.8× fewer triangles at stride 2/4 (2-D decimation).
+  - `iso_lines(..., simplify)` (all three levels; Python
+    `iso_lines(..., simplify=None)`): `simplify=tol` runs Douglas–Peucker
+    (new pure kernel `algorithms::surfaces::douglas_peucker`) on each output
+    polyline with a world-unit tolerance. Open-line endpoints and ring-closure
+    points are preserved; a polyline never drops below 2 points (rings below 4).
+    Measured ≈7×/≈39× fewer contour vertices at tol 1 m/50 m.
+- **Dataset names on Python hand-backs (duck-typed viewer seam).** Objects
+  resolved through a project lookup (`project.points["…/Top Dome"]`,
+  `project.surfaces[...]`, `geo.points(name)`, …) now carry a read-only
+  `.name` property — the lookup key's leaf, e.g. `"Top Dome"` — so downstream
+  consumers (the petektools viewer legend) can show the real dataset name.
+  Derived objects propagate it (`infer_geometry` → `"Top Dome geometry"`;
+  `to_surface`/`to_tri_surface`/`to_structured_surface`/`to_points`/`resample`
+  keep `"Top Dome"`). Anonymous/in-memory objects return `None`.
+- **Discoverable `kind` labels.** `GridGeometry` (`"grid_geometry"`),
+  `Surface` (`"surface"`), `PointSet` (`"point_set"`) and `PolygonSet`
+  (`"polygon_set"`) now expose a `.kind` property (matching the existing
+  `TriSurface`/`StructuredMeshSurface` labels), so `infer_geometry` callers
+  can type-dispatch its `GridGeometry | TriSurface` result without imports.
+- **`infer_geometry(fallback=...)`.** `fallback="tri"` (default) keeps the
+  TriSurface fallback; `fallback="error"` raises a `ValueError` when no
+  regular lattice fits the points.
+- **Geometry-optional `PointSet.to_surface`.** Python
+  `to_surface(geom=None, method="idw", tolerance=1e-3)` now infers the
+  lattice internally when `geom` is omitted, raising a clear `ValueError`
+  when the points are not lattice-regular (never gridding onto an arbitrary
+  bounding lattice) and a clear `TypeError` when the `infer_geometry`
+  TriSurface fallback (or any non-`GridGeometry`) is passed as `geom`.
+
+### Fixed
+- **`infer_geometry` no longer swallows the fallback's failure cause.** When
+  the lattice fit fails *and* the TriSurface fallback also fails (e.g. a
+  tiny/degenerate cloud), the raised `ValueError` now chains both causes
+  ("no regular lattice fits … the TriSurface fallback also failed …")
+  instead of reporting only the lattice-fit error.
+
+### Changed
+- **`infer_geometry`'s TriSurface fallback is now loud.** When the regular
+  lattice fit fails, the default behaviour still returns the `TriSurface`
+  fallback but emits a `UserWarning` naming the fit failure (silently
+  swapping return types hid points-vs-surface confusion downstream).
+  `max_bridge` is documented as applying only to that fallback.
+  **Migration:** pass `fallback="error"` to make the failure fatal, or
+  silence it with `warnings.filterwarnings("ignore", category=UserWarning)`
+  if you relied on the silent fallback.
+
 ## [0.3.11] - 2026-07-10
 
 > **Rust API note:** this release reshapes `TriSurface`/`StructuredMeshSurface`
@@ -238,9 +311,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
   `Project.import_data(...)` with `ImportSettings`. `Project.load(...)` and
   `Project.save(...)` now deal only with compact `.pproj` projects.
 - Added folder-aware project collections. Object names can use `/` folders
-  such as `structure/top agat`; `project.surfaces` shows immediate children,
+  such as `structure/top dome`; `project.surfaces` shows immediate children,
   `project.surfaces.structure` descends into the folder, `.all_names()` returns
-  canonical names, and unique leaf lookup such as `project.surfaces.top_agat`
+  canonical names, and unique leaf lookup such as `project.surfaces.top_dome`
   resolves when unambiguous. Project objects can now be renamed/deleted through
   typed methods (`rename_surface`, `delete_points`, etc.) or generic
   `rename(kind, old, new)` / `delete(kind, name)`.

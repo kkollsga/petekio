@@ -230,6 +230,13 @@ def test_pointset_to_surface():
         p.to_surface(g, "bogus")
 
 
+def test_anonymous_objects_carry_no_dataset_name():
+    p = petekio.PointSet.from_xyz([0.0, 1.0], [0.0, 1.0], [0.0, 1.0])
+    assert p.name is None
+    g = petekio.GridGeometry(0.0, 0.0, 5.0, 5.0, 3, 3)
+    assert g.name is None
+
+
 def test_pointset_infer_geometry_and_edge_options():
     source = petekio.GridGeometry(456123.5, 6712345.25, 37.0, 83.0, 5, 4, 27.5)
     x, y, z = [], [], []
@@ -512,13 +519,119 @@ def _faulted_blocks():
 def test_infer_geometry_max_bridge_closes_the_fault_seam():
     x, y, z = _faulted_blocks()
     p = petekio.PointSet.from_xyz(x, y, z)
-    strict = p.infer_geometry(tolerance=1e-3)
+    with pytest.warns(UserWarning, match="TriSurface fallback"):
+        strict = p.infer_geometry(tolerance=1e-3)
     assert strict.kind == "tri_surface"
     assert strict.components == 2
-    bridged = p.infer_geometry(tolerance=1e-3, max_bridge=4.0)
+    with pytest.warns(UserWarning, match="TriSurface fallback"):
+        bridged = p.infer_geometry(tolerance=1e-3, max_bridge=4.0)
     assert bridged.components == 1
     with pytest.raises(ValueError, match="max_bridge"):
         p.to_tri_surface(max_bridge=1.0)
+
+
+def test_infer_geometry_fallback_is_loud_and_controllable():
+    x, y, z = _faulted_blocks()
+    p = petekio.PointSet.from_xyz(x, y, z)
+
+    # Default: the TriSurface fallback fires a UserWarning naming the fit failure.
+    with pytest.warns(UserWarning, match="no regular lattice fits these points"):
+        tri = p.infer_geometry(tolerance=1e-3)
+    assert tri.kind == "tri_surface"
+
+    # fallback="error" raises instead of falling back.
+    with pytest.raises(ValueError, match='fallback="error"'):
+        p.infer_geometry(tolerance=1e-3, fallback="error")
+
+    # Unknown fallback tokens are rejected loudly.
+    with pytest.raises(ValueError, match="unknown geometry fallback"):
+        p.infer_geometry(tolerance=1e-3, fallback="bogus")
+
+
+def test_infer_geometry_reports_both_failures_when_fallback_also_fails():
+    # Five scattered points: no regular lattice fits, and the cloud is too
+    # degenerate for the TriSurface fallback to triangulate — the error must
+    # chain BOTH causes, not swallow the fallback's.
+    p = petekio.PointSet.from_xyz(
+        [0.0, 7.3, 2.9, 11.7, 5.5],
+        [0.0, 1.1, 8.4, 9.2, 4.9],
+        [-1.0, -2.0, -3.0, -4.0, -5.0],
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"no regular lattice fits these points.*TriSurface fallback also failed",
+    ):
+        p.infer_geometry(tolerance=1e-3, max_bridge=3.5)
+
+
+def test_pointset_to_surface_infers_geometry_when_omitted():
+    source = petekio.GridGeometry(1000.0, 2000.0, 25.0, 50.0, 6, 5, 15.0)
+    x, y, z = [], [], []
+    for j in range(source.nrow):
+        for i in range(source.ncol):
+            xi, yi = source.node_xy(i, j)
+            x.append(xi)
+            y.append(yi)
+            z.append(100.0 + i + 2.0 * j)
+    p = petekio.PointSet.from_xyz(x, y, z)
+
+    auto = p.to_surface()
+    explicit = p.to_surface(p.infer_geometry(tolerance=1e-3), "idw")
+
+    assert auto.kind == "surface"
+    assert (auto.ncol, auto.nrow) == (explicit.ncol, explicit.nrow) == (6, 5)
+    ag, eg = auto.geometry, explicit.geometry
+    assert (ag.xori, ag.yori, ag.xinc, ag.yinc, ag.rotation_deg) == (
+        eg.xori,
+        eg.yori,
+        eg.xinc,
+        eg.yinc,
+        eg.rotation_deg,
+    )
+    assert auto.stats().count == explicit.stats().count
+    assert auto.stats().mean == explicit.stats().mean
+    assert auto.stats().min == explicit.stats().min
+    assert auto.stats().max == explicit.stats().max
+
+
+def test_pointset_to_surface_rejects_non_lattice_clouds_and_wrong_geom_types():
+    fx, fy, fz = _faulted_blocks()
+    p = petekio.PointSet.from_xyz(fx, fy, fz)
+
+    # No geom + no regular lattice: a clear error, never an arbitrary bounding grid.
+    with pytest.raises(ValueError, match="not lattice-regular"):
+        p.to_surface()
+
+    # The infer_geometry TriSurface fallback passed by mistake names itself.
+    with pytest.warns(UserWarning):
+        tri = p.infer_geometry(tolerance=1e-3)
+    with pytest.raises(TypeError, match="TriSurface"):
+        p.to_surface(tri)
+
+    # Any other wrong type names what was received.
+    with pytest.raises(TypeError, match="GridGeometry"):
+        p.to_surface("not a geometry")
+
+    with pytest.raises(ValueError, match="tolerance"):
+        p.to_surface(tolerance=-1.0)
+
+
+def test_infer_geometry_results_carry_discoverable_kinds():
+    x, y, z = [], [], []
+    for j in range(3):
+        for i in range(3):
+            x.append(i * 10.0)
+            y.append(j * 10.0)
+            z.append(1.0)
+    regular = petekio.PointSet.from_xyz(x, y, z)
+    assert regular.kind == "point_set"
+    geom = regular.infer_geometry(tolerance=1e-6)
+    assert geom.kind == "grid_geometry"
+    assert regular.to_surface(geom).kind == "surface"
+    fx, fy, fz = _faulted_blocks()
+    with pytest.warns(UserWarning):
+        tri = petekio.PointSet.from_xyz(fx, fy, fz).infer_geometry(tolerance=1e-3)
+    assert tri.kind == "tri_surface"
 
 
 def test_tri_surface_wireframe_edges_hide_interior_diagonals():
@@ -601,7 +714,8 @@ def test_pointset_infer_geometry_falls_back_for_curvilinear_mesh_with_topology()
     p.column = col
     p.row = row
 
-    inferred = p.infer_geometry(tolerance=1e-3)
+    with pytest.warns(UserWarning, match="TriSurface fallback"):
+        inferred = p.infer_geometry(tolerance=1e-3)
     assert isinstance(inferred, petekio.TriSurface)
     assert inferred.kind == "tri_surface"
     assert inferred.n_points > 0

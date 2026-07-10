@@ -44,6 +44,14 @@ pub(crate) fn to_pyerr(e: GeoError) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
+/// The display leaf of a project object key: the part after the last `/`
+/// (`"Surfaces/IrapClassic_points/Top Dome"` → `"Top Dome"`). This is the
+/// dataset name recorded on project-accessor hand-backs (the duck-typed
+/// `.name` viewer seam).
+pub(crate) fn leaf_name(key: &str) -> String {
+    key.rsplit('/').next().unwrap_or(key).trim().to_string()
+}
+
 /// Emit a Python `DeprecationWarning` with `msg` (via the `warnings` module, so
 /// it respects the interpreter's filters). Used by the legacy sticky-mutation
 /// sugar (`load_well(aliases=)`, `strat_hint(...)`) now superseded by
@@ -51,6 +59,16 @@ pub(crate) fn to_pyerr(e: GeoError) -> PyErr {
 pub(crate) fn deprecation_warning(py: Python<'_>, msg: &str) -> PyResult<()> {
     let warnings = py.import("warnings")?;
     let category = py.get_type::<pyo3::exceptions::PyDeprecationWarning>();
+    warnings.call_method1("warn", (msg, category, 2))?;
+    Ok(())
+}
+
+/// Emit a Python `UserWarning` with `msg` (via the `warnings` module, so it
+/// respects the interpreter's filters). Used to make silent behavioural
+/// fallbacks loud (e.g. `infer_geometry` returning a `TriSurface`).
+pub(crate) fn user_warning(py: Python<'_>, msg: &str) -> PyResult<()> {
+    let warnings = py.import("warnings")?;
+    let category = py.get_type::<pyo3::exceptions::PyUserWarning>();
     warnings.call_method1("warn", (msg, category, 2))?;
     Ok(())
 }

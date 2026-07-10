@@ -63,6 +63,16 @@ pub(crate) fn deprecation_warning(py: Python<'_>, msg: &str) -> PyResult<()> {
     Ok(())
 }
 
+/// Emit a Python `UserWarning` with `msg` (via the `warnings` module, so it
+/// respects the interpreter's filters). Used to make silent behavioural
+/// fallbacks loud (e.g. `infer_geometry` returning a `TriSurface`).
+pub(crate) fn user_warning(py: Python<'_>, msg: &str) -> PyResult<()> {
+    let warnings = py.import("warnings")?;
+    let category = py.get_type::<pyo3::exceptions::PyUserWarning>();
+    warnings.call_method1("warn", (msg, category, 2))?;
+    Ok(())
+}
+
 /// Parse a project length unit from a string (`"ft"`/`"feet"` or
 /// `"m"`/`"metre(s)"`/`"meter(s)"`, case-insensitive).
 pub(crate) fn parse_unit(s: &str) -> PyResult<petekio::Unit> {

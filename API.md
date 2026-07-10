@@ -831,14 +831,20 @@ petekio.ViewSettings(serve=True, save=None)                  # HOW view() delive
 Python rules: `Stats` fields exposed as read-only attributes; operators (`+ - * /`)
 on `Surface`; `surface.attr["name"]` indexed access; `surface.edge` and
 `surface.geometry.edge` expose matching `PolygonSet` outlines; `PointSet`
-exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=None) -> GridGeometry | TriSurface`
+exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=None, fallback="tri") -> GridGeometry | TriSurface`
 and `to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
 `edge="occupied"|"convex_hull"|"full_rect"`; `detect_topology(nominal_cell=None)`
 returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
-`infer_geometry` preserves strict regular inference but automatically delegates to
-`to_tri_surface(max_link=None, max_bridge=...)` when no regular lattice describes
-the points (`max_bridge`, in cells, closes boundary-fringe/fault-seam/data-gap
-edges up to that length; `None` = strictly lattice-closed);
+`infer_geometry` preserves strict regular inference; when no regular lattice
+describes the points it delegates to `to_tri_surface(max_link=None,
+max_bridge=...)` **with a `UserWarning`** (`fallback="tri"`, the default) or
+raises a `ValueError` (`fallback="error"`). `max_bridge` (in cells) applies
+**only to the TriSurface fallback** — it closes boundary-fringe/fault-seam/
+data-gap edges up to that length (`None` = strictly lattice-closed) and has no
+effect on an inferred `GridGeometry`. Both possible results carry a
+discoverable `.kind` for import-free dispatch — every geometry/surface/point
+object exposes it: `"grid_geometry"` | `"surface"` | `"structured_mesh"` |
+`"tri_surface"` | `"point_set"` | `"polygon_set"`;
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
 **Dataset names (duck-typed viewer seam):** every project-accessor hand-back
 (`project.points[...]`, `project.surfaces[...]`, `project.polygons[...]`,

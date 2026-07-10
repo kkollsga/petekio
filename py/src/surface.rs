@@ -289,6 +289,12 @@ impl Surface {
         self.name.clone()
     }
 
+    /// Stable kind label for type dispatch without imports: `"surface"`.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "surface"
+    }
+
     // ---- attribute access ----
 
     /// The attribute accessor: `surface.attr["seismic"]` (or `surface.attr(name)`)

@@ -7,6 +7,7 @@ Synthetic data only.
 import math
 
 import petekio
+import pytest
 
 
 def plane_surface():
@@ -232,7 +233,8 @@ def test_infer_geometry_still_returns_grid_or_tri_surface():
             ys.append(50.0 * j + 25.0)
             zs.append(-1900.0)
     p = petekio.PointSet.from_xyz(xs, ys, zs)
-    t = p.infer_geometry(tolerance=1e-3)
+    with pytest.warns(UserWarning, match="TriSurface fallback"):
+        t = p.infer_geometry(tolerance=1e-3)
     assert isinstance(t, petekio.TriSurface)
     assert t.components == 2  # the fault is honoured, not bridged
 

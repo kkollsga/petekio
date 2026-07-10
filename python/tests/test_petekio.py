@@ -519,13 +519,51 @@ def _faulted_blocks():
 def test_infer_geometry_max_bridge_closes_the_fault_seam():
     x, y, z = _faulted_blocks()
     p = petekio.PointSet.from_xyz(x, y, z)
-    strict = p.infer_geometry(tolerance=1e-3)
+    with pytest.warns(UserWarning, match="TriSurface fallback"):
+        strict = p.infer_geometry(tolerance=1e-3)
     assert strict.kind == "tri_surface"
     assert strict.components == 2
-    bridged = p.infer_geometry(tolerance=1e-3, max_bridge=4.0)
+    with pytest.warns(UserWarning, match="TriSurface fallback"):
+        bridged = p.infer_geometry(tolerance=1e-3, max_bridge=4.0)
     assert bridged.components == 1
     with pytest.raises(ValueError, match="max_bridge"):
         p.to_tri_surface(max_bridge=1.0)
+
+
+def test_infer_geometry_fallback_is_loud_and_controllable():
+    x, y, z = _faulted_blocks()
+    p = petekio.PointSet.from_xyz(x, y, z)
+
+    # Default: the TriSurface fallback fires a UserWarning naming the fit failure.
+    with pytest.warns(UserWarning, match="no regular lattice fits these points"):
+        tri = p.infer_geometry(tolerance=1e-3)
+    assert tri.kind == "tri_surface"
+
+    # fallback="error" raises instead of falling back.
+    with pytest.raises(ValueError, match='fallback="error"'):
+        p.infer_geometry(tolerance=1e-3, fallback="error")
+
+    # Unknown fallback tokens are rejected loudly.
+    with pytest.raises(ValueError, match="unknown geometry fallback"):
+        p.infer_geometry(tolerance=1e-3, fallback="bogus")
+
+
+def test_infer_geometry_results_carry_discoverable_kinds():
+    x, y, z = [], [], []
+    for j in range(3):
+        for i in range(3):
+            x.append(i * 10.0)
+            y.append(j * 10.0)
+            z.append(1.0)
+    regular = petekio.PointSet.from_xyz(x, y, z)
+    assert regular.kind == "point_set"
+    geom = regular.infer_geometry(tolerance=1e-6)
+    assert geom.kind == "grid_geometry"
+    assert regular.to_surface(geom).kind == "surface"
+    fx, fy, fz = _faulted_blocks()
+    with pytest.warns(UserWarning):
+        tri = petekio.PointSet.from_xyz(fx, fy, fz).infer_geometry(tolerance=1e-3)
+    assert tri.kind == "tri_surface"
 
 
 def test_tri_surface_wireframe_edges_hide_interior_diagonals():
@@ -608,7 +646,8 @@ def test_pointset_infer_geometry_falls_back_for_curvilinear_mesh_with_topology()
     p.column = col
     p.row = row
 
-    inferred = p.infer_geometry(tolerance=1e-3)
+    with pytest.warns(UserWarning, match="TriSurface fallback"):
+        inferred = p.infer_geometry(tolerance=1e-3)
     assert isinstance(inferred, petekio.TriSurface)
     assert inferred.kind == "tri_surface"
     assert inferred.n_points > 0

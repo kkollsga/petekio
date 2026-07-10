@@ -15,6 +15,21 @@ All notable changes to petekIO are recorded here. The format loosely follows
   Derived objects propagate it (`infer_geometry` → `"Top Agat geometry"`;
   `to_surface`/`to_tri_surface`/`to_structured_surface`/`to_points`/`resample`
   keep `"Top Agat"`). Anonymous/in-memory objects return `None`.
+- **Discoverable `kind` labels.** `GridGeometry` (`"grid_geometry"`),
+  `Surface` (`"surface"`), `PointSet` (`"point_set"`) and `PolygonSet`
+  (`"polygon_set"`) now expose a `.kind` property (matching the existing
+  `TriSurface`/`StructuredMeshSurface` labels), so `infer_geometry` callers
+  can type-dispatch its `GridGeometry | TriSurface` result without imports.
+- **`infer_geometry(fallback=...)`.** `fallback="tri"` (default) keeps the
+  TriSurface fallback; `fallback="error"` raises a `ValueError` when no
+  regular lattice fits the points.
+
+### Changed
+- **`infer_geometry`'s TriSurface fallback is now loud.** When the regular
+  lattice fit fails, the default behaviour still returns the `TriSurface`
+  fallback but emits a `UserWarning` naming the fit failure (silently
+  swapping return types hid points-vs-surface confusion downstream).
+  `max_bridge` is documented as applying only to that fallback.
 
 ## [0.3.11] - 2026-07-10
 

@@ -151,6 +151,12 @@ impl PointSet {
         self.name.clone()
     }
 
+    /// Stable kind label for type dispatch without imports: `"point_set"`.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "point_set"
+    }
+
     /// Human-readable operation history for this point set.
     fn history(&self, py: Python<'_>) -> PyResult<Vec<String>> {
         self.with(py, |p| Ok(p.history().to_vec()))
@@ -270,19 +276,28 @@ impl PointSet {
     /// It applies only to a successfully inferred `GridGeometry`; the fallback
     /// `TriSurface` carries the boundary of its retained triangles.
     ///
-    /// `max_bridge` (in cells) applies only to the fallback `TriSurface`: it admits
-    /// triangle edges the closed-lattice rules reject — the boundary fringe, fault
-    /// seams, interior data gaps — up to that length, closing the mesh where the
-    /// geometry does not close. `None` keeps the mesh strictly lattice-closed.
-    #[pyo3(signature = (tolerance = 1e-3, edge = "full_rect", max_bridge = None))]
+    /// `max_bridge` (in cells) applies **only to the fallback `TriSurface`**: it
+    /// admits triangle edges the closed-lattice rules reject — the boundary fringe,
+    /// fault seams, interior data gaps — up to that length, closing the mesh where
+    /// the geometry does not close. `None` keeps the mesh strictly lattice-closed.
+    /// It has no effect when a regular `GridGeometry` is inferred.
+    ///
+    /// `fallback` controls what happens when the lattice fit fails:
+    /// `"tri"` (default) returns the `TriSurface` fallback **and emits a
+    /// `UserWarning`**; `"error"` raises a `ValueError` instead. Dispatch the
+    /// result without importing types via its `kind` property
+    /// (`"grid_geometry"` vs `"tri_surface"`).
+    #[pyo3(signature = (tolerance = 1e-3, edge = "full_rect", max_bridge = None, fallback = "tri"))]
     fn infer_geometry(
         &self,
         py: Python<'_>,
         tolerance: f64,
         edge: &str,
         max_bridge: Option<f64>,
+        fallback: &str,
     ) -> PyResult<Py<PyAny>> {
         let edge = parse_geometry_edge(edge)?;
+        let fallback = parse_geometry_fallback(fallback)?;
         if !tolerance.is_finite() || tolerance <= 0.0 {
             return Err(PyValueError::new_err(
                 "geometry inference failed: tolerance must be a finite positive number",
@@ -294,14 +309,33 @@ impl PointSet {
                 .into_pyobject(py)?
                 .into_any()
                 .unbind()),
-            Err(regular_error) => match py.detach(|| p.to_tri_surface(None, max_bridge)) {
-                Ok(tri) => Ok(TriSurface::wrap(tri)
-                    .named(self.name.clone())
-                    .into_pyobject(py)?
-                    .into_any()
-                    .unbind()),
-                Err(_) => Err(to_pyerr(regular_error)),
-            },
+            Err(regular_error) => {
+                if fallback == GeometryFallback::Error {
+                    return Err(PyValueError::new_err(format!(
+                        "geometry inference failed: no regular lattice fits these points \
+                         ({regular_error}) and fallback=\"error\" was requested — pass an \
+                         explicit GridGeometry or use to_tri_surface()"
+                    )));
+                }
+                match py.detach(|| p.to_tri_surface(None, max_bridge)) {
+                    Ok(tri) => {
+                        crate::user_warning(
+                            py,
+                            &format!(
+                                "infer_geometry: no regular lattice fits these points \
+                                 ({regular_error}); returning the TriSurface fallback \
+                                 (pass fallback=\"error\" to raise instead)"
+                            ),
+                        )?;
+                        Ok(TriSurface::wrap(tri)
+                            .named(self.name.clone())
+                            .into_pyobject(py)?
+                            .into_any()
+                            .unbind())
+                    }
+                    Err(_) => Err(to_pyerr(regular_error)),
+                }
+            }
         })
     }
 
@@ -371,6 +405,25 @@ impl PointSet {
         value: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         self.set_attr(py, name, value)
+    }
+}
+
+/// What `infer_geometry` does when no regular lattice fits the points.
+#[derive(PartialEq)]
+enum GeometryFallback {
+    /// Return the `TriSurface` fallback (with a `UserWarning`).
+    Tri,
+    /// Raise instead of falling back.
+    Error,
+}
+
+fn parse_geometry_fallback(s: &str) -> PyResult<GeometryFallback> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "tri" | "tri_surface" | "trisurface" => Ok(GeometryFallback::Tri),
+        "error" | "raise" => Ok(GeometryFallback::Error),
+        other => Err(PyValueError::new_err(format!(
+            "unknown geometry fallback '{other}' (expected 'tri' or 'error')"
+        ))),
     }
 }
 
@@ -824,6 +877,12 @@ impl PolygonSet {
     #[getter]
     fn name(&self) -> Option<String> {
         self.name.clone()
+    }
+
+    /// Stable kind label for type dispatch without imports: `"polygon_set"`.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "polygon_set"
     }
 
     /// Human-readable operation history for this polygon set.

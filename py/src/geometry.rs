@@ -108,6 +108,13 @@ impl GridGeometry {
         self.name.clone()
     }
 
+    /// Stable kind label for type dispatch without imports: `"grid_geometry"`
+    /// (vs the `infer_geometry` fallback's `"tri_surface"`).
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "grid_geometry"
+    }
+
     #[getter]
     fn xori(&self) -> f64 {
         self.inner.xori

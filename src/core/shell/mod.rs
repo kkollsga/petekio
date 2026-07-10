@@ -25,7 +25,7 @@ mod fit;
 mod mesh;
 mod structured;
 
-pub use corner::CornerTable;
+pub use corner::{CornerTable, NO_CORNER};
 pub use mesh::{MeshShell, WalkLabel};
 pub use structured::StructuredShell;
 

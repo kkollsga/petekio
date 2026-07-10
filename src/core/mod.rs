@@ -23,7 +23,7 @@ pub mod well; // Well → Sidetrack → Trajectory hierarchy
 pub use log::{Log, LogKind, LogView};
 pub use points::{GeometryEdge, GridMethod, PointSet};
 pub use polygons::PolygonSet;
-pub use shell::{CornerTable, MeshShell, StructuredShell, WalkLabel};
+pub use shell::{CornerTable, MeshShell, StructuredShell, WalkLabel, NO_CORNER};
 pub use structured_surface::StructuredMeshSurface;
 pub use surface::Surface;
 pub use topology::TopologyReport;

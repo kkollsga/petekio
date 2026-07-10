@@ -54,6 +54,9 @@ impl GridGeometry {
     pub fn node_xy(&self, i: usize, j: usize) -> (f64, f64);
     pub fn xy_to_ij(&self, x: f64, y: f64) -> Option<(f64, f64)>; // fractional node coords
     pub fn bbox(&self) -> BBox;
+    // shell lifts (free, lossless — see "Geometry shells"; impls live in core)
+    pub fn to_structured_shell(&self) -> StructuredShell;      // per-node XY computed; nominal = self
+    pub fn to_mesh_shell(&self) -> Result<MeshShell>;          // quad-split, consistent diagonal, CCW; labels (0,i,j)
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -130,6 +133,15 @@ impl Surface {
     // filtering + outline
     pub fn smooth(&self, radius: usize) -> Surface;          // NaN-aware moving average; preserves the defined mask
     pub fn edge(&self) -> Option<PolygonSet>;                // convex hull of defined nodes; None if <3
+
+    // shell lifts (free, lossless; ALL attribute lanes carried 1:1, node identity preserved)
+    pub fn to_structured_mesh(&self) -> Result<StructuredMeshSurface>;
+    pub fn to_tri_surface(&self) -> Result<TriSurface>;      // grid quad-split (consistent diagonal)
+
+    // iso-lines + value layer (all three surface levels expose these — see "Geometry shells")
+    pub fn iso_lines(&self, interval: Option<f64>, levels: Option<Vec<f64>>, attr: Option<&str>)
+        -> Result<Vec<(f64, Vec<Vec<[f64; 2]>>)>>;           // NaN-aware marching triangles; explicit levels win; interval → levels aligned to its multiples over the value range; deterministic chaining
+    pub fn value_layer(&self, attr: Option<&str>) -> Result<ValueLayer>;  // the viewer trimesh bundle
 
     // cube extraction (Phase 3) → a surface attribute
     pub fn slice_cube(&self, cube: &Cube, sampling: Sampling) -> Surface;
@@ -299,14 +311,93 @@ pub struct TopologyReport {
     pub largest_block: usize,
 }
 impl TopologyReport { pub fn verified(&self) -> bool; }
+```
 
+## Geometry shells — the three-level system
+
+> Geometry is a **flat empty shell**: purely topological/positional, never a
+> function of z. Three levels of increasing complexity — level 1 is the rigid
+> `GridGeometry` (8 scalars, XY computed); levels 2 and 3 are below. A surface
+> is *shell + property lanes*; shells are immutable once built and shared via
+> `Arc`, so N properties/clones never repeat geometry in memory. Conversions
+> go **up for free** (lossless, node identity preserved) and **down by
+> inference** (`infer_grid` fits a regular lattice or errors). Derived walk
+> indexes (the corner table) are never persisted.
+
+```rust
+/// Level 2: (i, j)-organized nodes with explicit per-node XY.
+pub struct StructuredShell { /* ncol, nrow, x, y, nominal_geometry, edge */ }
+impl StructuredShell {
+    pub fn new(x: Array2<f64>, y: Array2<f64>,
+               nominal_geometry: Option<GridGeometry>, edge: PolygonSet) -> Result<StructuredShell>;
+    pub fn ncol(&self) -> usize;
+    pub fn nrow(&self) -> usize;
+    pub fn x(&self) -> &Array2<f64>;                          // shape (ncol, nrow)
+    pub fn y(&self) -> &Array2<f64>;
+    pub fn nominal_geometry(&self) -> Option<&GridGeometry>;  // metadata only
+    pub fn edge(&self) -> &PolygonSet;
+    pub fn node_xy(&self, i: usize, j: usize) -> Result<(f64, f64)>;
+    pub fn bbox(&self) -> BBox;
+    pub fn to_mesh_shell(&self) -> Result<MeshShell>;         // quad-split (consistent diagonal, CCW); labels (0,i,j)
+    pub fn infer_grid(&self, tolerance: f64) -> Result<GridGeometry>;  // fit; Err when curvilinear
+}
+
+/// A node's place in the walked grid: fault block + (column, row) inside it.
+pub type WalkLabel = (u32, i32, i32);
+
+/// Level 3: integer node ids with explicit 2-D XY + triangle topology.
+pub struct MeshShell { /* nodes, triangles, wireframe, edge, labels; lazy corner table */ }
+impl MeshShell {
+    pub fn new(nodes: Vec<[f64; 2]>, triangles: Vec<[u32; 3]>, wireframe: Vec<[u32; 2]>,
+               edge: PolygonSet, labels: Vec<Option<WalkLabel>>) -> Result<MeshShell>;
+        // validates node refs + labels len + EDGE-MANIFOLD (no undirected edge in >2 triangles)
+    pub fn nodes(&self) -> &[[f64; 2]];                        // 2-D by design — never a function of z
+    pub fn triangles(&self) -> &[[u32; 3]];                    // CCW
+    pub fn wireframe_edges(&self) -> Vec<[u32; 2]>;            // quad-dominant (interior cell diagonals hidden)
+    pub fn labels(&self) -> &[Option<WalkLabel>];              // per node; kept on the shell
+    pub fn edge(&self) -> &PolygonSet;
+    pub fn n_nodes(&self) -> usize;
+    pub fn n_triangles(&self) -> usize;
+    pub fn components(&self) -> usize;
+    pub fn bbox(&self) -> BBox;
+    pub fn corner_table(&self) -> &CornerTable;                // lazy (OnceLock); derived, NEVER serialized
+    pub fn infer_grid(&self, tolerance: f64) -> Result<GridGeometry>;  // labels-exact fit when single-block, else coordinate detection; Err when not regular
+}
+
+/// The derived walkability index: per corner (3t+k) the opposite corner in the
+/// adjacent triangle, plus a representative corner per vertex.
+pub const NO_CORNER: u32 = u32::MAX;   // boundary / unused sentinel (shell::corner)
+pub struct CornerTable { /* opposite, vertex_corner */ }
+impl CornerTable {
+    pub fn opposite(&self, corner: u32) -> u32;                // NO_CORNER on the boundary
+    pub fn vertex_corner(&self, vertex: u32) -> u32;
+    pub fn n_corners(&self) -> usize;                          // 3 * n_triangles
+    pub fn triangle_of(corner: u32) -> usize;
+}
+
+/// A property lane presented on a trimesh — the bundle the petektools viewer
+/// consumes (`ValueLayer::KIND == "trimesh"`; primary lane name = `ValueLayer::PRIMARY == "values"`).
+pub struct ValueLayer {
+    pub name: String,           // attr name, or "values" for the primary lane
+    pub nodes: Vec<[f64; 2]>,
+    pub triangles: Vec<[u32; 3]>,
+    pub values: Vec<f64>,       // per node; NaN allowed
+    pub range: [f64; 2],        // finite min/max ([NaN, NaN] when nothing finite)
+}
+```
+
+```rust
 /// The triangulated fallback for a fault-cut surface: the original points, unmoved,
-/// as one connected sheet. Spec: `surface_tin_fallback_spec`.
+/// as one connected sheet. A level-3 surface: an `Arc`-shared `MeshShell` (geometry)
+/// + a primary per-node z lane + named attribute lanes. Spec: `surface_tin_fallback_spec`.
 pub const DEFAULT_MAX_LINK: f64 = 1.8;   // cells
-pub struct TriSurface { /* points, triangles, edge, wireframe */ }
+pub struct TriSurface { /* Arc<MeshShell> + values + attributes */ }
 impl TriSurface {
+    pub fn from_shell(shell: Arc<MeshShell>, values: Vec<f64>) -> Result<TriSurface>;
     pub fn kind(&self) -> &'static str;
-    pub fn points(&self) -> &[[f64; 3]];        // the input points, unmoved
+    pub fn shell(&self) -> &Arc<MeshShell>;     // the geometry, shared — never copied per lane
+    pub fn points(&self) -> Vec<[f64; 3]>;      // shell XY zipped with z — the input points, unmoved (was &[[f64;3]] pre-shell)
+    pub fn values(&self) -> &[f64];             // primary per-node lane (z); NaN = undefined
     pub fn triangles(&self) -> &[[u32; 3]];     // CCW, indices into points()
     pub fn wireframe_edges(&self) -> Vec<[u32; 2]>; // unique edges minus interior cell diagonals — the geometry's flat-shell wireframe (purely topological, never a function of z)
     pub fn edge(&self) -> &PolygonSet;
@@ -314,15 +405,33 @@ impl TriSurface {
     pub fn to_points(&self) -> PointSet;
     pub fn bbox(&self) -> BBox;
     pub fn stats(&self) -> Stats;
+    // attribute lanes (mirror Surface's; one value per shell node)
+    pub fn attr(&self, name: &str) -> Option<&[f64]>;
+    pub fn set_attr(&mut self, name: &str, values: Vec<f64>) -> Result<()>;
+    pub fn attr_names(&self) -> Vec<&str>;
+    pub fn as_attr_surface(&self, name: &str) -> Option<TriSurface>;   // promote lane → primary, SAME shell
+    // conversions (down = lossy) + iso/value-layer (same signatures as Surface)
+    pub fn infer_grid(&self, tolerance: f64) -> Result<GridGeometry>;  // fit; Err when not regular
+    pub fn resample(&self, target: &GridGeometry, method: GridMethod) -> Result<Surface>;  // grids primary + ALL attr lanes
+    pub fn iso_lines(&self, interval: Option<f64>, levels: Option<Vec<f64>>, attr: Option<&str>)
+        -> Result<Vec<(f64, Vec<Vec<[f64; 2]>>)>>;
+    pub fn value_layer(&self, attr: Option<&str>) -> Result<ValueLayer>;
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()>;          // one-section .pproj; shell stored ONCE + N lanes
+    pub fn load(path: impl AsRef<Path>) -> Result<TriSurface>;
 }
 
 /// A `(column, row)`-indexed surface carrying explicit per-node XY: the exact home for
 /// Petrel/EarthVision exports whose nodes are fault-shifted or curvilinear and therefore
-/// lie on no single `GridGeometry`. `nominal_geometry` is metadata, never the coordinates.
-pub struct StructuredMeshSurface { /* ncol, nrow, x, y, values, nominal_geometry, edge */ }
+/// lie on no single `GridGeometry`. A level-2 surface: an `Arc`-shared `StructuredShell`
+/// (geometry) + a primary value lane + named attribute lanes. `nominal_geometry` is
+/// metadata, never the coordinates.
+pub struct StructuredMeshSurface { /* Arc<StructuredShell> + values + attributes */ }
 impl StructuredMeshSurface {
     pub fn new(x: Array2<f64>, y: Array2<f64>, values: Array2<f64>,
                nominal_geometry: Option<GridGeometry>, edge: PolygonSet) -> Result<Self>;
+    pub fn from_shell(shell: Arc<StructuredShell>, values: Array2<f64>) -> Result<Self>;
+    pub fn kind(&self) -> &'static str;
+    pub fn shell(&self) -> &Arc<StructuredShell>;  // the geometry, shared — never copied per lane
     pub fn ncol(&self) -> usize;
     pub fn nrow(&self) -> usize;
     pub fn x(&self) -> &Array2<f64>;
@@ -335,6 +444,20 @@ impl StructuredMeshSurface {
     pub fn to_points(&self) -> PointSet;   // exact inverse of PointSet::to_structured_surface
     pub fn bbox(&self) -> BBox;
     pub fn stats(&self) -> Stats;
+    // attribute lanes (mirror Surface's; each shaped (ncol, nrow))
+    pub fn attr(&self, name: &str) -> Option<&Array2<f64>>;
+    pub fn set_attr(&mut self, name: &str, values: Array2<f64>) -> Result<()>;
+    pub fn attr_names(&self) -> Vec<&str>;
+    pub fn as_attr_surface(&self, name: &str) -> Option<StructuredMeshSurface>;  // promote lane → primary, SAME shell
+    // conversions (up = free/lossless carrying all lanes; down = fit/resample)
+    pub fn to_tri_surface(&self) -> Result<TriSurface>;               // quad-split; node identity on labels
+    pub fn infer_grid(&self, tolerance: f64) -> Result<GridGeometry>; // fit; Err when curvilinear
+    pub fn resample(&self, target: &GridGeometry, method: GridMethod) -> Result<Surface>;  // grids primary + ALL attr lanes
+    pub fn iso_lines(&self, interval: Option<f64>, levels: Option<Vec<f64>>, attr: Option<&str>)
+        -> Result<Vec<(f64, Vec<Vec<[f64; 2]>>)>>;
+    pub fn value_layer(&self, attr: Option<&str>) -> Result<ValueLayer>;
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()>;         // one-section .pproj; shell stored ONCE + N lanes
+    pub fn load(path: impl AsRef<Path>) -> Result<StructuredMeshSurface>;
 }
 
 pub struct PolygonSet { /* rings, optional Z */ }
@@ -402,8 +525,11 @@ impl GeoData {
     pub fn model_section_names(&self) -> Vec<String>;
     pub fn model_section(&self, name: &str) -> Option<(u32, Vec<u8>)>;
 }
-// Per element: Surface/Well/PointSet/PolygonSet each expose `save(path)`/`load(path)`
-// (a standalone one-section .pproj). Human-readable export: PointSet::export_geojson/
+// Per element: Surface/Well/PointSet/PolygonSet/StructuredMeshSurface/TriSurface each
+// expose `save(path)`/`load(path)` (a standalone one-section .pproj). Level-2/3 surface
+// sections (kinds "structured_mesh"/"tri_surface") store the shell ONCE with N property
+// lanes referencing it; derived walk indexes are never persisted; older .pproj files
+// (which predate these kinds) load unchanged. Human-readable export: PointSet::export_geojson/
 // export_csv, PolygonSet::export_geojson, Surface::save_irap_classic.
 // ProjectInfo { owner, tags, created, modified, unit, elements: Vec<(kind, name)> }.
 pub struct WellsView<'a> { /* broadcastable, filterable */ }
@@ -590,6 +716,24 @@ top.stats.p50                            # Stats fields as attributes
 top.area_below(8240)
 ongrid = top.resample(grid_geom)
 
+# Geometry shells: iso-lines + value layers on ALL three surface levels
+# (Surface / StructuredMeshSurface / TriSurface); NaN-aware, deterministic.
+top.iso_lines(interval=25.0)             # [(level, [[(x, y), ...], ...]), ...]
+top.iso_lines(levels=[1800.0, 1850.0])   # explicit levels win over interval
+top.iso_lines(interval=5.0, attr="twt")  # contour an attribute lane
+top.value_layer()                        # {"kind": "trimesh", "name", "nodes",
+                                         #  "triangles", "values", "range"} — the
+                                         #  petektools-viewer bundle (do not change)
+sm = top.to_structured_mesh()            # level 1 → 2 (free; attrs carried 1:1)
+tri = top.to_tri_surface()               # level 1 → 3 (quad-split; attrs carried 1:1)
+sm.to_tri_surface()                      # level 2 → 3
+tri.shell; sm.shell                      # the Arc-shared geometry shells (MeshShell /
+                                         #  StructuredShell): nodes/triangles/labels/...
+tri.infer_grid(); sm.infer_grid()        # downward fit → GridGeometry (raises if irregular)
+tri.resample(grid_geom, "nearest")       # downward resample: primary + ALL attr lanes → Surface
+tri.attr("amp"); tri.attr_names()        # attribute lanes on levels 2/3 mirror Surface
+tri2 = tri.set_attr("amp", per_node)     # set_attr returns a NEW object (shell shared)
+
 geo.load_well("15/9-A1", wellhead=(1200, 1500), kb=82, files="wells/A1/")
 w = geo.well("15/9-A1")
 w.xyz(2450)                              # interpolated position at MD
@@ -696,6 +840,11 @@ returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
 the points (`max_bridge`, in cells, closes boundary-fringe/fault-seam/data-gap
 edges up to that length; `None` = strictly lattice-closed);
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
+`TriSurface.points()`/`.xyz()` keep returning `(x, y, z)` tuples (shell XY
+zipped with z); `StructuredMeshSurface`/`TriSurface` attribute access is
+method-style (`attr(name)` promotes the lane on the same shared shell;
+`set_attr` returns a **new** object — these types are immutable wrappers,
+unlike `Surface`'s copy-on-write `set_attr`).
 Bindings are thin: every method delegates to the Rust API above. The spec
 value-objects (`NetSettings`, `IngestSpec`, `ViewSpec`, `ViewSettings`) follow
 the family house spec pattern (declarative WHAT / HOW, applied at explicit

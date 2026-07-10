@@ -67,16 +67,17 @@ impl TriSurface {
         &self.edge
     }
 
-    /// Unique triangle edges with flat interior cell diagonals removed — the
-    /// quad-dominant wireframe a structured-surface display draws (a flat
+    /// Unique triangle edges with interior cell diagonals removed — the
+    /// quad-dominant wireframe of the geometry as a flat empty shell (a full
     /// lattice cell shows as a square, not two triangles).
     ///
-    /// A diagonal — an edge whose endpoints the topology walk labelled
-    /// `(±1, ±1)` apart within one fault block — is dropped only when both of
-    /// its triangles survived *and* the quad is planar within a relative
-    /// tolerance; a kinked cell keeps its triangles visible, and a diagonal on
-    /// the mesh boundary keeps its lone triangle drawable. Legacy payloads
-    /// stored before the classification fall back to every unique edge.
+    /// Purely topological, never a function of z: a diagonal — an edge whose
+    /// endpoints the topology walk labelled `(±1, ±1)` apart within one fault
+    /// block — is dropped only when both of its triangles survived; a diagonal
+    /// on the mesh boundary keeps its lone triangle drawable. How the shape
+    /// (z) splits non-planar cells is the surface layer's concern. Legacy
+    /// payloads stored before the classification fall back to every unique
+    /// edge.
     pub fn wireframe_edges(&self) -> Vec<[u32; 2]> {
         if !self.wireframe.is_empty() {
             return self.wireframe.clone();
@@ -218,7 +219,7 @@ impl PointSet {
         let kept = drop_small_islands(&kept);
         let (points, triangles, labels) = compact(&kept, &d);
         let edge = boundary_rings(&triangles, &points)?;
-        let wireframe = wireframe(&triangles, &labels, &points);
+        let wireframe = wireframe(&triangles, &labels);
 
         let mut out = TriSurface {
             points,
@@ -394,67 +395,28 @@ fn compact(
     (points, triangles, labels)
 }
 
-/// Off-plane offset of a quad's fourth corner, relative to its diagonal length,
-/// above which the cell is not flat and its two triangles stay visible. On the
-/// faulted reference surface, smooth structural curvature sits far below this
-/// (p50 ≈ 0) while fault-drag kinks sit well above it.
-const PLANAR_REL_TOL: f64 = 0.05;
-
-/// Unique triangle edges minus **flat** interior cell diagonals — the
-/// quad-dominant wireframe. A diagonal is hidden only when both triangles of
-/// its cell survived (the edge is carried twice) *and* the quad is planar
-/// within [`PLANAR_REL_TOL`]; a kinked cell keeps its triangles visible, and a
-/// boundary diagonal stays so its lone triangle keeps all three sides.
-fn wireframe(
-    triangles: &[[u32; 3]],
-    labels: &[Option<NodeIndex>],
-    points: &[[f64; 3]],
-) -> Vec<[u32; 2]> {
-    // For each undirected edge, the opposite vertex of every triangle carrying it.
-    let mut opposite: BTreeMap<(u32, u32), Vec<u32>> = BTreeMap::new();
+/// Unique triangle edges minus interior cell diagonals — the quad-dominant
+/// wireframe of the **geometry**, which is a flat empty shell: purely
+/// topological, never a function of z. A diagonal is hidden only when both
+/// triangles of its cell survived (the edge is carried twice); a boundary
+/// diagonal stays so its lone triangle keeps all three sides. Whether the
+/// cell's four corners are coplanar is a property of the *shape* mapped onto
+/// this shell and belongs to the surface layer, not here.
+fn wireframe(triangles: &[[u32; 3]], labels: &[Option<NodeIndex>]) -> Vec<[u32; 2]> {
+    let mut count: BTreeMap<(u32, u32), u8> = BTreeMap::new();
     for t in triangles {
-        for &(a, b, o) in &[(t[0], t[1], t[2]), (t[1], t[2], t[0]), (t[2], t[0], t[1])] {
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
             let key = if a <= b { (a, b) } else { (b, a) };
-            opposite.entry(key).or_default().push(o);
+            *count.entry(key).or_insert(0) += 1;
         }
     }
-    let mut out = Vec::new();
-    for ((a, b), opp) in opposite {
-        let hide = opp.len() == 2
-            && is_cell_diagonal(labels[a as usize], labels[b as usize])
-            && quad_is_planar(
-                points[a as usize],
-                points[b as usize],
-                points[opp[0] as usize],
-                points[opp[1] as usize],
-            );
-        if !hide {
-            out.push([a, b]);
-        }
-    }
-    out
-}
-
-/// Is the quad split by diagonal `(a, b)` flat? The offset of `o2` from the
-/// plane through `(a, b, o1)` must stay within [`PLANAR_REL_TOL`] of the
-/// diagonal's length. Tilt alone never trips this — a planar dipping cell has
-/// zero offset; only twist/kink across the cell does.
-fn quad_is_planar(a: [f64; 3], b: [f64; 3], o1: [f64; 3], o2: [f64; 3]) -> bool {
-    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let ao1 = [o1[0] - a[0], o1[1] - a[1], o1[2] - a[2]];
-    let ao2 = [o2[0] - a[0], o2[1] - a[1], o2[2] - a[2]];
-    let n = [
-        ab[1] * ao1[2] - ab[2] * ao1[1],
-        ab[2] * ao1[0] - ab[0] * ao1[2],
-        ab[0] * ao1[1] - ab[1] * ao1[0],
-    ];
-    let nn = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-    let diag = (ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2]).sqrt();
-    if nn <= f64::EPSILON || diag <= f64::EPSILON {
-        return true; // degenerate triangle: nothing meaningful to keep visible
-    }
-    let offset = (n[0] * ao2[0] + n[1] * ao2[1] + n[2] * ao2[2]).abs() / nn;
-    offset <= PLANAR_REL_TOL * diag
+    count
+        .into_iter()
+        .filter(|&((a, b), n)| {
+            !(n == 2 && is_cell_diagonal(labels[a as usize], labels[b as usize]))
+        })
+        .map(|((a, b), _)| [a, b])
+        .collect()
 }
 
 /// Are `a` and `b` opposite corners of one lattice cell in the same fault block?
@@ -736,22 +698,30 @@ mod tests {
     }
 
     #[test]
-    fn wireframe_keeps_triangles_in_non_planar_cells() {
-        // Flat 9 x 7 lattice with one interior node spiked 20 m: the four cells
-        // around it are kinked far past the planarity tolerance, so their
-        // diagonals stay visible while the rest of the sheet stays quads.
-        let mut coords = lattice(9, 7, 50.0, 50.0, 0.0);
-        for c in coords.iter_mut() {
+    fn wireframe_is_shape_independent() {
+        // The geometry is a flat empty shell: spiking a node's z kinks four cells,
+        // but shape never changes the wireframe — the shell stays all quads.
+        // Splitting non-planar cells is the surface layer's concern.
+        let flat = lattice(9, 7, 50.0, 50.0, 0.0);
+        let mut spiked = flat.clone();
+        for c in spiked.iter_mut() {
             if (c[0] - 1200.0).abs() < 1e-9 && (c[1] - 2150.0).abs() < 1e-9 {
                 c[2] = -1780.0;
             }
         }
-        let tin = PointSet::from_coords(coords)
+        let wf_flat = PointSet::from_coords(flat)
             .to_tri_surface(None, None)
-            .unwrap();
-        let lattice_only = 9 * 6 + 7 * 8;
-        let extra = tin.wireframe_edges().len() - lattice_only;
-        assert_eq!(extra, 4, "the four kinked cells keep their diagonals");
+            .unwrap()
+            .wireframe_edges();
+        let wf_spiked = PointSet::from_coords(spiked)
+            .to_tri_surface(None, None)
+            .unwrap()
+            .wireframe_edges();
+        assert_eq!(wf_flat.len(), 9 * 6 + 7 * 8);
+        assert_eq!(
+            wf_flat, wf_spiked,
+            "z must not leak into the geometry wireframe"
+        );
     }
 
     #[test]

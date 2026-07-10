@@ -308,7 +308,7 @@ impl TriSurface {
     pub fn kind(&self) -> &'static str;
     pub fn points(&self) -> &[[f64; 3]];        // the input points, unmoved
     pub fn triangles(&self) -> &[[u32; 3]];     // CCW, indices into points()
-    pub fn wireframe_edges(&self) -> Vec<[u32; 2]>; // unique edges minus interior cell diagonals — the quad-dominant display wireframe
+    pub fn wireframe_edges(&self) -> Vec<[u32; 2]>; // unique edges minus interior cell diagonals — the geometry's flat-shell wireframe (purely topological, never a function of z)
     pub fn edge(&self) -> &PolygonSet;
     pub fn components(&self) -> usize;          // >1 means the mesh honours a fault
     pub fn to_points(&self) -> PointSet;

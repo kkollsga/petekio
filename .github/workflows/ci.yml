@@ -9,6 +9,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: fmt · clippy · test
@@ -24,3 +28,67 @@ jobs:
       # validated by the maturin wheel job in release.yml (it needs a Python env).
       - run: cargo clippy -p petekio --all-targets --all-features -- -D warnings
       - run: cargo test -p petekio --all-features
+
+  wheel-build:
+    name: build abi3 wheel once
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.1
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - run: pip install maturin
+      - run: maturin build --release --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ci-abi3-wheel
+          path: dist/*.whl
+
+  wheel-test-base:
+    name: base wheel + pytest (py ${{ matrix.python-version }})
+    needs: wheel-build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: ci-abi3-wheel
+          path: dist
+      - run: pip install pytest pandas
+      - name: install without optional Python toolkit + test
+        run: |
+          pip install --no-deps dist/*.whl
+          python - <<'PY'
+          import importlib.util
+          import petekio
+          assert importlib.util.find_spec("petektools") is None
+          print(petekio.__version__)
+          PY
+          pytest python/tests/ -q
+
+  wheel-test-toolkit:
+    name: optional toolkit/viewer seam
+    needs: wheel-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v8
+        with:
+          name: ci-abi3-wheel
+          path: dist
+      - run: pip install pytest "petektools>=0.2.7,<0.3"
+      - run: pip install --no-deps dist/*.whl
+      - run: pytest python/tests/test_wells_view.py python/tests/test_log_expressions.py -q

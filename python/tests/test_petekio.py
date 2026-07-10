@@ -546,10 +546,10 @@ def test_structured_surface_round_trips_points_exactly():
     assert before == after, "points -> structured surface -> points must be exact"
 
 
-def test_pointset_infer_geometry_rejects_curvilinear_mesh_with_topology():
+def test_pointset_infer_geometry_falls_back_for_curvilinear_mesh_with_topology():
     # Regular column/row, but the node spacing swells across the grid: no single
-    # (xinc, yinc, rotation) lattice fits it, so inference must refuse rather than
-    # return a lattice the nodes do not sit on.
+    # (xinc, yinc, rotation) lattice fits it. The strict detector must refuse to
+    # invent one, and the Python convenience API must return the TIN fallback.
     x, y, z, col, row = [], [], [], [], []
     for j in range(12):
         for i in range(12):
@@ -562,13 +562,30 @@ def test_pointset_infer_geometry_rejects_curvilinear_mesh_with_topology():
     p.column = col
     p.row = row
 
-    with pytest.raises(ValueError, match="curvilinear"):
-        p.infer_geometry(tolerance=1e-3)
+    inferred = p.infer_geometry(tolerance=1e-3)
+    assert isinstance(inferred, petekio.TriSurface)
+    assert inferred.kind == "tri_surface"
+    assert inferred.n_points > 0
+    assert inferred.n_triangles > 0
+    assert inferred.edge.area() > 0.0
+    assert len(inferred.points()) == inferred.n_points
+    assert inferred.xyz() == inferred.points()
+    assert len(inferred.triangles()) == inferred.n_triangles
 
     # The exact representation still works, and reports no regular geometry.
     mesh = p.to_structured_surface(tolerance=1e-3)
     assert mesh.ncol == 12 and mesh.nrow == 12
     assert mesh.nominal_geometry is None
+
+
+def test_pointset_infer_geometry_rejects_invalid_tolerance_before_fallback():
+    p = petekio.PointSet.from_xyz(
+        [0.0, 10.0, 0.0, 10.0],
+        [0.0, 0.0, 10.0, 10.0],
+        [1.0, 2.0, 3.0, 4.0],
+    )
+    with pytest.raises(ValueError, match="finite positive"):
+        p.infer_geometry(tolerance=0.0)
 
 
 def test_pointset_to_structured_surface_preserves_explicit_xy():

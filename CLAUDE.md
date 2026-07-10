@@ -5,9 +5,10 @@ PyO3 bindings). The two committed sources of truth are **`SPEC.md`** (design
 constitution + architecture) and **`API.md`** (the *locked* public API
 contract). Read both before non-trivial work. petekIO follows the shared **petek
 house style** (canonical: `petekSuite/dev-docs/petek-house-style.md`) — the rules
-below are this library's slice of it. The dev-docs + inbox + skills system below
-is local working state — see `dev-docs/README.md` and `inbox/README.md` for the
-canonical maps.
+below are this library's slice of it. petekSuite is the control plane: it owns
+agent assignment, actionable state, planning-graph writes, GitHub Actions, and
+releases. An owning petekIO agent is spawned directly from petekSuite and keeps
+its edits inside this repository.
 
 ## Data — test against `a local real-dataset folder`, never leak it into the repo
 
@@ -31,9 +32,8 @@ message, the planning graph, or any committed/exported output. Concretely:
 
 ## Working style
 
-- **Keep each response under 400 tokens.** For any long output, write it to a
-  file (`dev-docs/temp/`, >1-day purge) and tell me the path instead of printing
-  it.
+- **Keep each response under 400 tokens.** Summarise long command output and
+  report the relevant evidence rather than pasting raw logs.
 - **Reproduce before fixing.** Before changing code, reproduce the issue and
   confirm the exact root cause with evidence. Don't apply a fix until the cause
   is verified.
@@ -48,8 +48,8 @@ message, the planning graph, or any committed/exported output. Concretely:
   over ad-hoc file reads when mapping structure, finding callers, or tracing the
   layered deps. Early in the build (little code), analysis is reading `SPEC.md`/
   `API.md` and the dependency crates' APIs instead.
-- **Spin up `Explore` agents** to parallelize broad sweeps and keep the
-  conclusions, not the file dumps, in context.
+- Broad sweeps and any additional agent assignment are coordinated by
+  petekSuite; report conclusions and evidence, not file dumps.
 
 ## Architecture — the design constitution (from `SPEC.md`)
 
@@ -110,9 +110,10 @@ Each pass through a file should leave it more compartmentalized than you found
 it.
 
 - **No bugs left behind.** Fix a pre-existing bug you encounter in the same
-  change, or surface it explicitly (file a `todos.md` item) rather than stepping
-  over it. First confirm it's a real defect, not deliberate behaviour — read the
-  surrounding code/tests and check it against `SPEC.md`/`API.md`.
+  change, or surface it explicitly to the petekSuite coordinator for its central
+  owner-namespaced action index. First confirm it's a real defect, not deliberate
+  behaviour — read the surrounding code/tests and check it against
+  `SPEC.md`/`API.md`.
 - **Golden tests are the safety net.** A correctness path lands with the
   golden/analytic test that proves it: IRAP round-trip, bilinear resample vs a
   hand calc, `area_below` vs an analytic value, a worked deviation survey + the
@@ -130,30 +131,22 @@ record numbers); **release build only**; trust `min` over `median` for sub-ms
 benches. Heavy built grids/cubes → `dev-docs/bench/out/`; the regression rows →
 `dev-docs/bench/results/results.csv`. See `dev-docs/bench/README.md`.
 
-## Inbox hygiene
+## Central coordination
 
-**Always use the inbox skills for cross-project communication** — never
-hand-read or hand-write inbox files. Incoming → **`read-inbox`** (triage
-`unread/`, lift durable info to `dev-docs/` + lean `todos.md` backlinks, route,
-archive, purge). Outgoing → **`notify`** (resolve the target under `Koding/`,
-compose per the schema, drop into its `inbox/unread/`). The canonical map is
-`inbox/README.md`; natural correspondents are `las-rs`/`Sheetio` (IO deps),
-`petekSim` (the consumer), `petekSuite` (the coordinator), and `mcp-servers` (one
-inbox for the whole ecosystem — never resolve a name to `mcp-servers/<subdir>/`).
+petekSuite owns petekIO's agent lifecycle, actionable todo state, planning-graph
+writes, GitHub Actions operations, and releases. Managed work arrives through a
+directly spawned owning-library agent; do not create a local skill tree, inbox,
+todo index, or MCP control file. Report newly discovered work and cross-library
+seam evidence to the coordinator. The suite-level inbox is reserved for outside
+projects, not communication between managed libraries.
 
 ## Planning graph — the cross-library source of truth
 
-The petekSuite **planning graph** (`petekSuite/research/graph/research.kgl`,
-served by the `contract` MCP) is the single source of truth for the inter-library contracts
-(the `ModelInputs` seam, the layered architecture), decisions, and open
-questions. Reach for it on anything cross-cutting — read the contract before
-changing a shared seam; record blocking issues and choices there, not only in
-local docs. Contribute **without cluttering**: runtime types only (`Question` /
-`Decision` / `Artifact` / `Task` — never the managed research nodes
-Algorithm/AlgorithmSpec/Tool/…; raise a `Question` if one is wrong or missing);
-**MERGE on id, never CREATE**; one node per concept; `write_scope` to those
-types; stamp `git_sha` + `modified_by='petekio'`. No direct graph access → route
-it through the **inbox** to petekSuite (the coordinator), who curates it in.
+The petekSuite **planning graph** (`petekSuite/research/graph/research.kgl`) is
+the single source of truth for inter-library contracts (including the
+`ModelInputs` seam), decisions, and open questions. Read the relevant contract
+before changing a shared seam. Report evidence, blockers, and proposed graph
+updates to the coordinator; petekSuite performs and validates every graph write.
 
 ## Commits & releases
 
@@ -161,28 +154,18 @@ Commit format: `type: short description` (`feat`, `fix`, `docs`, `refactor`,
 `test`, `chore`). Update `CHANGELOG.md` `[Unreleased]` for user-visible changes;
 skip for internal refactors, CI, test-only, formatting.
 
-**Pushing requires explicit, in-the-moment approval.** Default is *don't push*.
-Approval is one-shot — it covers exactly that one `git push` and does not carry
-to a later commit or branch.
-
-**Exception — invoking the `release` skill IS push authorization for that
-release** (the publish-triggering `main` push + its CI fix-and-push loop),
-scoped to that one run. Every pre-push safeguard still applies: gate green, the
-public surface reconciled with `API.md`, surgical staging that excludes
-unrelated WIP, ff-merge clean.
+Commit only when the coordinator's task grants commit authority. Pushing,
+GitHub Actions dispatch, versioning, and publishing are exclusively controlled
+by petekSuite; a library agent never infers that authority.
 
 Version source of truth: root `Cargo.toml` `[workspace.package] version` (or the
 single crate's `version`) — one bump per push, all workspace members in lockstep.
 
-## The skills (wired into these rules)
+## Execution contract
 
-- **`phased-plan`** — run any non-trivial, multi-step change as gated phases
-  (investigate → plan → branch + draft PR → autonomous build/test/commit loop →
-  perf gate → hand to release). Don't use generic plan mode for large work.
-- **`add-todo`** — the single authority on `todos.md` entry shape; capture work
-  as a lean backlink + a `plans/` detail doc.
-- **`dev-docs-cleanup`** — purge the time-boxed dirs + a todos-driven tidy. Run
-  before a new phased-plan and at the end of a release.
-- **`read-inbox`** / **`notify`** — the receive / send sides of the inbox.
-- **`release`** — ship: goal-check, gate, reconcile `API.md`, bump, promote
-  CHANGELOG, publish, tidy. Run only when asked.
+The central petekSuite `run-library-task` skill scopes and supervises
+single-library work; `coordinate` handles cross-library initiatives;
+`manage-actions` and `release` own Actions and publishing. The petekIO agent
+reproduces the issue, edits toward `SPEC.md`/`API.md`, runs the gates above,
+commits only when authorised, and reports files, evidence, SHA, and deviations
+to the coordinator.

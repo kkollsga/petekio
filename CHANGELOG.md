@@ -7,6 +7,36 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Producer-side LOD for the viewer seam (display-only; geometry never
+  decimated).** Three additive extensions compute exact level-of-detail
+  reductions from the shell's own structure:
+  - `MeshShell::wireframe_edges(stride)` / `TriSurface::wireframe_edges(stride)`
+    (Python `wireframe_edges(stride=None)`): `stride=k` returns the coarse
+    lattice wireframe — per fault block only the every-k-th row/column grid
+    lines survive (an in-block edge `(i,j)–(i+1,j)` kept when `j % k == 0`, an
+    edge `(i,j)–(i,j+1)` when `i % k == 0`), plus **all** boundary edges and
+    **all** edges touching an unlabelled node (fringe/bridge) or crossing a
+    block seam — so the outline and every seam stay intact at every LOD. It
+    reproduces the same line set as striding a grid's lines. `None`/`1` is the
+    full wireframe, byte-identical to before. Measured ≈2×/≈3.9× fewer edges at
+    stride 2/4 on a 200×200 faulted lattice.
+  - `Surface`/`StructuredMeshSurface`/`TriSurface` `value_layer(attr, stride)`
+    (Python `value_layer(attr=None, stride=None)`): `stride=k` builds the
+    trimesh on the decimated node set — per block, the `i % k == 0 && j % k == 0`
+    nodes, re-triangulated as the coarse quad-split (two triangles per coarse
+    cell where all four corners exist). Node values are the nodes' own values
+    (no averaging — a display LOD, not a resample); `range` comes from the
+    **full-resolution** lane so colours stay stable across LODs. Unlabelled
+    fringe/bridge nodes are dropped at coarse LOD (re-attaching them needs a
+    full re-triangulation — disproportionate for a display reduction; the
+    outline is carried by the wireframe/edge). The dict shape is unchanged.
+    Measured ≈4×/≈16.8× fewer triangles at stride 2/4 (2-D decimation).
+  - `iso_lines(..., simplify)` (all three levels; Python
+    `iso_lines(..., simplify=None)`): `simplify=tol` runs Douglas–Peucker
+    (new pure kernel `algorithms::surfaces::douglas_peucker`) on each output
+    polyline with a world-unit tolerance. Open-line endpoints and ring-closure
+    points are preserved; a polyline never drops below 2 points (rings below 4).
+    Measured ≈7×/≈39× fewer contour vertices at tol 1 m/50 m.
 - **Dataset names on Python hand-backs (duck-typed viewer seam).** Objects
   resolved through a project lookup (`project.points["…/Top Agat"]`,
   `project.surfaces[...]`, `geo.points(name)`, …) now carry a read-only

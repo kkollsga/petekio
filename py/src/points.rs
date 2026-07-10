@@ -229,10 +229,15 @@ impl PointSet {
     /// grid, and must lie in `(sqrt(2), 2)`; `None` uses 1.8. The result is a single
     /// connected component, and no triangle bridges a fault: the adjacencies the
     /// topology walk refused are excluded from the triangulation.
-    #[pyo3(signature = (max_link = None))]
-    fn to_tri_surface(&self, py: Python<'_>, max_link: Option<f64>) -> PyResult<TriSurface> {
+    #[pyo3(signature = (max_link = None, max_bridge = None))]
+    fn to_tri_surface(
+        &self,
+        py: Python<'_>,
+        max_link: Option<f64>,
+        max_bridge: Option<f64>,
+    ) -> PyResult<TriSurface> {
         self.with(py, |p| {
-            py.detach(|| p.to_tri_surface(max_link))
+            py.detach(|| p.to_tri_surface(max_link, max_bridge))
                 .map(TriSurface::wrap)
                 .map_err(to_pyerr)
         })
@@ -246,8 +251,19 @@ impl PointSet {
     /// data — use this when the footprint is not rectangular), or `"convex_hull"`.
     /// It applies only to a successfully inferred `GridGeometry`; the fallback
     /// `TriSurface` carries the boundary of its retained triangles.
-    #[pyo3(signature = (tolerance = 1e-3, edge = "full_rect"))]
-    fn infer_geometry(&self, py: Python<'_>, tolerance: f64, edge: &str) -> PyResult<Py<PyAny>> {
+    ///
+    /// `max_bridge` (in cells) applies only to the fallback `TriSurface`: it admits
+    /// triangle edges the closed-lattice rules reject — the boundary fringe, fault
+    /// seams, interior data gaps — up to that length, closing the mesh where the
+    /// geometry does not close. `None` keeps the mesh strictly lattice-closed.
+    #[pyo3(signature = (tolerance = 1e-3, edge = "full_rect", max_bridge = None))]
+    fn infer_geometry(
+        &self,
+        py: Python<'_>,
+        tolerance: f64,
+        edge: &str,
+        max_bridge: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
         let edge = parse_geometry_edge(edge)?;
         if !tolerance.is_finite() || tolerance <= 0.0 {
             return Err(PyValueError::new_err(
@@ -259,7 +275,7 @@ impl PointSet {
                 .into_pyobject(py)?
                 .into_any()
                 .unbind()),
-            Err(regular_error) => match py.detach(|| p.to_tri_surface(None)) {
+            Err(regular_error) => match py.detach(|| p.to_tri_surface(None, max_bridge)) {
                 Ok(tri) => Ok(TriSurface::wrap(tri).into_pyobject(py)?.into_any().unbind()),
                 Err(_) => Err(to_pyerr(regular_error)),
             },

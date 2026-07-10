@@ -163,6 +163,33 @@ top.area_below(8240)                 # ft² below the OWC
 ongrid = top.resample(grid_geom)     # bilinear onto a target geometry
 ```
 
+### Geometry shells — the three-level system (level 2/3 surfaces)
+
+Geometry is a **flat empty shell**: purely topological/positional, never a
+function of z. Three levels of increasing complexity, matched to how far a
+real export departs from a regular grid:
+
+1. **`GridGeometry`** (rigid grid): 8 scalars, node XY computed. `Surface` =
+   this + value lanes (above).
+2. **`StructuredShell`**: `(i, j)`-organized nodes with explicit per-node XY
+   (fault-shifted / curvilinear Petrel meshes that keep rectangular logical
+   topology). `StructuredMeshSurface` = shell + primary values + attribute
+   lanes.
+3. **`MeshShell`**: integer node ids, 2-D XY, CCW triangles, quad-dominant
+   wireframe, boundary edge, per-node walk labels `(block, i, j)`.
+   `TriSurface` = shell + per-node z + attribute lanes (the fault-cut
+   fallback).
+
+Rules: shells are **immutable** once built and shared via `Arc` (N property
+lanes never repeat geometry in memory); conversions go **up for free**
+(lossless, node identity preserved, all attribute lanes carried 1:1) and
+**down by inference** (`infer_grid` fits a regular lattice or refuses;
+`resample` grids every lane through the shared gridding kernels). Derived
+walkability (the `MeshShell` corner table) is lazy and never serialized.
+Every level exposes `iso_lines` (NaN-aware marching triangles; holes break
+lines, never bend them) and `value_layer` (the viewer's trimesh bundle).
+`.pproj` stores a level-2/3 surface's shell once with N property lanes.
+
 ### `Well` → `Sidetrack` → `Trajectory` (+ tops + logs)
 ```rust
 pub struct Well {

@@ -6,6 +6,80 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-07-10
+
+> **Rust API note:** this release reshapes `TriSurface`/`StructuredMeshSurface`
+> around shared geometry shells — `PointSet::to_tri_surface` gained a
+> `max_bridge` parameter and `TriSurface::points()` now returns an owned
+> `Vec<[f64; 3]>`. The **Python API is fully backward-compatible**. Rust
+> consumers on `^0.3` should review before `cargo update` (petekstatic and
+> peteksim do not use the changed symbols).
+
+### Added
+- **The three-level geometry-shell system.** Geometry is a flat empty shell —
+  purely topological/positional, never a function of z — in three levels:
+  the rigid `GridGeometry` (level 1, unchanged), the new **`StructuredShell`**
+  (level 2: `(i, j)` nodes with explicit per-node XY, optional nominal
+  geometry, edge polygon) and the new **`MeshShell`** (level 3: 2-D nodes,
+  CCW triangles, quad-dominant wireframe, boundary edge, per-node walk
+  labels). Shells are immutable and `Arc`-shared, so N properties/clones
+  never repeat geometry in memory. Surfaces = shell + property lanes:
+  `StructuredMeshSurface` and `TriSurface` now carry a primary value lane
+  plus named **attribute lanes** (`attr`/`set_attr`/`attr_names`/
+  `as_attr_surface`), mirroring `Surface` (Python `set_attr` on these two
+  returns a new object).
+- **Conversions across levels.** Upward is free and lossless, carrying every
+  attribute 1:1 with node identity preserved: `Surface.to_structured_mesh()`,
+  `Surface.to_tri_surface()`, `StructuredMeshSurface.to_tri_surface()` (and
+  shell-level `GridGeometry::to_structured_shell()/to_mesh_shell()`,
+  `StructuredShell::to_mesh_shell()`). Downward is a fit or a resample:
+  `infer_grid(tolerance)` fits a regular `GridGeometry` (errors when the
+  shell is not regular), and `resample(target, method)` grids the primary
+  **and all attribute lanes** onto a target geometry through the shared
+  gridding kernels.
+- **Iso-lines** on all three surface levels:
+  `iso_lines(interval=None, levels=None, attr=None)` — NaN-aware
+  marching-triangles contour extraction with deterministic, exact
+  (mesh-edge-anchored) segment chaining. Levels 1–2 quad-split each cell
+  along a consistent diagonal; level 3 contours per shell triangle. Explicit
+  `levels` win; `interval` aligns levels to its multiples across the value
+  range. Holes break lines, never bend them.
+- **Value layers**: `value_layer(attr=None)` returns the viewer's trimesh
+  bundle — Python: `{"kind": "trimesh", "name", "nodes", "triangles",
+  "values", "range"}` (range = finite min/max, NaN allowed in values) —
+  consumed by the petektools viewer.
+- **Walkability**: a lazily built corner table on `MeshShell`
+  (opposite-corner + vertex→corner arrays; derived, never serialized).
+  Construction asserts the mesh is edge-manifold (no undirected edge carried
+  by more than two triangles).
+- **`.pproj` persistence for level 2/3 surfaces**: `StructuredMeshSurface`
+  and `TriSurface` gained `save`/`load` (new section kinds
+  `structured_mesh` / `tri_surface`). Each section stores its shell **once**
+  with N property lanes referencing it; existing `.pproj` files load
+  unchanged.
+
+- `TriSurface.wireframe_edges()` (Rust and Python): the unique triangle edges
+  with interior cell diagonals removed — the quad-dominant wireframe of the
+  geometry as a flat empty shell. Purely topological: a diagonal is classified
+  from the topology walk's `(block, i, j)` labels and hidden only when both
+  triangles of its cell survived; boundary diagonals stay, and z never enters
+  the classification (how shape splits non-planar cells belongs to the surface
+  layer). Consumers (e.g. the petektools 2-D viewer) can draw lattice cells as
+  squares instead of triangle pairs.
+- `max_bridge` (in cells) on `PointSet.to_tri_surface(max_link, max_bridge)`
+  and Python `infer_geometry(..., max_bridge=None)` /
+  `to_tri_surface(max_link=None, max_bridge=None)`: opt-in admits triangle
+  edges the closed-lattice rules reject — the boundary fringe, fault seams,
+  interior data gaps — up to that length, closing the mesh where the geometry
+  does not close (smoother edges, one continuous sheet). `None` keeps the
+  strict lattice-closed behaviour; must be `>= max_link` when set. The Rust
+  `to_tri_surface` signature gained the second parameter.
+
+### Changed
+- Rust `TriSurface::points()` now returns `Vec<[f64; 3]>` (the shell's XY
+  zipped with the primary z lane) instead of `&[[f64; 3]]`; behaviour and the
+  Python surface (`points()`/`xyz()` tuples) are unchanged.
+
 ## [0.3.10] - 2026-07-10
 
 ### Fixed

@@ -494,6 +494,45 @@ def test_tri_surface_handles_anisotropic_cells():
     assert len(tin.edge.rings()) == 1
 
 
+def _faulted_blocks():
+    x, y, z = [], [], []
+    for j in range(9):
+        for i in range(6):
+            x.append(50.0 * i)
+            y.append(50.0 * j)
+            z.append(-1800.0)
+    for j in range(9):
+        for i in range(8, 14):
+            x.append(50.0 * i + 20.0)
+            y.append(50.0 * j + 25.0)
+            z.append(-1900.0)
+    return x, y, z
+
+
+def test_infer_geometry_max_bridge_closes_the_fault_seam():
+    x, y, z = _faulted_blocks()
+    p = petekio.PointSet.from_xyz(x, y, z)
+    strict = p.infer_geometry(tolerance=1e-3)
+    assert strict.kind == "tri_surface"
+    assert strict.components == 2
+    bridged = p.infer_geometry(tolerance=1e-3, max_bridge=4.0)
+    assert bridged.components == 1
+    with pytest.raises(ValueError, match="max_bridge"):
+        p.to_tri_surface(max_bridge=1.0)
+
+
+def test_tri_surface_wireframe_edges_hide_interior_diagonals():
+    x, y, z = _rotated_lattice(9, 7, 50.0, 50.0, 0.0)
+    tin = petekio.PointSet.from_xyz(x, y, z).to_tri_surface()
+    wf = tin.wireframe_edges()
+    assert len(wf) == 9 * 6 + 7 * 8  # lattice edges only, no cell diagonals
+    pts = tin.points()
+    for a, b in wf:
+        dx = pts[a][0] - pts[b][0]
+        dy = pts[a][1] - pts[b][1]
+        assert abs(math.hypot(dx, dy) - 50.0) < 1e-9
+
+
 def test_tri_surface_is_deterministic():
     x, y, z = _rotated_lattice(11, 9, 50.0, 30.0, 17.0)
     p = petekio.PointSet.from_xyz(x, y, z)

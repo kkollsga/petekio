@@ -2,7 +2,7 @@
 members = ["py"]
 
 [workspace.package]
-version = "0.3.10"
+version = "0.3.11"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -46,7 +46,9 @@ rstar = "0.13"
 spade = "2.15"
 # Persistence (.pproj): serde DTOs + bincode sections layered on petekTools'
 # generic container (which owns the magic/JSON-header/zstd framing).
-serde = { version = "1", features = ["derive"] }
+# "rc": Arc-shared geometry shells serialize as their inner data (each surface
+# section stores its shell once; lanes reference the in-memory shell via Arc).
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 bincode = "1"
 # Shared numeric kernels + generic `.pproj` container. Resolved from crates.io

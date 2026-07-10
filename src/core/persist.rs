@@ -4,7 +4,7 @@
 //! surface (mirrors `Surface::save_irap_classic`). Bulk arrays are bincode'd
 //! (NaN-safe) then `zstd`'d by the container.
 
-use crate::core::{PointSet, PolygonSet, Surface, Well};
+use crate::core::{PointSet, PolygonSet, StructuredMeshSurface, Surface, TriSurface, Well};
 use crate::foundation::{GeoError, Result};
 use crate::io::{
     container::{self, Section},
@@ -67,6 +67,24 @@ impl Persistable for PolygonSet {
         "polygons".to_string()
     }
 }
+// Level-2/3 surfaces (shell + property lanes). New kinds — no earlier writer
+// ever emitted them, so their v1 (`DATA_VERSION`) payload IS the shell-once
+// + N-lane encoding (the shell serializes exactly once per section; every
+// lane references it). Derived walk indexes (the corner table) are never
+// persisted; decoding routes through the validating constructors, which
+// rebuild them lazily.
+impl Persistable for StructuredMeshSurface {
+    const KIND: &'static str = "structured_mesh";
+    fn element_name(&self) -> String {
+        "structured_mesh".to_string()
+    }
+}
+impl Persistable for TriSurface {
+    const KIND: &'static str = "tri_surface";
+    fn element_name(&self) -> String {
+        "tri_surface".to_string()
+    }
+}
 
 /// Write one element as a single-section `.pproj`.
 fn save_one<T: Persistable>(path: &Path, value: &T) -> Result<()> {
@@ -111,6 +129,29 @@ impl Well {
     }
     /// Load a well previously written with [`save`](Well::save).
     pub fn load(path: impl AsRef<Path>) -> Result<Well> {
+        load_one(path.as_ref())
+    }
+}
+
+impl StructuredMeshSurface {
+    /// Save this surface (shell once + primary/attribute lanes) to a `.pproj`.
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        save_one(path.as_ref(), self)
+    }
+    /// Load a surface previously written with [`save`](StructuredMeshSurface::save).
+    pub fn load(path: impl AsRef<Path>) -> Result<StructuredMeshSurface> {
+        load_one(path.as_ref())
+    }
+}
+
+impl TriSurface {
+    /// Save this surface (shell once + primary/attribute lanes) to a `.pproj`.
+    /// The derived corner table is never persisted.
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        save_one(path.as_ref(), self)
+    }
+    /// Load a surface previously written with [`save`](TriSurface::save).
+    pub fn load(path: impl AsRef<Path>) -> Result<TriSurface> {
         load_one(path.as_ref())
     }
 }
@@ -236,6 +277,54 @@ mod tests {
         let s = b.log("PHIE").unwrap().stats();
         assert_eq!(s.count, 2); // NaN sample skipped, both others counted
         assert!(b.zones().iter().any(|z| z.name == "Top A"));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn structured_mesh_round_trips_shell_and_lanes() {
+        use crate::core::StructuredMeshSurface;
+        let s = Surface::constant(geom(), -1800.0);
+        let mut sm = s.to_structured_mesh().unwrap();
+        let mut amp = Array2::from_elem((3, 2), 0.5);
+        amp[[1, 1]] = f64::NAN;
+        sm.set_attr("amp", amp).unwrap();
+
+        let p = tmp("smesh");
+        sm.save(&p).unwrap();
+        let back = StructuredMeshSurface::load(&p).unwrap();
+        assert_eq!((back.ncol(), back.nrow()), (3, 2));
+        assert_eq!(back.values(), sm.values());
+        assert_eq!(back.x(), sm.x());
+        assert_eq!(back.attr_names(), vec!["amp"]);
+        assert!(back.attr("amp").unwrap()[[1, 1]].is_nan());
+        assert_eq!(back.nominal_geometry(), Some(&geom()));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn tri_surface_round_trips_shell_once_with_lanes() {
+        use crate::core::TriSurface;
+        let mut tri = Surface::constant(geom(), -1800.0).to_tri_surface().unwrap();
+        let n = tri.points().len();
+        let mut amp: Vec<f64> = (0..n).map(|k| k as f64).collect();
+        amp[2] = f64::NAN;
+        tri.set_attr("amp", amp.clone()).unwrap();
+
+        let p = tmp("tri");
+        tri.save(&p).unwrap();
+        let back = TriSurface::load(&p).unwrap();
+        assert_eq!(back.points(), tri.points());
+        assert_eq!(back.triangles(), tri.triangles());
+        assert_eq!(back.wireframe_edges(), tri.wireframe_edges());
+        assert_eq!(back.shell().labels(), tri.shell().labels());
+        let a = back.attr("amp").unwrap();
+        assert!(a[2].is_nan());
+        assert_eq!(a[3], 3.0);
+        // The derived corner table was not persisted but rebuilds on demand.
+        assert_eq!(
+            back.shell().corner_table().n_corners(),
+            3 * back.triangles().len()
+        );
         std::fs::remove_file(&p).ok();
     }
 

@@ -1,5 +1,6 @@
-//! `TriSurface` — the fallback surface for points whose `(column, row)` topology
-//! cannot be verified.
+//! `TriSurface` — the level-3 surface: an [`Arc<MeshShell>`] (geometry) plus a
+//! primary per-node value lane (z) and named attribute lanes. The fallback
+//! surface for points whose `(column, row)` topology cannot be verified.
 //!
 //! When [`PointSet::detect_topology`](crate::PointSet::detect_topology) stalls, the
 //! surface is fault-cut and no structured mesh describes it. Triangulate the points
@@ -16,12 +17,16 @@
 //!   cell. But the walk already refused exactly those adjacencies, so drop every
 //!   triangle that uses one.
 //!
-//! Points are never moved. Spec: `surface_tin_fallback_spec` on the planning graph.
+//! Points are never moved. The walk's `(block, i, j)` labels stay on the shell.
+//! Spec: `surface_tin_fallback_spec` on the planning graph.
 
+use crate::core::shell::MeshShell;
 use crate::core::topology::GridDetection;
 use crate::core::{PointSet, PolygonSet};
 use crate::foundation::{BBox, GeoError, HasHistory, OperationHistory, Result, Stats};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use indexmap::IndexMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Default maximum link length, in cells of the normalized grid frame.
 pub const DEFAULT_MAX_LINK: f64 = 1.8;
@@ -32,62 +37,143 @@ const MAX_LINK: f64 = 2.0;
 /// Triangles a connected island needs to count as a piece of surface.
 const MIN_ISLAND: usize = 8;
 
-/// An unstructured triangulated surface over the original points.
+/// An unstructured triangulated surface: shared mesh shell + per-node lanes.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "TriSurfaceData")]
 pub struct TriSurface {
-    points: Vec<[f64; 3]>,
-    triangles: Vec<[u32; 3]>,
-    edge: PolygonSet,
+    shell: Arc<MeshShell>,
+    /// Primary per-node values — z, in the same order as the shell's nodes.
+    values: Vec<f64>,
+    attributes: IndexMap<String, Vec<f64>>,
     #[serde(default)]
     history: OperationHistory,
 }
 
+/// Serialized shape: the shell **once**, then N property lanes referencing it.
+/// Deserialization routes through the validating constructor.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TriSurfaceData {
+    shell: MeshShell,
+    values: Vec<f64>,
+    #[serde(default)]
+    attributes: IndexMap<String, Vec<f64>>,
+    #[serde(default)]
+    history: OperationHistory,
+}
+
+impl TryFrom<TriSurfaceData> for TriSurface {
+    type Error = GeoError;
+    fn try_from(d: TriSurfaceData) -> Result<TriSurface> {
+        let mut out = TriSurface::from_shell(Arc::new(d.shell), d.values)?;
+        for (name, lane) in d.attributes {
+            out.set_attr(&name, lane)?;
+        }
+        out.history = d.history;
+        Ok(out)
+    }
+}
+
 impl TriSurface {
+    /// Build a surface over an existing (shared) shell. The value lane must
+    /// have one value per shell node.
+    pub fn from_shell(shell: Arc<MeshShell>, values: Vec<f64>) -> Result<TriSurface> {
+        check_lane(&shell, &values, "TriSurface::from_shell")?;
+        Ok(TriSurface {
+            shell,
+            values,
+            attributes: IndexMap::new(),
+            history: OperationHistory::from_entry("tri_surface.from_shell"),
+        })
+    }
+
     /// Stable kind label for dispatch/reporting.
     pub fn kind(&self) -> &'static str {
         "tri_surface"
     }
 
-    /// The surface's vertices, exactly as they came in.
-    pub fn points(&self) -> &[[f64; 3]] {
-        &self.points
+    /// The geometry shell (shared; never copied per property lane).
+    pub fn shell(&self) -> &Arc<MeshShell> {
+        &self.shell
+    }
+
+    /// The surface's vertices as `(x, y, z)` — the shell's XY zipped with the
+    /// primary values. Exactly the input points of the triangulation, unmoved.
+    pub fn points(&self) -> Vec<[f64; 3]> {
+        self.shell
+            .nodes()
+            .iter()
+            .zip(&self.values)
+            .map(|(n, z)| [n[0], n[1], *z])
+            .collect()
+    }
+
+    /// The primary per-node value lane (z). `NaN` = undefined.
+    pub fn values(&self) -> &[f64] {
+        &self.values
+    }
+
+    /// A named attribute lane, if present.
+    pub fn attr(&self, name: &str) -> Option<&[f64]> {
+        self.attributes.get(name).map(Vec::as_slice)
+    }
+
+    /// Set (or replace) a named attribute lane (one value per shell node).
+    pub fn set_attr(&mut self, name: &str, values: Vec<f64>) -> Result<()> {
+        check_lane(&self.shell, &values, "TriSurface::set_attr")?;
+        self.attributes.insert(name.to_string(), values);
+        self.record_history(format!("tri_surface.set_attr(name={name})"));
+        Ok(())
+    }
+
+    /// The names of all attribute lanes, in insertion order.
+    pub fn attr_names(&self) -> Vec<&str> {
+        self.attributes.keys().map(String::as_str).collect()
+    }
+
+    /// Promote an attribute lane to a standalone surface (its primary values)
+    /// on the **same shared shell** — no geometry is copied.
+    pub fn as_attr_surface(&self, name: &str) -> Option<TriSurface> {
+        self.attributes.get(name).map(|a| TriSurface {
+            shell: Arc::clone(&self.shell),
+            values: a.clone(),
+            attributes: IndexMap::new(),
+            history: self
+                .history
+                .with_entry(format!("tri_surface.as_attr_surface(name={name})")),
+        })
     }
 
     /// Triangles, as indices into [`points`](Self::points), counter-clockwise.
     pub fn triangles(&self) -> &[[u32; 3]] {
-        &self.triangles
+        self.shell.triangles()
+    }
+
+    /// Unique triangle edges minus interior cell diagonals — the quad-dominant
+    /// wireframe of the geometry as a flat empty shell (a full lattice cell
+    /// shows as a square, not two triangles). Purely topological, never a
+    /// function of z. See [`MeshShell::wireframe_edges`].
+    pub fn wireframe_edges(&self) -> Vec<[u32; 2]> {
+        self.shell.wireframe_edges()
     }
 
     /// Outer boundary ring(s) of the retained triangles.
     pub fn edge(&self) -> &PolygonSet {
-        &self.edge
+        self.shell.edge()
     }
 
-    /// Statistics over the vertices' z.
+    /// Statistics over the primary values (z).
     pub fn stats(&self) -> Stats {
-        Stats::of(&self.points.iter().map(|p| p[2]).collect::<Vec<_>>())
+        Stats::of(&self.values)
     }
 
     /// Axis-aligned bounding box over the vertices' XY.
     pub fn bbox(&self) -> BBox {
-        let mut b = BBox {
-            xmin: f64::INFINITY,
-            ymin: f64::INFINITY,
-            xmax: f64::NEG_INFINITY,
-            ymax: f64::NEG_INFINITY,
-        };
-        for p in &self.points {
-            b.xmin = b.xmin.min(p[0]);
-            b.xmax = b.xmax.max(p[0]);
-            b.ymin = b.ymin.min(p[1]);
-            b.ymax = b.ymax.max(p[1]);
-        }
-        b
+        self.shell.bbox()
     }
 
     /// The vertices as a `PointSet` — exact, nothing resampled.
     pub fn to_points(&self) -> PointSet {
-        let mut out = PointSet::from_coords(self.points.clone());
+        let mut out = PointSet::from_coords(self.points());
         *out.operation_history_mut() = self.history.clone();
         out.record_history("tri_surface.to_points()");
         out
@@ -96,17 +182,23 @@ impl TriSurface {
     /// Connected components. More than one means the surface is fault-cut and the
     /// mesh honours the fault rather than bridging it.
     pub fn components(&self) -> usize {
-        let tris: Vec<[usize; 3]> = self
-            .triangles
-            .iter()
-            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
-            .collect();
-        count_components(&tris)
+        self.shell.components()
+    }
+
+    /// Fit a regular grid to the shell (the lossy downward conversion);
+    /// errors when the mesh is not regular. Delegates to
+    /// [`MeshShell::infer_grid`].
+    pub fn infer_grid(&self, tolerance: f64) -> Result<crate::foundation::GridGeometry> {
+        self.shell.infer_grid(tolerance)
     }
 
     /// Human-readable operation history.
     pub fn history(&self) -> &[String] {
         self.history.entries()
+    }
+
+    pub(crate) fn set_history(&mut self, history: impl Into<OperationHistory>) {
+        self.history = history.into();
     }
 }
 
@@ -119,16 +211,38 @@ impl HasHistory for TriSurface {
     }
 }
 
+fn check_lane(shell: &MeshShell, lane: &[f64], ctx: &str) -> Result<()> {
+    if lane.len() != shell.n_nodes() {
+        return Err(GeoError::GeometryMismatch(format!(
+            "{ctx}: {} lane values for {} shell nodes",
+            lane.len(),
+            shell.n_nodes()
+        )));
+    }
+    Ok(())
+}
+
 impl PointSet {
     /// Triangulate the points into a [`TriSurface`] — the fallback when
     /// [`detect_topology`](Self::detect_topology) cannot verify a structured mesh.
     ///
     /// `max_link` is the longest triangle edge to keep, **in cells** of the detected
-    /// grid; it must lie in `(√2, 2)`. `None` uses [`DEFAULT_MAX_LINK`]. The result is
-    /// a single connected component: triangles outside the largest one are dropped,
-    /// as are triangles that bridge a fault (those using an adjacency the topology
-    /// walk refused).
-    pub fn to_tri_surface(&self, max_link: Option<f64>) -> Result<TriSurface> {
+    /// grid; it must lie in `(√2, 2)`. `None` uses [`DEFAULT_MAX_LINK`].
+    ///
+    /// `max_bridge` (also **in cells**, `>= max_link`) opt-in relaxes the closed-lattice
+    /// rules exactly where the geometry does not close: an edge the strict rules reject —
+    /// an unlabelled boundary-fringe node, a fault-seam adjacency the walk refused, an
+    /// interior data gap — is admitted anyway when it is no longer than `max_bridge`.
+    /// The interior lattice keeps the strict rules regardless. `None` (the default)
+    /// keeps the mesh strictly lattice-closed: no fault is bridged, and triangles using
+    /// an adjacency the topology walk refused are dropped. Large values readmit the
+    /// spanning slivers a Delaunay hull throws across concave bays — keep it near the
+    /// gap size being closed.
+    pub fn to_tri_surface(
+        &self,
+        max_link: Option<f64>,
+        max_bridge: Option<f64>,
+    ) -> Result<TriSurface> {
         let max_link = max_link.unwrap_or(DEFAULT_MAX_LINK);
         if !(MIN_LINK..MAX_LINK).contains(&max_link) {
             return Err(GeoError::GeometryInference(format!(
@@ -136,26 +250,38 @@ impl PointSet {
                  the mesh shreds, at two cells a triangle skips a node (got {max_link})"
             )));
         }
+        if let Some(b) = max_bridge {
+            if !b.is_finite() || b < max_link {
+                return Err(GeoError::GeometryInference(format!(
+                    "max_bridge must be a finite length in cells >= max_link ({max_link}), \
+                     got {b}"
+                )));
+            }
+        }
 
         let d = self.detect_grid(None)?;
         let normalized = normalize(&d);
         let faces = delaunay(&normalized)?;
 
-        // Every adjacency the walk refused straddles a fault. Never triangulate across one.
+        // Every adjacency the walk refused straddles a fault. The strict rules never
+        // triangulate across one; `max_bridge` admits it like any other open seam.
         let mut forbidden: HashSet<(usize, usize)> = HashSet::new();
         for &(a, b) in &d.frontier {
             forbidden.insert(ordered(a, b));
         }
 
         let max2 = max_link * max_link;
+        let bridge2 = max_bridge.map(|b| b * b);
         let kept: Vec<[usize; 3]> = faces
             .into_iter()
             .filter(|t| {
                 let e = [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])];
                 e.iter().all(|&(a, b)| {
-                    !forbidden.contains(&ordered(a, b))
+                    let d2 = sq_dist(normalized[a], normalized[b]);
+                    let strict = !forbidden.contains(&ordered(a, b))
                         && index_adjacent(&d, a, b)
-                        && sq_dist(normalized[a], normalized[b]) <= max2
+                        && d2 <= max2;
+                    strict || bridge2.is_some_and(|b2| d2 <= b2)
                 })
             })
             .collect();
@@ -166,17 +292,15 @@ impl PointSet {
         }
 
         let kept = drop_small_islands(&kept);
-        let (points, triangles) = compact(&kept, &d);
-        let edge = boundary_rings(&triangles, &points)?;
+        let (nodes, zs, triangles, labels) = compact(&kept, &d);
+        let shell = MeshShell::from_triangles(nodes, triangles, labels)?;
 
-        let mut out = TriSurface {
-            points,
-            triangles,
-            edge,
-            history: OperationHistory::new(),
-        };
+        let mut out = TriSurface::from_shell(Arc::new(shell), zs)?;
         *out.operation_history_mut() = self.operation_history().clone();
-        out.record_history(format!("points.to_tri_surface(max_link={max_link})"));
+        out.record_history(match max_bridge {
+            Some(b) => format!("points.to_tri_surface(max_link={max_link}, max_bridge={b})"),
+            None => format!("points.to_tri_surface(max_link={max_link})"),
+        });
         Ok(out)
     }
 }
@@ -313,15 +437,30 @@ fn drop_small_islands(tris: &[[usize; 3]]) -> Vec<[usize; 3]> {
         .collect()
 }
 
-/// Reindex the surviving triangles onto only the vertices they use.
-fn compact(tris: &[[usize; 3]], d: &GridDetection) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+/// Reindex the surviving triangles onto only the vertices they use, splitting XY
+/// (shell) from z (property lane) and carrying each vertex's `(block, i, j)` walk
+/// label (`None` where the walk left it unlabelled).
+#[allow(clippy::type_complexity)]
+fn compact(
+    tris: &[[usize; 3]],
+    d: &GridDetection,
+) -> (
+    Vec<[f64; 2]>,
+    Vec<f64>,
+    Vec<[u32; 3]>,
+    Vec<Option<crate::core::shell::WalkLabel>>,
+) {
     let mut remap: HashMap<usize, u32> = HashMap::new();
-    let mut points = Vec::new();
+    let mut nodes = Vec::new();
+    let mut zs = Vec::new();
+    let mut labels = Vec::new();
     for t in tris {
         for &v in t {
             remap.entry(v).or_insert_with(|| {
-                points.push([d.pts[v][0], d.pts[v][1], d.zs[v]]);
-                (points.len() - 1) as u32
+                nodes.push([d.pts[v][0], d.pts[v][1]]);
+                zs.push(d.zs[v]);
+                labels.push(d.index_of.get(&v).copied());
+                (nodes.len() - 1) as u32
             });
         }
     }
@@ -329,112 +468,7 @@ fn compact(tris: &[[usize; 3]], d: &GridDetection) -> (Vec<[f64; 3]>, Vec<[u32; 
         .iter()
         .map(|t| [remap[&t[0]], remap[&t[1]], remap[&t[2]]])
         .collect();
-    (points, triangles)
-}
-
-/// Chain the boundary edges into closed rings — the surface's outer boundary and the
-/// outline of any interior hole.
-///
-/// The edges are **directed**, taken from each triangle's counter-clockwise winding: a
-/// boundary edge is one whose reverse no triangle carries. Direction matters. An
-/// undirected trace has to guess which way to leave a pinch vertex — a vertex where
-/// the boundary touches itself — and the guess depends on hash iteration order, so the
-/// same triangles yield different rings from run to run. Following the winding leaves
-/// exactly one outgoing edge to take.
-fn boundary_rings(tris: &[[u32; 3]], points: &[[f64; 3]]) -> Result<PolygonSet> {
-    let directed: HashSet<(u32, u32)> = tris
-        .iter()
-        .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
-        .collect();
-    let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-    let mut remaining = 0usize;
-    for &(a, b) in &directed {
-        if !directed.contains(&(b, a)) {
-            out.entry(a).or_default().push(b);
-            remaining += 1;
-        }
-    }
-    if remaining == 0 {
-        return Err(GeoError::GeometryInference(
-            "triangulated surface has no boundary".into(),
-        ));
-    }
-    // Deterministic choice at a pinch vertex, where more than one boundary edge leaves.
-    for vs in out.values_mut() {
-        vs.sort_unstable();
-    }
-    let total = remaining;
-
-    let mut rings = Vec::new();
-    while let Some((&start, _)) = out.iter().find(|(_, vs)| !vs.is_empty()) {
-        let mut ring = vec![start];
-        let mut current = start;
-        loop {
-            let next = match out.get_mut(&current).and_then(|vs| vs.pop()) {
-                Some(v) => v,
-                None => {
-                    return Err(GeoError::GeometryInference(
-                        "triangulated surface boundary is not closed".into(),
-                    ))
-                }
-            };
-            if next == start {
-                break;
-            }
-            ring.push(next);
-            current = next;
-            if ring.len() > total + 1 {
-                return Err(GeoError::GeometryInference(
-                    "triangulated surface boundary tracing did not close".into(),
-                ));
-            }
-        }
-        if ring.len() >= 3 {
-            ring.push(start); // close it
-            rings.push(
-                ring.into_iter()
-                    .map(|v| [points[v as usize][0], points[v as usize][1], 0.0])
-                    .collect(),
-            );
-        }
-    }
-    if rings.is_empty() {
-        return Err(GeoError::GeometryInference(
-            "triangulated surface produced no closed boundary".into(),
-        ));
-    }
-    Ok(PolygonSet::from_rings(rings))
-}
-
-/// Number of connected components among `tris`.
-fn count_components(tris: &[[usize; 3]]) -> usize {
-    let mut parent: HashMap<usize, usize> = HashMap::new();
-    fn find(parent: &mut HashMap<usize, usize>, x: usize) -> usize {
-        let mut root = x;
-        while let Some(&p) = parent.get(&root) {
-            if p == root {
-                break;
-            }
-            root = p;
-        }
-        root
-    }
-    for t in tris {
-        for &v in t {
-            parent.entry(v).or_insert(v);
-        }
-    }
-    for t in tris {
-        let r0 = find(&mut parent, t[0]);
-        for &v in &t[1..] {
-            let r = find(&mut parent, v);
-            if r != r0 {
-                parent.insert(r, r0);
-            }
-        }
-    }
-    let roots: HashSet<usize> = tris.iter().map(|t| find(&mut parent, t[0])).collect();
-    roots.len()
+    (nodes, zs, triangles, labels)
 }
 
 #[cfg(test)]
@@ -457,7 +491,7 @@ mod tests {
     fn triangulates_a_full_grid_into_one_sheet() {
         let coords = lattice(9, 7, 50.0, 50.0, 25.0);
         let tin = PointSet::from_coords(coords.clone())
-            .to_tri_surface(None)
+            .to_tri_surface(None, None)
             .unwrap();
         assert_eq!(tin.kind(), "tri_surface");
         assert_eq!(tin.points().len(), coords.len());
@@ -470,6 +504,9 @@ mod tests {
         before.sort();
         after.sort();
         assert_eq!(before, after);
+        // The walk labels stay on the shell — one per node.
+        assert_eq!(tin.shell().labels().len(), tin.points().len());
+        assert!(tin.shell().labels().iter().all(Option::is_some));
     }
 
     fn bits(c: &[f64; 3]) -> [u64; 3] {
@@ -482,7 +519,9 @@ mod tests {
         // no *world-unit* max link can both keep the diagonals and reject a skipped
         // node. In the normalized frame the cell is a unit square and 1.8 works.
         let coords = lattice(9, 7, 50.0, 20.0, 40.0);
-        let tin = PointSet::from_coords(coords).to_tri_surface(None).unwrap();
+        let tin = PointSet::from_coords(coords)
+            .to_tri_surface(None, None)
+            .unwrap();
         assert_eq!(tin.triangles().len(), 2 * 8 * 6);
         assert_eq!(tin.edge().rings().len(), 1);
     }
@@ -511,7 +550,7 @@ mod tests {
 
         assert!(report.blocks >= 2, "the fixture must split into blocks");
 
-        let tin = p.to_tri_surface(None).unwrap();
+        let tin = p.to_tri_surface(None, None).unwrap();
         // Both blocks survive. A fault-cut surface really *is* two sheets, and keeping
         // only the largest would silently discard real data. What must not happen is a
         // triangle spanning the throw.
@@ -529,9 +568,9 @@ mod tests {
         // the emitted rings from run to run on the same triangles.
         let coords = lattice(11, 9, 50.0, 30.0, 17.0);
         let p = PointSet::from_coords(coords);
-        let first = p.to_tri_surface(None).unwrap();
+        let first = p.to_tri_surface(None, None).unwrap();
         for _ in 0..8 {
-            let again = p.to_tri_surface(None).unwrap();
+            let again = p.to_tri_surface(None, None).unwrap();
             assert_eq!(again.triangles(), first.triangles());
             assert_eq!(again.points(), first.points());
             assert_eq!(again.edge().rings(), first.edge().rings());
@@ -539,14 +578,139 @@ mod tests {
     }
 
     #[test]
+    fn max_bridge_closes_fault_seams_and_fringe() {
+        // The faulted fixture from `does_not_bridge_a_fault`: two blocks separated by
+        // a ~3.4-cell gap. Strict rules keep them apart; max_bridge=4 closes the seam.
+        let mut coords = Vec::new();
+        for j in 0..9 {
+            for i in 0..6 {
+                coords.push([50.0 * i as f64, 50.0 * j as f64, -1800.0]);
+            }
+        }
+        for j in 0..9 {
+            for i in 8..14 {
+                coords.push([50.0 * i as f64 + 20.0, 50.0 * j as f64 + 25.0, -1900.0]);
+            }
+        }
+        let p = PointSet::from_coords(coords);
+        assert_eq!(p.to_tri_surface(None, None).unwrap().components(), 2);
+        let bridged = p.to_tri_surface(None, Some(4.0)).unwrap();
+        assert_eq!(bridged.components(), 1, "the seam closes at max_bridge=4");
+
+        // A fringe point 2.5 cells off the lattice boundary: dropped strictly,
+        // attached under max_bridge=3.
+        let mut coords = lattice(9, 7, 50.0, 50.0, 0.0);
+        coords.push([1000.0 + 8.0 * 50.0 + 125.0, 2000.0 + 150.0, -1800.0]);
+        let p = PointSet::from_coords(coords.clone());
+        assert_eq!(p.to_tri_surface(None, None).unwrap().points().len(), 63);
+        let tin = p.to_tri_surface(None, Some(3.0)).unwrap();
+        assert_eq!(tin.points().len(), 64, "the fringe point joins the mesh");
+        assert_eq!(tin.components(), 1);
+    }
+
+    #[test]
+    fn rejects_a_max_bridge_below_max_link() {
+        let p = PointSet::from_coords(lattice(6, 6, 50.0, 50.0, 0.0));
+        for bad in [0.5, 1.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                p.to_tri_surface(None, Some(bad)).is_err(),
+                "max_bridge {bad} must be rejected"
+            );
+        }
+        assert!(p.to_tri_surface(None, Some(1.8)).is_ok());
+    }
+
+    #[test]
+    fn wireframe_hides_interior_diagonals_only() {
+        // Axis-aligned 9 x 7 lattice, 50 m square cells: the wireframe must be the
+        // lattice edges alone — 9*6 verticals + 7*8 horizontals — every one 50 m,
+        // while triangles() still carries the diagonals.
+        let tin = PointSet::from_coords(lattice(9, 7, 50.0, 50.0, 0.0))
+            .to_tri_surface(None, None)
+            .unwrap();
+        let wf = tin.wireframe_edges();
+        assert_eq!(wf.len(), 9 * 6 + 7 * 8);
+        let pts = tin.points();
+        for [a, b] in &wf {
+            let (p, q) = (pts[*a as usize], pts[*b as usize]);
+            let len = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt();
+            assert!((len - 50.0).abs() < 1e-9, "diagonal survived: {len}");
+        }
+    }
+
+    #[test]
+    fn wireframe_is_shape_independent() {
+        // The geometry is a flat empty shell: spiking a node's z kinks four cells,
+        // but shape never changes the wireframe — the shell stays all quads.
+        // Splitting non-planar cells is the surface layer's concern.
+        let flat = lattice(9, 7, 50.0, 50.0, 0.0);
+        let mut spiked = flat.clone();
+        for c in spiked.iter_mut() {
+            if (c[0] - 1200.0).abs() < 1e-9 && (c[1] - 2150.0).abs() < 1e-9 {
+                c[2] = -1780.0;
+            }
+        }
+        let wf_flat = PointSet::from_coords(flat)
+            .to_tri_surface(None, None)
+            .unwrap()
+            .wireframe_edges();
+        let wf_spiked = PointSet::from_coords(spiked)
+            .to_tri_surface(None, None)
+            .unwrap()
+            .wireframe_edges();
+        assert_eq!(wf_flat.len(), 9 * 6 + 7 * 8);
+        assert_eq!(
+            wf_flat, wf_spiked,
+            "z must not leak into the geometry wireframe"
+        );
+    }
+
+    #[test]
+    fn attribute_lanes_ride_the_shared_shell() {
+        let tin = PointSet::from_coords(lattice(6, 5, 50.0, 50.0, 10.0))
+            .to_tri_surface(None, None)
+            .unwrap();
+        let n = tin.points().len();
+        let mut with_amp = tin.clone();
+        with_amp
+            .set_attr("amp", (0..n).map(|k| k as f64 * 0.25).collect())
+            .unwrap();
+        assert_eq!(with_amp.attr_names(), vec!["amp"]);
+        assert!(with_amp.set_attr("bad", vec![0.0; n + 1]).is_err());
+
+        let promoted = with_amp.as_attr_surface("amp").unwrap();
+        assert_eq!(promoted.values()[3], 0.75);
+        assert!(Arc::ptr_eq(with_amp.shell(), promoted.shell()));
+        // The clone also shares the shell.
+        assert!(Arc::ptr_eq(tin.shell(), with_amp.shell()));
+    }
+
+    #[test]
+    fn serde_round_trips_shell_once_with_lanes() {
+        let mut tin = PointSet::from_coords(lattice(5, 4, 50.0, 50.0, 0.0))
+            .to_tri_surface(None, None)
+            .unwrap();
+        let n = tin.points().len();
+        tin.set_attr("amp", vec![1.5; n]).unwrap();
+        let json = serde_json::to_string(&tin).unwrap();
+        assert_eq!(json.matches("\"shell\"").count(), 1);
+        let back: TriSurface = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.points(), tin.points());
+        assert_eq!(back.triangles(), tin.triangles());
+        assert_eq!(back.wireframe_edges(), tin.wireframe_edges());
+        assert_eq!(back.attr("amp").unwrap(), tin.attr("amp").unwrap());
+        assert_eq!(back.shell().labels(), tin.shell().labels());
+    }
+
+    #[test]
     fn rejects_a_max_link_outside_the_band() {
         let p = PointSet::from_coords(lattice(6, 6, 50.0, 50.0, 0.0));
         for bad in [1.0, 1.41, 2.0, 2.5] {
             assert!(
-                p.to_tri_surface(Some(bad)).is_err(),
+                p.to_tri_surface(Some(bad), None).is_err(),
                 "max_link {bad} is outside (sqrt2, 2)"
             );
         }
-        assert!(p.to_tri_surface(Some(1.8)).is_ok());
+        assert!(p.to_tri_surface(Some(1.8), None).is_ok());
     }
 }

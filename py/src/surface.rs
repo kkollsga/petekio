@@ -297,6 +297,54 @@ impl Surface {
         self.owned_mut(py)?.set_attr(name, arr).map_err(to_pyerr)
     }
 
+    // ---- shells: conversions, iso-lines, value layer ----
+
+    /// Lift to a `StructuredMeshSurface` (free, lossless: per-node XY computed
+    /// from the grid; all attribute lanes carried 1:1).
+    fn to_structured_mesh(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<crate::structured_surface::StructuredMeshSurface> {
+        self.with(py, |s| py.detach(|| s.to_structured_mesh()))?
+            .map(crate::structured_surface::StructuredMeshSurface::wrap)
+            .map_err(to_pyerr)
+    }
+
+    /// Lift to a `TriSurface` (free, lossless: the grid quad-splits along a
+    /// consistent diagonal; all attribute lanes carried 1:1 per node).
+    fn to_tri_surface(&self, py: Python<'_>) -> PyResult<crate::tri_surface::TriSurface> {
+        self.with(py, |s| py.detach(|| s.to_tri_surface()))?
+            .map(crate::tri_surface::TriSurface::wrap)
+            .map_err(to_pyerr)
+    }
+
+    /// Iso-lines of a property lane: `[(level, [[(x, y), ...], ...]), ...]`.
+    /// Explicit `levels` win over `interval` (levels aligned to interval
+    /// multiples across the value range). NaN-aware: holes break lines.
+    #[pyo3(signature = (interval = None, levels = None, attr = None))]
+    fn iso_lines(
+        &self,
+        py: Python<'_>,
+        interval: Option<f64>,
+        levels: Option<Vec<f64>>,
+        attr: Option<&str>,
+    ) -> PyResult<crate::shell::PyIsoLines> {
+        self.with(py, |s| py.detach(|| s.iso_lines(interval, levels, attr)))?
+            .map(crate::shell::iso_lines_py)
+            .map_err(to_pyerr)
+    }
+
+    /// A property lane as the viewer's trimesh dict: `{"kind": "trimesh",
+    /// "name", "nodes", "triangles", "values", "range"}` (nodes/triangles from
+    /// the quad-split grid).
+    #[pyo3(signature = (attr = None))]
+    fn value_layer(&self, py: Python<'_>, attr: Option<&str>) -> PyResult<Py<pyo3::types::PyDict>> {
+        let layer = self
+            .with(py, |s| py.detach(|| s.value_layer(attr)))?
+            .map_err(to_pyerr)?;
+        crate::shell::value_layer_dict(py, layer)
+    }
+
     // ---- geometry getters ----
 
     /// A copy of this surface's grid geometry.

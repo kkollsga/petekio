@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-07-10
+
 ### Fixed
 - Python `PointSet.infer_geometry(...)` now returns the established unstructured
   `TriSurface` fallback when strict regular-lattice inference fails, so irregular
@@ -18,6 +20,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
   The Rust extension still uses the petekTools crate; base Python installs keep
   the existing interpolation fallback, while viewer methods explain how to
   install the optional renderer.
+
+### CI
+- Continuous integration now builds the ABI3 wheel once and tests that artifact
+  across Python 3.10–3.14, including separate base-install and optional-toolkit
+  coverage. Release artifacts build alongside the unchanged Rust gates; trusted
+  PyPI publishing retries transient failures safely and reports the time until
+  the wheel is installable from the registry.
 
 ## [0.3.9] - 2026-07-09
 

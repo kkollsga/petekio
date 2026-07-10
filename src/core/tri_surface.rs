@@ -18,10 +18,10 @@
 //!
 //! Points are never moved. Spec: `surface_tin_fallback_spec` on the planning graph.
 
-use crate::core::topology::GridDetection;
+use crate::core::topology::{GridDetection, NodeIndex};
 use crate::core::{PointSet, PolygonSet};
 use crate::foundation::{BBox, GeoError, HasHistory, OperationHistory, Result, Stats};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Default maximum link length, in cells of the normalized grid frame.
 pub const DEFAULT_MAX_LINK: f64 = 1.8;
@@ -38,6 +38,10 @@ pub struct TriSurface {
     points: Vec<[f64; 3]>,
     triangles: Vec<[u32; 3]>,
     edge: PolygonSet,
+    /// Unique triangle edges minus interior cell diagonals (see
+    /// [`wireframe_edges`](Self::wireframe_edges)). Empty on legacy payloads.
+    #[serde(default)]
+    wireframe: Vec<[u32; 2]>,
     #[serde(default)]
     history: OperationHistory,
 }
@@ -61,6 +65,28 @@ impl TriSurface {
     /// Outer boundary ring(s) of the retained triangles.
     pub fn edge(&self) -> &PolygonSet {
         &self.edge
+    }
+
+    /// Unique triangle edges with interior cell diagonals removed — the
+    /// quad-dominant wireframe a structured-surface display draws (a full
+    /// lattice cell shows as a square, not two triangles).
+    ///
+    /// A diagonal — an edge whose endpoints the topology walk labelled
+    /// `(±1, ±1)` apart within one fault block — is dropped only when both of
+    /// its triangles survived; a diagonal on the mesh boundary keeps its
+    /// triangle drawable. Legacy payloads stored before the classification
+    /// fall back to every unique edge.
+    pub fn wireframe_edges(&self) -> Vec<[u32; 2]> {
+        if !self.wireframe.is_empty() {
+            return self.wireframe.clone();
+        }
+        let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new();
+        for t in &self.triangles {
+            for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                seen.insert(if a <= b { (a, b) } else { (b, a) });
+            }
+        }
+        seen.into_iter().map(|(a, b)| [a, b]).collect()
     }
 
     /// Statistics over the vertices' z.
@@ -166,13 +192,15 @@ impl PointSet {
         }
 
         let kept = drop_small_islands(&kept);
-        let (points, triangles) = compact(&kept, &d);
+        let (points, triangles, labels) = compact(&kept, &d);
         let edge = boundary_rings(&triangles, &points)?;
+        let wireframe = wireframe(&triangles, &labels);
 
         let mut out = TriSurface {
             points,
             triangles,
             edge,
+            wireframe,
             history: OperationHistory::new(),
         };
         *out.operation_history_mut() = self.operation_history().clone();
@@ -313,14 +341,21 @@ fn drop_small_islands(tris: &[[usize; 3]]) -> Vec<[usize; 3]> {
         .collect()
 }
 
-/// Reindex the surviving triangles onto only the vertices they use.
-fn compact(tris: &[[usize; 3]], d: &GridDetection) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+/// Reindex the surviving triangles onto only the vertices they use, carrying each
+/// vertex's `(block, i, j)` walk label (`None` where the walk left it unlabelled).
+#[allow(clippy::type_complexity)]
+fn compact(
+    tris: &[[usize; 3]],
+    d: &GridDetection,
+) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, Vec<Option<NodeIndex>>) {
     let mut remap: HashMap<usize, u32> = HashMap::new();
     let mut points = Vec::new();
+    let mut labels = Vec::new();
     for t in tris {
         for &v in t {
             remap.entry(v).or_insert_with(|| {
                 points.push([d.pts[v][0], d.pts[v][1], d.zs[v]]);
+                labels.push(d.index_of.get(&v).copied());
                 (points.len() - 1) as u32
             });
         }
@@ -329,7 +364,38 @@ fn compact(tris: &[[usize; 3]], d: &GridDetection) -> (Vec<[f64; 3]>, Vec<[u32; 
         .iter()
         .map(|t| [remap[&t[0]], remap[&t[1]], remap[&t[2]]])
         .collect();
-    (points, triangles)
+    (points, triangles, labels)
+}
+
+/// Unique triangle edges minus interior cell diagonals — the quad-dominant
+/// wireframe. A diagonal is hidden only when both triangles of its cell
+/// survived (the edge is carried twice); a boundary diagonal stays so its lone
+/// triangle keeps all three sides.
+fn wireframe(triangles: &[[u32; 3]], labels: &[Option<NodeIndex>]) -> Vec<[u32; 2]> {
+    let mut count: BTreeMap<(u32, u32), u8> = BTreeMap::new();
+    for t in triangles {
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let key = if a <= b { (a, b) } else { (b, a) };
+            *count.entry(key).or_insert(0) += 1;
+        }
+    }
+    count
+        .into_iter()
+        .filter(|&((a, b), n)| {
+            !(n == 2 && is_cell_diagonal(labels[a as usize], labels[b as usize]))
+        })
+        .map(|((a, b), _)| [a, b])
+        .collect()
+}
+
+/// Are `a` and `b` opposite corners of one lattice cell in the same fault block?
+fn is_cell_diagonal(a: Option<NodeIndex>, b: Option<NodeIndex>) -> bool {
+    match (a, b) {
+        (Some((ba, ia, ja)), Some((bb, ib, jb))) => {
+            ba == bb && (ia - ib).abs() == 1 && (ja - jb).abs() == 1
+        }
+        _ => false,
+    }
 }
 
 /// Chain the boundary edges into closed rings — the surface's outer boundary and the
@@ -536,6 +602,35 @@ mod tests {
             assert_eq!(again.points(), first.points());
             assert_eq!(again.edge().rings(), first.edge().rings());
         }
+    }
+
+    #[test]
+    fn wireframe_hides_interior_diagonals_only() {
+        // Axis-aligned 9 x 7 lattice, 50 m square cells: the wireframe must be the
+        // lattice edges alone — 9*6 verticals + 7*8 horizontals — every one 50 m,
+        // while triangles() still carries the diagonals.
+        let tin = PointSet::from_coords(lattice(9, 7, 50.0, 50.0, 0.0))
+            .to_tri_surface(None)
+            .unwrap();
+        let wf = tin.wireframe_edges();
+        assert_eq!(wf.len(), 9 * 6 + 7 * 8);
+        for [a, b] in &wf {
+            let (p, q) = (tin.points()[*a as usize], tin.points()[*b as usize]);
+            let len = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt();
+            assert!((len - 50.0).abs() < 1e-9, "diagonal survived: {len}");
+        }
+    }
+
+    #[test]
+    fn wireframe_falls_back_to_all_edges_on_legacy_payloads() {
+        let tin = PointSet::from_coords(lattice(9, 7, 50.0, 50.0, 0.0))
+            .to_tri_surface(None)
+            .unwrap();
+        let mut v = serde_json::to_value(&tin).unwrap();
+        v.as_object_mut().unwrap().remove("wireframe");
+        let legacy: TriSurface = serde_json::from_value(v).unwrap();
+        // 2*8*6 triangles: (3*96 + 28 boundary)/2 = 158 unique edges.
+        assert_eq!(legacy.wireframe_edges().len(), 158);
     }
 
     #[test]

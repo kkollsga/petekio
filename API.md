@@ -303,11 +303,12 @@ impl TopologyReport { pub fn verified(&self) -> bool; }
 /// The triangulated fallback for a fault-cut surface: the original points, unmoved,
 /// as one connected sheet. Spec: `surface_tin_fallback_spec`.
 pub const DEFAULT_MAX_LINK: f64 = 1.8;   // cells
-pub struct TriSurface { /* points, triangles, edge */ }
+pub struct TriSurface { /* points, triangles, edge, wireframe */ }
 impl TriSurface {
     pub fn kind(&self) -> &'static str;
     pub fn points(&self) -> &[[f64; 3]];        // the input points, unmoved
     pub fn triangles(&self) -> &[[u32; 3]];     // CCW, indices into points()
+    pub fn wireframe_edges(&self) -> Vec<[u32; 2]>; // unique edges minus interior cell diagonals — the quad-dominant display wireframe
     pub fn edge(&self) -> &PolygonSet;
     pub fn components(&self) -> usize;          // >1 means the mesh honours a fault
     pub fn to_points(&self) -> PointSet;

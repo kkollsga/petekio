@@ -6,6 +6,14 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- `TriSurface.wireframe_edges()` (Rust and Python): the unique triangle edges
+  with interior cell diagonals removed — the quad-dominant wireframe a
+  structured-surface display draws. A diagonal is classified from the topology
+  walk's `(block, i, j)` labels and hidden only when both triangles of its cell
+  survived; boundary diagonals stay. Consumers (e.g. the petektools 2-D viewer)
+  can draw lattice cells as squares instead of triangle pairs.
+
 ## [0.3.10] - 2026-07-10
 
 ### Fixed

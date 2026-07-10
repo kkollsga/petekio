@@ -67,6 +67,17 @@ impl TriSurface {
             .collect()
     }
 
+    /// Unique triangle edges minus interior cell diagonals, as `(i, j)` index
+    /// pairs into `points()` — the quad-dominant wireframe (a full lattice
+    /// cell draws as a square).
+    fn wireframe_edges(&self) -> Vec<(u32, u32)> {
+        self.inner
+            .wireframe_edges()
+            .into_iter()
+            .map(|e| (e[0], e[1]))
+            .collect()
+    }
+
     /// Outer boundary ring(s) of the retained triangles.
     #[getter]
     fn edge(&self) -> PolygonSet {

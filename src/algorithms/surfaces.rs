@@ -27,6 +27,107 @@ pub fn aligned_levels(vmin: f64, vmax: f64, interval: f64) -> Result<Vec<f64>> {
     Ok((k0..=k1).map(|k| k as f64 * interval).collect())
 }
 
+/// Douglas–Peucker polyline simplification with a world-unit tolerance.
+///
+/// Drops vertices that lie within `tol` of the retained chords, preserving the
+/// line's shape (a corner sitting farther than `tol` from its chord is always
+/// kept). Type-light by the constitution: `[x, y]` vertices in, a simplified
+/// vertex list out; the domain layers call in.
+///
+/// Guarantees:
+/// * The endpoints of an **open** line are preserved; it never simplifies below
+///   two points.
+/// * A **closed ring** (first vertex equals last) keeps its closure and never
+///   simplifies below four points (three distinct corners + the repeat) — so a
+///   ring stays a ring at every tolerance.
+/// * `tol <= 0` (or a non-finite tol) is a no-op: the input is returned as-is.
+pub fn douglas_peucker(points: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
+    let n = points.len();
+    if n <= 2 || !tol.is_finite() || tol <= 0.0 {
+        return points.to_vec();
+    }
+    let closed = points[0] == points[n - 1];
+    if !closed {
+        return dp_open(points, tol);
+    }
+    // A ring's chord (first == last) is degenerate, so split it at the vertex
+    // farthest from the anchor into two open chains and simplify each.
+    if n <= 4 {
+        return points.to_vec(); // already a minimal ring
+    }
+    let anchor = points[0];
+    let (mut split, mut best) = (1usize, f64::NEG_INFINITY);
+    for (k, p) in points.iter().enumerate().take(n - 1).skip(1) {
+        let d = sq_dist(*p, anchor);
+        if d > best {
+            best = d;
+            split = k;
+        }
+    }
+    let mut head = dp_open(&points[..=split], tol);
+    let tail = dp_open(&points[split..], tol);
+    head.pop(); // the split vertex is shared by both chains
+    head.extend(tail);
+    if head.len() < 4 {
+        return points.to_vec(); // never collapse a ring below four points
+    }
+    head
+}
+
+/// Douglas–Peucker on an open polyline: endpoints fixed, recursion keeps any
+/// vertex farther than `tol` from the current chord. Never returns < 2 points.
+fn dp_open(points: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
+    let n = points.len();
+    if n <= 2 {
+        return points.to_vec();
+    }
+    let mut keep = vec![false; n];
+    keep[0] = true;
+    keep[n - 1] = true;
+    dp_recurse(points, 0, n - 1, tol, &mut keep);
+    points
+        .iter()
+        .zip(&keep)
+        .filter_map(|(p, &k)| if k { Some(*p) } else { None })
+        .collect()
+}
+
+fn dp_recurse(points: &[[f64; 2]], lo: usize, hi: usize, tol: f64, keep: &mut [bool]) {
+    if hi <= lo + 1 {
+        return;
+    }
+    let (a, b) = (points[lo], points[hi]);
+    let (mut far, mut best) = (lo, -1.0);
+    for (k, p) in points.iter().enumerate().take(hi).skip(lo + 1) {
+        let d = point_line_dist(*p, a, b);
+        if d > best {
+            best = d;
+            far = k;
+        }
+    }
+    if best > tol {
+        keep[far] = true;
+        dp_recurse(points, lo, far, tol, keep);
+        dp_recurse(points, far, hi, tol, keep);
+    }
+}
+
+/// Perpendicular distance from `p` to the line through `a`–`b` (to the point
+/// `a` when the chord is degenerate).
+fn point_line_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dy * dy;
+    if len2 <= 0.0 {
+        return sq_dist(p, a).sqrt();
+    }
+    // |cross(b-a, p-a)| / |b-a|
+    ((p[0] - a[0]) * dy - (p[1] - a[1]) * dx).abs() / len2.sqrt()
+}
+
+fn sq_dist(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
+}
+
 /// Where a contour point sits on the mesh — the chaining identity. Two
 /// segments join exactly when they end on the same mesh edge (or vertex), so
 /// keying by topology makes the chaining exact and deterministic (no
@@ -304,5 +405,64 @@ mod tests {
         let (nodes, triangles, values) = square();
         let out = contour_trimesh(&nodes, &triangles, &values, &[5.0, -3.0]);
         assert!(out.iter().all(|(_, lines)| lines.is_empty()));
+    }
+
+    #[test]
+    fn dp_collapses_a_noisy_straight_line_to_its_endpoints() {
+        // 21 points on y = 0 with |noise| < 0.05; tol = 0.1 collapses to the two ends.
+        let noise = [
+            0.0, 0.03, -0.02, 0.04, -0.01, 0.02, -0.03, 0.01, -0.04, 0.02, 0.0,
+        ];
+        let pts: Vec<[f64; 2]> = (0..11).map(|k| [k as f64, noise[k]]).collect();
+        let out = douglas_peucker(&pts, 0.1);
+        assert_eq!(
+            out.len(),
+            2,
+            "a within-tol straight line keeps only its ends"
+        );
+        assert_eq!(out[0], pts[0]);
+        assert_eq!(out[1], pts[10]);
+    }
+
+    #[test]
+    fn dp_preserves_an_l_shape_corner() {
+        // A right-angle: the corner is far from the chord and must survive.
+        let pts = vec![
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [3.0, 0.0], // corner
+            [3.0, 1.0],
+            [3.0, 2.0],
+            [3.0, 3.0],
+        ];
+        let out = douglas_peucker(&pts, 0.1);
+        assert_eq!(out, vec![[0.0, 0.0], [3.0, 0.0], [3.0, 3.0]]);
+    }
+
+    #[test]
+    fn dp_keeps_open_endpoints_and_ring_closure() {
+        // Open line of two points is a no-op.
+        let two = vec![[0.0, 0.0], [5.0, 0.0]];
+        assert_eq!(douglas_peucker(&two, 1.0), two);
+
+        // A square ring (5 pts, closed) with a within-tol midpoint per side stays
+        // a ring (>= 4 points) and keeps its four corners + closure.
+        let ring = vec![
+            [0.0, 0.0],
+            [5.0, 0.01],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [0.0, 0.0],
+        ];
+        let out = douglas_peucker(&ring, 0.1);
+        assert!(out.len() >= 4, "a ring never drops below four points");
+        assert_eq!(out.first(), out.last(), "closure is preserved");
+        // The collinear midpoint [5, 0.01] is dropped; the four corners remain.
+        assert!(out.iter().all(|p| *p != [5.0, 0.01]));
+
+        // tol <= 0 is a no-op.
+        assert_eq!(douglas_peucker(&ring, 0.0), ring);
     }
 }

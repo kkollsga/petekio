@@ -315,7 +315,7 @@ mod tests {
         let back = TriSurface::load(&p).unwrap();
         assert_eq!(back.points(), tri.points());
         assert_eq!(back.triangles(), tri.triangles());
-        assert_eq!(back.wireframe_edges(), tri.wireframe_edges());
+        assert_eq!(back.wireframe_edges(None), tri.wireframe_edges(None));
         assert_eq!(back.shell().labels(), tri.shell().labels());
         let a = back.attr("amp").unwrap();
         assert!(a[2].is_nan());

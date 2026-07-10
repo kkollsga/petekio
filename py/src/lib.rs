@@ -15,6 +15,7 @@ mod geodata;
 mod geometry;
 mod detect;
 mod points;
+mod shell;
 mod specs;
 mod stats;
 mod structured_surface;
@@ -107,6 +108,8 @@ fn _petekio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<geometry::BBox>()?;
     m.add_class::<geometry::GridGeometry>()?;
     m.add_class::<points::TopologyReport>()?;
+    m.add_class::<shell::StructuredShell>()?;
+    m.add_class::<shell::MeshShell>()?;
     m.add_class::<tri_surface::TriSurface>()?;
     m.add_class::<surface::Surface>()?;
     m.add_class::<surface::AttrAccessor>()?;

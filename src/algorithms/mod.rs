@@ -13,4 +13,5 @@
 //! into the external `petekTools` library** (this module mirrors its
 //! type-light boundary). Imports only from `foundation`.
 
+pub mod surfaces;
 pub mod wells;

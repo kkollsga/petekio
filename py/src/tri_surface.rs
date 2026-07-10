@@ -1,10 +1,14 @@
-//! `TriSurface` bindings — the triangulated fallback for fault-cut surfaces.
+//! `TriSurface` bindings — the triangulated fallback for fault-cut surfaces:
+//! a shared `MeshShell` (geometry) + primary z values + attribute lanes.
 
-use crate::geometry::BBox;
+use crate::geometry::{BBox, GridGeometry};
 use crate::points::{PointSet, PolygonSet};
+use crate::shell::{iso_lines_py, value_layer_dict, MeshShell, PyIsoLines};
 use crate::stats::Stats;
+use crate::{parse_grid_method, to_pyerr};
 use petekio::TriSurface as RsTriSurface;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use std::sync::Arc;
 
 /// An unstructured triangulated surface over the original points.
@@ -30,7 +34,7 @@ impl TriSurface {
 
     #[getter]
     fn n_points(&self) -> usize {
-        self.inner.points().len()
+        self.inner.shell().n_nodes()
     }
 
     #[getter]
@@ -104,10 +108,109 @@ impl TriSurface {
         self.inner.history().to_vec()
     }
 
+    // ---- the geometry shell + property lanes ----
+
+    /// The geometry shell (level 3, `Arc`-shared: N properties never repeat
+    /// the geometry in memory).
+    #[getter]
+    fn shell(&self) -> MeshShell {
+        MeshShell {
+            inner: Arc::clone(self.inner.shell()),
+        }
+    }
+
+    /// The primary per-node values (z). `NaN` = undefined.
+    fn values(&self) -> Vec<f64> {
+        self.inner.values().to_vec()
+    }
+
+    /// A named attribute lane promoted to a standalone `TriSurface` on the
+    /// same shared shell (mirrors `Surface.attr`); raises `KeyError` if absent.
+    fn attr(&self, name: &str) -> PyResult<TriSurface> {
+        self.inner
+            .as_attr_surface(name)
+            .map(TriSurface::wrap)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyKeyError::new_err(format!("no attribute layer '{name}'"))
+            })
+    }
+
+    /// The names of all attribute lanes, in insertion order.
+    fn attr_names(&self) -> Vec<String> {
+        self.inner
+            .attr_names()
+            .iter()
+            .map(|n| n.to_string())
+            .collect()
+    }
+
+    /// Set (or replace) attribute `name` (one value per node) — returns a
+    /// **new** `TriSurface` (surfaces are immutable; the shell is shared).
+    fn set_attr(&self, name: &str, values: Vec<f64>) -> PyResult<TriSurface> {
+        let mut out = (*self.inner).clone();
+        out.set_attr(name, values).map_err(to_pyerr)?;
+        Ok(TriSurface::wrap(out))
+    }
+
+    // ---- conversions ----
+
+    /// Fit a regular `GridGeometry` (lossy downward conversion); raises when
+    /// the mesh is not regular.
+    #[pyo3(signature = (tolerance = 1e-3))]
+    fn infer_grid(&self, tolerance: f64) -> PyResult<GridGeometry> {
+        self.inner
+            .infer_grid(tolerance)
+            .map(|g| GridGeometry::with_edge(g, self.inner.edge().clone()))
+            .map_err(to_pyerr)
+    }
+
+    /// Resample the primary values **and every attribute lane** onto a target
+    /// regular geometry through the shared gridding kernels. `method`:
+    /// `"nearest"`, `"idw"`, or `"min_curvature"`.
+    #[pyo3(signature = (target, method = "min_curvature"))]
+    fn resample(
+        &self,
+        py: Python<'_>,
+        target: &GridGeometry,
+        method: &str,
+    ) -> PyResult<crate::surface::Surface> {
+        let gm = parse_grid_method(method)?;
+        let t = target.inner.clone();
+        py.detach(|| self.inner.resample(&t, gm))
+            .map(crate::surface::Surface::wrap)
+            .map_err(to_pyerr)
+    }
+
+    // ---- iso-lines + value layer ----
+
+    /// Iso-lines of a property lane: `[(level, [[(x, y), ...], ...]), ...]`.
+    /// Explicit `levels` win over `interval` (levels aligned to interval
+    /// multiples across the value range). NaN-aware: holes break lines.
+    #[pyo3(signature = (interval = None, levels = None, attr = None))]
+    fn iso_lines(
+        &self,
+        py: Python<'_>,
+        interval: Option<f64>,
+        levels: Option<Vec<f64>>,
+        attr: Option<&str>,
+    ) -> PyResult<PyIsoLines> {
+        py.detach(|| self.inner.iso_lines(interval, levels, attr))
+            .map(iso_lines_py)
+            .map_err(to_pyerr)
+    }
+
+    /// A property lane as the viewer's trimesh dict: `{"kind": "trimesh",
+    /// "name", "nodes", "triangles", "values", "range"}`.
+    #[pyo3(signature = (attr = None))]
+    fn value_layer(&self, py: Python<'_>, attr: Option<&str>) -> PyResult<Py<PyDict>> {
+        let layer = self.inner.value_layer(attr).map_err(to_pyerr)?;
+        value_layer_dict(py, layer)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "TriSurface(points={}, triangles={}, components={}, rings={})",
-            self.inner.points().len(),
+            self.inner.shell().n_nodes(),
             self.inner.triangles().len(),
             self.inner.components(),
             self.inner.edge().rings().len(),

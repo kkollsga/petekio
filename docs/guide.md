@@ -109,10 +109,25 @@ the far side as its own **block** rather than silently welding them together.
 `report.blocks == 1` means an uninterrupted grid; more means the surface is fault-cut,
 and `verified` is `False`.
 
-`to_tri_surface(max_link=None)` is the fallback for that case: the points become the
-vertices of a triangulated surface, unmoved, and the fault is honoured rather than
-bridged — `TriSurface.components` reports how many blocks survived. `max_link` is the
-longest triangle edge to keep, in **cells**, and must lie in `(√2, 2)`.
+`to_tri_surface(max_link=None, max_bridge=None)` is the fallback for that case: the
+points become the vertices of a triangulated surface, unmoved, and the fault is
+honoured rather than bridged — `TriSurface.components` reports how many blocks
+survived. `max_link` is the longest triangle edge to keep, in **cells**, and must lie
+in `(√2, 2)`. `max_bridge` (also in cells, `>= max_link`) opt-in closes the mesh where
+the geometry does not close — the boundary fringe, fault seams, interior data gaps —
+admitting edges up to that length; `infer_geometry(..., max_bridge=...)` forwards it.
+
+Geometry is a **flat empty shell** in three levels of complexity — the rigid
+`GridGeometry` (eight scalars, XY computed), the `StructuredShell` (`(i, j)` nodes
+with explicit XY), and the `MeshShell` (node ids + triangles + a quad-dominant
+wireframe) — and surfaces are a shell plus per-node property lanes (`values` = z
+first among equals, named attributes via `attr`/`set_attr`; shells are shared, so
+extra attributes never repeat geometry). Every surface level offers
+`iso_lines(interval=..., levels=..., attr=...)` contour polylines and
+`value_layer(attr=...)` for value-coloured viewing (the petektools 2-D viewer
+consumes both via `view2d(color=..., contours=...)`), and conversions run up the
+ladder losslessly (`to_structured_mesh()`, `to_tri_surface()`) or down by
+inference/resampling (`infer_grid(tolerance)`, `resample(geom, method)`).
 
 The default `edge="full_rect"` is the four-corner rectangle of the inferred
 lattice: cheap, but it claims the whole bounding lattice even where nodes carry no

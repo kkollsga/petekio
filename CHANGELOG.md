@@ -6,6 +6,15 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-07-10
+
+> **Rust API note:** this release reshapes `TriSurface`/`StructuredMeshSurface`
+> around shared geometry shells — `PointSet::to_tri_surface` gained a
+> `max_bridge` parameter and `TriSurface::points()` now returns an owned
+> `Vec<[f64; 3]>`. The **Python API is fully backward-compatible**. Rust
+> consumers on `^0.3` should review before `cargo update` (petekstatic and
+> peteksim do not use the changed symbols).
+
 ### Added
 - **The three-level geometry-shell system.** Geometry is a flat empty shell —
   purely topological/positional, never a function of z — in three levels:

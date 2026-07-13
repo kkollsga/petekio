@@ -890,7 +890,7 @@ w.view(curves=("PHIE","SW"), tops=["Upper Sand"])   # select curves; a subset of
 w.view(spec=petekio.ViewSpec(curves=("PHIE","SW"), tops=["Upper Sand"], cutoff=petekio.NetSettings(phi_min=0.10)))  # declarative WHAT
 w.view(spec=petekio.ViewSpec(...), settings=petekio.ViewSettings(save="well.html"))  # WHAT + HOW; spec XOR legacy WHAT kwargs (loud on both)
 w.view(save="well.html")                 # export one self-contained HTML file instead (legacy)
-sess = w.view(settings=petekio.ViewSettings(serve=False)); sess.bundle()   # build only; inspect the payload dict
+sess = w.view(settings=petekio.ViewSettings(serve=False)); sess.bundle()   # raw WellLogBundle; serve/save wrap it as top-level wells_logs
 geo.wells.view(settings=petekio.ViewSettings(serve=False))   # multi-well logs-only session (same surface)
 
 # Persistent, named correlation layouts (petekTools owns their semantics):

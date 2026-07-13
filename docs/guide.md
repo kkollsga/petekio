@@ -266,6 +266,11 @@ w.view(spec=petekio.ViewSpec(curves=("PHIE", "SW"), tops=True),
        settings=petekio.ViewSettings(save="well.html", serve=False))  # declarative
 ```
 
+`LogSession.bundle()` returns the raw `WellLogBundle` producer value. At the
+render boundary, `.serve()` / `.save()` place that value in the documented
+generic viewer envelope as `wells_logs` with the map/volume/section tabs empty,
+so a logs-only page boots directly into the Wells tab.
+
 Named layouts can be snapshotted with the project. `template=` is presentation
 state, separate from `ViewSpec`; without it the historical bundle is unchanged.
 petekTools is imported only when a template is materialized or rendered.

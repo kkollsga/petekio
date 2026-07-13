@@ -11,6 +11,7 @@ round-trip when the petektools wheel is importable. Fixtures are synthetic
 (fictional ``99/…`` wells, ``431000/6521000`` coords), hand-authored to spec.
 """
 import base64
+import json
 import math
 import os
 import struct
@@ -227,22 +228,111 @@ def test_live_viewer_roundtrip(tmp_path):
     geo = _geo(tmp_path)
     sess = geo.well("99/3-1").view(serve=False, tops=True)
 
-    # 1) self-contained HTML export accepts our bundle exactly like the fixture
+    # 1) self-contained HTML receives the documented generic root envelope,
+    # while LogSession.bundle() remains the exact raw producer contract.
+    raw = sess.bundle()
+    assert raw["kind"] == "wells_logs" and "wells_logs" not in raw
     ours = str(tmp_path / "ours.html")
     sess.save(ours)
     html = open(ours).read()
-    assert "wells_logs" in html and len(html) > 10_000
+    prefix = "window.PETEK_VIEWER_PAYLOAD="
+    suffix = ';window.PETEK_VIEWER_MODE="file";'
+    envelope = json.loads(html.split(prefix, 1)[1].split(suffix, 1)[0])
+    assert envelope["wells_logs"] == raw
+    assert envelope["map"] is None
+    assert envelope["volume"] is None
+    assert envelope["scene3d"] is None
+    assert envelope["sections"] == []
+    assert envelope["charts"] == []
+    assert len(html) > 10_000
 
     ref = str(tmp_path / "ref.html")
-    viewer.save_view(_wells.build_well_log_bundle(), ref)
+    viewer.save_view(sess._viewer_payload(), ref)
     assert os.path.getsize(ref) > 10_000
 
-    # 2) the live server builds (non-blocking) over our bundle
-    httpd, url = viewer.build_server(sess.bundle())
+    # 2) build_server receives the same root shape in model.json.
+    httpd, url = viewer.build_server(sess._viewer_payload())
     try:
         assert url.startswith("http://127.0.0.1:")
+        served = json.loads((httpd._petek_tmp / "model.json").read_text())
+        assert served == envelope
     finally:
         httpd.server_close()
+
+
+def test_log_session_serve_and_save_wrap_only_at_renderer_boundary(tmp_path, monkeypatch):
+    raw = build_well_log_bundle([])
+    session = petekio.LogSession(raw)
+    calls = []
+
+    class FakeViewer:
+        @staticmethod
+        def serve(payload, **kwargs):
+            calls.append(("serve", payload, kwargs))
+            return "http://127.0.0.1:1"
+
+        @staticmethod
+        def save_view(payload, path, **kwargs):
+            calls.append(("save", payload, kwargs))
+
+    monkeypatch.setattr(
+        petekio.LogSession,
+        "_viewer",
+        staticmethod(lambda: FakeViewer),
+    )
+    assert session.serve(open_browser=False) == "http://127.0.0.1:1"
+    assert session.save(str(tmp_path / "logs.html"), marker=True).endswith("logs.html")
+
+    assert session.bundle() is raw
+    for action, payload, _ in calls:
+        assert action in {"serve", "save"}
+        assert payload["wells_logs"] is raw
+        assert payload["map"] is None
+        assert payload["volume"] is None
+        assert payload["sections"] == []
+        assert payload["wells"] == []
+        assert payload["charts"] == []
+
+
+def test_logs_only_envelope_follows_browser_wells_boot_contract():
+    raw = build_well_log_bundle(
+        [{
+            "id": "A-1",
+            "display_name": "A-1",
+            "x": 0.0,
+            "y": 0.0,
+            "datum_m": 0.0,
+            "md": [0.0],
+            "tvd": [0.0],
+            "curves": [{
+                "mnemonic": "PHIE",
+                "canonical": "PHIE",
+                "unit": "v/v",
+                "values": [0.2],
+            }],
+            "zones": [],
+        }]
+    )
+    payload = petekio.LogSession(raw)._viewer_payload()
+
+    # Mirrors petekTools assets/viewer/00-app.js: no geometry/sections means
+    # the wells_logs branch wins. A map panel cannot be selected or dereference
+    # `.fills` because the map slot is explicitly null.
+    no_geometry = (
+        payload["map"] is None
+        and payload["volume"] is None
+        and payload["sections"] == []
+    )
+    active_tab = (
+        "scene3d"
+        if payload["scene3d"]
+        else "wells"
+        if no_geometry and payload["wells_logs"]["wells"]
+        else "charts"
+    )
+    assert active_tab == "wells"
+    assert payload["map"] is None
+    assert payload["wells_logs"] is raw
 
 
 def test_template_is_additive_validated_and_bound_project_callable(tmp_path):

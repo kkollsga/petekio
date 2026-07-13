@@ -7,6 +7,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Fixed
+- **Logs-only sessions now use the generic viewer root envelope.**
+  `LogSession.bundle()` remains the exact raw `WellLogBundle`, while
+  `LogSession.serve()` / `.save()` nest it under top-level `wells_logs` and emit
+  null/empty geometry and analytics tabs. The browser therefore selects Wells
+  and never initializes the Map panel against a raw logs bundle.
 - **Small scattered point clouds retain their triangulated boundary.** Mesh
   cleanup now treats the eight-triangle island threshold as a relative speck
   filter, not a minimum surface size, so complete four- and five-point

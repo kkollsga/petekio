@@ -3,7 +3,9 @@ the well-correlation seam).
 
 This is petekio's **producer** for the fourth viewer view (well correlation): it
 turns a petekio well's own logs + trajectory + tops into a ``WellLogBundle``
-(``kind: "wells_logs"``, ``schema_version: 4``) and hands it to the viewer unit.
+(``kind: "wells_logs"``, ``schema_version: 4``). ``LogSession.bundle()`` exposes
+that raw producer value; serve/save nest it under the generic viewer root's
+``wells_logs`` field before handing it to the viewer unit.
 It is the *viewer-unit second-consumer proof* — the same bundle the reference
 fixture (``petektools/viewer/_wells.py``) emits, produced from real petekio data.
 
@@ -296,6 +298,30 @@ class LogSession:
         """The raw ``WellLogBundle`` dict (for inspection / round-trip tests)."""
         return self.payload
 
+    def _viewer_payload(self) -> Dict[str, Any]:
+        """Wrap the raw bundle in petekTools' documented generic envelope.
+
+        The raw producer contract remains :meth:`bundle`; only the renderer
+        boundary gets the top-level tab slots its browser boot logic expects.
+        With every geometry/analytics tab empty, the viewer selects Wells.
+        """
+
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "wells",
+            "property": "",
+            "properties": [],
+            "summary": None,
+            "map": None,
+            "volume": None,
+            "scene3d": None,
+            "sections": [],
+            "section_labels": [],
+            "wells": [],
+            "wells_logs": self.payload,
+            "charts": [],
+        }
+
     @staticmethod
     def _viewer():
         try:
@@ -310,14 +336,14 @@ class LogSession:
         return viewer
 
     def serve(self, **kwargs: Any):
-        """Serve the bundle on a non-blocking local viewer server (returns the
+        """Serve the logs through the generic viewer envelope (returns the
         server handle / URL from ``petektools.viewer.serve``)."""
-        return self._viewer().serve(self.payload, **kwargs)
+        return self._viewer().serve(self._viewer_payload(), **kwargs)
 
     def save(self, path: str, **kwargs: Any) -> str:
         """Write one self-contained HTML file (``petektools.viewer.save_view``)
         and return ``path``."""
-        self._viewer().save_view(self.payload, path, **kwargs)
+        self._viewer().save_view(self._viewer_payload(), path, **kwargs)
         return path
 
 

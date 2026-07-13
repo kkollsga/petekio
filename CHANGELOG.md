@@ -6,6 +6,15 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Typed Python `Surface` attribute assignment.** `surface.thickness = rhs`
+  now delegates to `surface.set_attr("thickness", rhs)` and adds or replaces a
+  copy-on-write attribute lane, readable through `surface.attr["thickness"]`.
+  The right-hand side must be a `Surface` with identical complete grid geometry;
+  same-shaped grids with different origins, increments, rotations, or y-flip
+  are rejected. Class operations such as `Surface.thickness(...)` remain
+  callable.
+
 ### Fixed
 - **`infer_geometry()` now closes ordinary TriSurface fallback fringes and seams.**
   The Python fallback defaults `max_bridge` to 3.4 cells, avoiding fragmented,

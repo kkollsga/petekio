@@ -66,7 +66,15 @@ top.area_below(1990.0)          # Σ cell-area where value ≤ depth — the GRV
 top.resample(target_geometry)   # bilinear onto another lattice
 base = geo.surface("base_res")
 thick = petekio.Surface.thickness(top, base, clamp_zero=True)  # base − top, ≥ 0
+top.thickness = thick              # add/replace a COW attribute lane
+top.attr["thickness"]              # read the promoted lane as a Surface
 ```
+
+Surface assignment accepts only another `Surface` with exactly the same grid
+geometry (including origin, increments, node counts, rotation, and y-flip).
+`set_attr("thickness", thick)` is the explicit equivalent. Attribute lanes are
+read through `surface.attr[...]`, leaving `Surface.thickness(...)` callable as
+the class-level thickness calculation.
 
 Scattered `(x, y, z)` data grids into a surface via `PointSet.to_surface(geom,
 method)` with `"nearest"`, `"idw"`, or `"minimum_curvature"` (Briggs biharmonic,

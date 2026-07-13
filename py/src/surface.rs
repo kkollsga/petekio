@@ -21,7 +21,7 @@ use crate::geometry::{BBox, GridGeometry};
 use crate::points::PolygonSet;
 use crate::stats::Stats;
 use crate::to_pyerr;
-use petekio::{PolygonSet as RsPolygonSet, Surface as RsSurface};
+use petekio::{GeoError, PolygonSet as RsPolygonSet, Surface as RsSurface};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -317,8 +317,32 @@ impl Surface {
     /// (must match this surface's geometry). Copy-on-write: an `InGeo` view
     /// detaches to an owned copy first, so the project is never mutated.
     fn set_attr(&mut self, py: Python<'_>, name: &str, values: &Surface) -> PyResult<()> {
-        let arr = values.with(py, |v| v.values().clone())?;
+        let (rhs_geom, arr) = values.with(py, |v| (v.geom.clone(), v.values().clone()))?;
+        let lhs_geom = self.with(py, |s| s.geom.clone())?;
+        if lhs_geom != rhs_geom {
+            return Err(to_pyerr(GeoError::GeometryMismatch(format!(
+                "Surface::set_attr('{name}'): attribute surface must match origin, increments, \
+                 node counts, rotation, and yflip"
+            ))));
+        }
         self.owned_mut(py)?.set_attr(name, arr).map_err(to_pyerr)
+    }
+
+    /// `surface.thickness = values` assigns a typed surface attribute lane.
+    /// Read it through `surface.attr["thickness"]`; class methods with the same
+    /// name (notably `Surface.thickness`) remain callable on the class.
+    fn __setattr__(
+        &mut self,
+        py: Python<'_>,
+        name: &str,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let values = value.extract::<PyRef<'_, Surface>>().map_err(|_| {
+            PyTypeError::new_err(format!(
+                "Surface attribute '{name}' must be assigned another Surface"
+            ))
+        })?;
+        self.set_attr(py, name, &values)
     }
 
     // ---- shells: conversions, iso-lines, value layer ----

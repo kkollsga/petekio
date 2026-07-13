@@ -76,6 +76,16 @@ def test_surface_view_sharing_and_cow():
     assert "overlay" not in geo.surfaces()[0].attr
 
 
+def test_surface_attribute_assignment_detaches_project_view():
+    geo = petekio.GeoData(unit="m")
+    geo.load_surface("top", IRAP)
+
+    view = geo.surface("top")
+    view.thickness = petekio.Surface.constant(view.geometry, 7.0)
+    assert view.attr["thickness"].stats().mean == 7.0
+    assert "thickness" not in geo.surface("top").attr
+
+
 def test_surface_math_on_project_view():
     """Element-wise + surface↔surface math works on project-backed views."""
     geo = petekio.GeoData(unit="m")

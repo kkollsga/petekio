@@ -168,6 +168,46 @@ def test_surface_attr_access():
         _ = s.attr["missing"]
 
 
+def test_surface_attribute_assignment_is_typed_geometry_safe_and_replaceable():
+    g = petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 2, 2)
+    s = petekio.Surface.constant(g, 1.0)
+
+    # Assignment is ergonomic sugar for set_attr; replacement keeps one lane.
+    s.thickness = petekio.Surface.constant(g, 7.0)
+    assert s.attr["thickness"].stats().mean == 7.0
+    s.thickness = petekio.Surface.constant(g, 9.0)
+    assert s.attr_names() == ["thickness"]
+    assert s.attr["thickness"].stats().mean == 9.0
+
+    # The class-level operation is not shadowed by the instance attribute lane.
+    assert petekio.Surface.thickness(s, s).stats().mean == 0.0
+    assert s.thickness(s, s).stats().mean == 0.0
+
+    with pytest.raises(TypeError):
+        s.invalid = [1.0, 2.0, 3.0, 4.0]
+
+    wrong_shape = petekio.Surface.constant(
+        petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 3, 2), 2.0
+    )
+    with pytest.raises(ValueError):
+        s.set_attr("wrong_shape", wrong_shape)
+
+    different_geometries = [
+        petekio.GridGeometry(100.0, 0.0, 10.0, 10.0, 2, 2),
+        petekio.GridGeometry(0.0, 100.0, 10.0, 10.0, 2, 2),
+        petekio.GridGeometry(0.0, 0.0, 20.0, 10.0, 2, 2),
+        petekio.GridGeometry(0.0, 0.0, 10.0, 20.0, 2, 2),
+        petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 2, 2, rotation_deg=30.0),
+        petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 2, 2, yflip=True),
+    ]
+    for different in different_geometries:
+        rhs = petekio.Surface.constant(different, 2.0)
+        with pytest.raises(ValueError):
+            s.set_attr("same_shape", rhs)
+        with pytest.raises(ValueError):
+            s.same_shape = rhs
+
+
 def test_stats_fields():
     s = petekio.Surface.load_irap_classic(IRAP)
     st = s.stats()

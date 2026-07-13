@@ -157,11 +157,19 @@ Python ergonomics:
 top  = geo.load_surface("top.irap")
 base = geo.load_surface("base.irap")
 thick = petekio.Surface.thickness(top, base, clamp_zero=True)   # or (base - top).clamp_min(0)
+top.thickness = thick                    # assignment sugar for top.set_attr("thickness", thick)
+top.attr["thickness"]                    # promoted attribute Surface; exact geometry required
 trend = top.attr("seismic").ln()
 top.stats.p50
 top.area_below(8240)                 # ft² below the OWC
 ongrid = top.resample(grid_geom)     # bilinear onto a target geometry
 ```
+
+Python `Surface` attribute assignment is typed: the right-hand side must be a
+`Surface` with identical complete `GridGeometry` (origin, increments, node
+counts, rotation, and `yflip`). Assignment adds or replaces a copy-on-write
+attribute lane; read it through `surface.attr[name]`, so a lane named
+`thickness` does not shadow the class-level `Surface.thickness(...)` operation.
 
 ### Geometry shells — the three-level system (level 2/3 surfaces)
 

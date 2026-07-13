@@ -711,6 +711,8 @@ geo.load_surface("top", "top.irap")       # or top.CPS3grid (CPS-3 grid)
 top, base = geo.surface("top"), geo.surface("base")
 
 thick = (base - top).clamp_min(0)        # operator overloads
+top.thickness = petekio.Surface.thickness(top, base, clamp_zero=True)
+top.attr["thickness"]                    # assignment stores/replaces an attribute lane
 trend = top.attr["seismic"].ln()
 top.stats.p50                            # Stats fields as attributes
 top.area_below(8240)
@@ -834,7 +836,12 @@ petekio.ViewSettings(serve=True, save=None)                  # HOW view() delive
 ```
 
 Python rules: `Stats` fields exposed as read-only attributes; operators (`+ - * /`)
-on `Surface`; `surface.attr["name"]` indexed access; `surface.edge` and
+on `Surface`; `surface.attr["name"]` indexed access; `surface.attribute_name = rhs`
+delegates to `surface.set_attr("name", rhs)`, where `rhs` must be a `Surface`
+with identical complete `GridGeometry` (origin, increments, counts, rotation,
+and `yflip`). Assignment adds or replaces a copy-on-write lane; it is read back
+through `surface.attr["name"]`, so `surface.thickness = ...` does not shadow the
+class-level `Surface.thickness(...)` operation. `surface.edge` and
 `surface.geometry.edge` expose matching `PolygonSet` outlines; `PointSet`
 exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=3.4, fallback="tri") -> GridGeometry | TriSurface`
 and `to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking

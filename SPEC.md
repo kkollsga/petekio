@@ -258,6 +258,17 @@ pub struct Log { pub mnemonic: String, md: Array1<f64>, values: Array1<f64>, uni
 - **Interpolation (native):** on the active trajectory, exposed on the well:
   `well.xyz(md) -> [f64;3]`, `well.tvd(md) -> f64`, `well.position_at(md)`,
   `well.md_at_tvd(tvd)`. Arc/linear interpolation between stations.
+- **Surface intersections (native):** `Trajectory`/`Sidetrack`/resolved `Well`
+  intersect regular, structured, and triangulated surfaces through one canonical
+  triangle kernel. It spatially narrows candidates, adaptively subdivides the
+  actual minimum-curvature path, refines roots/tangencies, de-duplicates shared
+  edges, skips null holes/outside geometry, and rejects coplanar overlap loudly.
+  `intersections` returns every MD-ordered hit; `intersection` returns `None` for
+  no hit and errors with guidance if more than one exists. Computation is pure.
+- **Explicit persistent picks:** a bore/resolved well may add, replace, or remove
+  a top from an MD or typed intersection. Duplicate/missing/ambiguous legacy
+  names fail; hit well/bore identity and recomputed XYZ must match. Persistence
+  remains exactly `Top { name, md }` inside the owning Well.
 - **Logs (native):** `well.log("PHIE")` → a `LogView` with `.filter(pred)`,
   `.resample(step)`, `.stats() -> Stats`, `.values()`, `.at_md(md)`. Positioned in
   3-D via the active trajectory (`.xyz()`).
@@ -371,6 +382,13 @@ one Python `project.surfaces` namespace. Whole-project `.pproj` persistence
 stores structured entries with the existing `structured_mesh` element kind.
 `model_inputs()` must fail loudly while its horizon contract cannot represent
 them; it must never silently omit a structured horizon.
+
+The Python `project.well_tops` mapping is a live, folder-aware aggregation of
+actual per-bore `Top` records (unlike `project.tops`, the imported source-table
+inventory). Assigning a complete `project.wells` intersection report validates
+every hit and diagnostic before mutation, then atomically creates/replaces the
+whole horizon and removes stale same-name picks. Outside/no-hit skips are
+allowed; failures block assignment.
 ```python
 geo = petekio.GeoData(unit="ft")
 geo.load_surface("top.irap"); geo.load_well("wells/A1/", wellhead=(x,y), kb=82)

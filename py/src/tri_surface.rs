@@ -31,6 +31,14 @@ impl TriSurface {
         self.name = name;
         self
     }
+
+    pub(crate) fn with<R>(&self, f: impl FnOnce(&RsTriSurface) -> R) -> R {
+        f(&self.inner)
+    }
+
+    pub(crate) fn dataset_name(&self) -> Option<String> {
+        self.name.clone()
+    }
 }
 
 #[pymethods]

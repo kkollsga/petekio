@@ -14,7 +14,7 @@ use crate::stats::Stats;
 use petekio::{Log as RsLog, Well as RsWell};
 use pyo3::exceptions::{PyAttributeError, PyImportError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyAny, PyDict};
 
 /// The `Stats` attribute names a `zone_table` `stats=` may request.
 pub(crate) const STAT_ATTRS: &[&str] = &[
@@ -218,6 +218,116 @@ impl Well {
     fn xyz(&self, py: Python<'_>, md: f64) -> PyResult<Option<(f64, f64, f64)>> {
         self.require_resolvable(py)?;
         self.with_well(py, |w| Ok(w.xyz(md).map(|p| (p.x, p.y, p.z))))
+    }
+
+    /// All crossings of the resolved bore with `surface`, MD ordered.
+    #[pyo3(signature = (surface, tolerance=1e-3))]
+    fn intersections(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+    ) -> PyResult<Vec<crate::intersection::SurfaceIntersection>> {
+        self.require_resolvable(py)?;
+        let (hits, surface_name) = crate::intersection::with_surface(py, surface, |s| {
+            self.with_well(py, |well| {
+                well.intersections(s, tolerance).map_err(crate::to_pyerr)
+            })
+            .map_err(|error| petekio::GeoError::Parse(error.to_string()))
+        })?;
+        Ok(hits
+            .into_iter()
+            .map(|hit| {
+                crate::intersection::SurfaceIntersection::attach_project(
+                    hit,
+                    surface_name.as_deref(),
+                    self.geo.as_ptr() as usize,
+                )
+            })
+            .collect())
+    }
+
+    /// The sole crossing of the resolved bore, or `None`.
+    #[pyo3(signature = (surface, tolerance=1e-3))]
+    fn intersection(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+    ) -> PyResult<Option<crate::intersection::SurfaceIntersection>> {
+        self.require_resolvable(py)?;
+        let (hit, surface_name) = crate::intersection::with_surface(py, surface, |s| {
+            self.with_well(py, |well| {
+                well.intersection(s, tolerance).map_err(crate::to_pyerr)
+            })
+            .map_err(|error| petekio::GeoError::Parse(error.to_string()))
+        })?;
+        Ok(hit.map(|hit| {
+            crate::intersection::SurfaceIntersection::attach_project(
+                hit,
+                surface_name.as_deref(),
+                self.geo.as_ptr() as usize,
+            )
+        }))
+    }
+
+    /// Formation-top records on the resolved bore as `(name, md)` rows.
+    fn tops(&self, py: Python<'_>) -> PyResult<Vec<(String, f64)>> {
+        self.require_resolvable(py)?;
+        self.with_well(py, |well| {
+            Ok(well.tops().map(|top| (top.name.clone(), top.md)).collect())
+        })
+    }
+
+    /// Add a top from a finite MD or a matching `SurfaceIntersection`.
+    fn add_top(&self, py: Python<'_>, name: &str, md_or_hit: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.require_resolvable(py)?;
+        let value = top_value(md_or_hit)?;
+        validate_top_project(&value, self.geo.as_ptr() as usize)?;
+        let mut geo = self.geo.borrow_mut(py);
+        let well = geo
+            .inner
+            .well_mut(&self.id)
+            .ok_or_else(|| PyValueError::new_err(format!("no well '{}'", self.id)))?;
+        match value {
+            TopValue::Md(md) => well.add_top(name, md),
+            TopValue::Hit(hit, _) => well.add_top_from_intersection(name, &hit),
+        }
+        .map_err(crate::to_pyerr)
+    }
+
+    /// Replace an existing top from a finite MD or matching intersection.
+    fn replace_top(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        md_or_hit: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.require_resolvable(py)?;
+        let value = top_value(md_or_hit)?;
+        validate_top_project(&value, self.geo.as_ptr() as usize)?;
+        let mut geo = self.geo.borrow_mut(py);
+        let well = geo
+            .inner
+            .well_mut(&self.id)
+            .ok_or_else(|| PyValueError::new_err(format!("no well '{}'", self.id)))?;
+        match value {
+            TopValue::Md(md) => well.replace_top(name, md),
+            TopValue::Hit(hit, _) => well.replace_top_from_intersection(name, &hit),
+        }
+        .map_err(crate::to_pyerr)
+    }
+
+    /// Remove a named top from the resolved bore.
+    fn remove_top(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        self.require_resolvable(py)?;
+        let mut geo = self.geo.borrow_mut(py);
+        geo.inner
+            .well_mut(&self.id)
+            .ok_or_else(|| PyValueError::new_err(format!("no well '{}'", self.id)))?
+            .remove_top(name)
+            .map(|_| ())
+            .map_err(crate::to_pyerr)
     }
 
     /// TVD at measured depth `md`, or `None`.
@@ -547,6 +657,97 @@ impl Sidetrack {
         self.resolve(py, |s| Ok(s.xyz(md).map(|p| (p.x, p.y, p.z))))
     }
 
+    /// All crossings of this bore with `surface`, MD ordered.
+    #[pyo3(signature = (surface, tolerance=1e-3))]
+    fn intersections(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+    ) -> PyResult<Vec<crate::intersection::SurfaceIntersection>> {
+        let well_id = self.well.borrow(py).id.clone();
+        let (mut hits, surface_name) = crate::intersection::with_surface(py, surface, |s| {
+            self.resolve(py, |bore| {
+                bore.intersections(s, tolerance).map_err(crate::to_pyerr)
+            })
+            .map_err(|error| petekio::GeoError::Parse(error.to_string()))
+        })?;
+        for hit in &mut hits {
+            hit.well = Some(well_id.clone());
+            hit.surface = surface_name.clone();
+        }
+        Ok(hits
+            .into_iter()
+            .map(|hit| {
+                crate::intersection::SurfaceIntersection::attach_project(
+                    hit,
+                    surface_name.as_deref(),
+                    self.well.borrow(py).geo.as_ptr() as usize,
+                )
+            })
+            .collect())
+    }
+
+    /// The sole crossing of this bore, or `None`.
+    #[pyo3(signature = (surface, tolerance=1e-3))]
+    fn intersection(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+    ) -> PyResult<Option<crate::intersection::SurfaceIntersection>> {
+        let hits = self.intersections(py, surface, tolerance)?;
+        match hits.len() {
+            0 => Ok(None),
+            1 => Ok(hits.into_iter().next()),
+            n => Err(PyValueError::new_err(format!(
+                "trajectory crosses the surface {n} times; call intersections(...) and select a crossing explicitly"
+            ))),
+        }
+    }
+
+    /// Formation tops on this bore as `(name, md)` rows.
+    fn tops(&self, py: Python<'_>) -> PyResult<Vec<(String, f64)>> {
+        self.resolve(py, |bore| {
+            Ok(bore.tops().map(|top| (top.name.clone(), top.md)).collect())
+        })
+    }
+
+    fn add_top(&self, py: Python<'_>, name: &str, md_or_hit: &Bound<'_, PyAny>) -> PyResult<()> {
+        let value = top_value(md_or_hit)?;
+        validate_top_project(&value, self.well.borrow(py).geo.as_ptr() as usize)?;
+        self.mutate(py, |bore| {
+            match value {
+                TopValue::Md(md) => bore.add_top(name, md),
+                TopValue::Hit(hit, _) => bore.add_top_from_intersection(name, &hit),
+            }
+            .map_err(crate::to_pyerr)
+        })
+    }
+
+    fn replace_top(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        md_or_hit: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let value = top_value(md_or_hit)?;
+        validate_top_project(&value, self.well.borrow(py).geo.as_ptr() as usize)?;
+        self.mutate(py, |bore| {
+            match value {
+                TopValue::Md(md) => bore.replace_top(name, md),
+                TopValue::Hit(hit, _) => bore.replace_top_from_intersection(name, &hit),
+            }
+            .map_err(crate::to_pyerr)
+        })
+    }
+
+    fn remove_top(&self, py: Python<'_>, name: &str) -> PyResult<()> {
+        self.mutate(py, |bore| {
+            bore.remove_top(name).map(|_| ()).map_err(crate::to_pyerr)
+        })
+    }
+
     /// The `(min, max)` measured-depth span of the active trajectory, or `None`.
     fn md_range(&self, py: Python<'_>) -> PyResult<Option<(f64, f64)>> {
         self.resolve(py, |s| {
@@ -710,6 +911,34 @@ impl Sidetrack {
     fn __repr__(&self) -> String {
         format!("Sidetrack(label={:?})", self.label)
     }
+}
+
+enum TopValue {
+    Md(f64),
+    Hit(petekio::SurfaceIntersection, Option<usize>),
+}
+
+fn top_value(value: &Bound<'_, PyAny>) -> PyResult<TopValue> {
+    if let Ok(md) = value.extract::<f64>() {
+        return Ok(TopValue::Md(md));
+    }
+    if let Ok(hit) = value.extract::<PyRef<'_, crate::intersection::SurfaceIntersection>>() {
+        return Ok(TopValue::Hit(hit.inner.clone(), hit.project_token));
+    }
+    Err(pyo3::exceptions::PyTypeError::new_err(
+        "top depth must be a finite MD number or SurfaceIntersection",
+    ))
+}
+
+fn validate_top_project(value: &TopValue, expected: usize) -> PyResult<()> {
+    if let TopValue::Hit(_, Some(actual)) = value {
+        if *actual != expected {
+            return Err(PyValueError::new_err(
+                "intersection belongs to a different project",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The depth interval a top names: a view resolving its `Top` on the well.

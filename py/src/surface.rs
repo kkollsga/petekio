@@ -66,6 +66,10 @@ impl Surface {
         self
     }
 
+    pub(crate) fn dataset_name(&self) -> Option<String> {
+        self.name.clone()
+    }
+
     /// Resolve the borrowed Rust surface and run `f` over it.
     pub(crate) fn with<R>(&self, py: Python<'_>, f: impl FnOnce(&RsSurface) -> R) -> PyResult<R> {
         match &self.backing {

@@ -194,6 +194,14 @@ impl Well {
     pub fn contacts(&self) -> impl Iterator<Item = &FluidContact>;     // non-strat picks on the resolved bore
     pub fn contact(&self, name: &str) -> Option<&FluidContact>;
     pub fn set_strat_order(&mut self, order: &[String]);  // push lithostrat column into every bore
+    pub fn intersections<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Vec<SurfaceIntersection>>;
+    pub fn intersection<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Option<SurfaceIntersection>>; // None=no hit; Err when multiple
+    pub fn tops(&self) -> impl Iterator<Item = &Top>;
+    pub fn add_top(&mut self, name: impl Into<String>, md: f64) -> Result<()>;
+    pub fn replace_top(&mut self, name: impl Into<String>, md: f64) -> Result<()>;
+    pub fn remove_top(&mut self, name: &str) -> Result<Top>;
+    pub fn add_top_from_intersection(&mut self, name: impl Into<String>, hit: &SurfaceIntersection) -> Result<()>;
+    pub fn replace_top_from_intersection(&mut self, name: impl Into<String>, hit: &SurfaceIntersection) -> Result<()>;
 }
 
 pub struct Sidetrack { pub label: String /* trajectories, logs, tops private */ }
@@ -218,6 +226,14 @@ impl Sidetrack {
     pub fn zone_stats(&self, mnemonic: &str) -> Vec<(String, Stats)>;
     pub fn contacts(&self) -> impl Iterator<Item = &FluidContact>;
     pub fn contact(&self, name: &str) -> Option<&FluidContact>;
+    pub fn intersections<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Vec<SurfaceIntersection>>;
+    pub fn intersection<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Option<SurfaceIntersection>>;
+    pub fn tops(&self) -> impl Iterator<Item = &Top>;
+    pub fn add_top(&mut self, name: impl Into<String>, md: f64) -> Result<()>;
+    pub fn replace_top(&mut self, name: impl Into<String>, md: f64) -> Result<()>;
+    pub fn remove_top(&mut self, name: &str) -> Result<Top>;
+    pub fn add_top_from_intersection(&mut self, name: impl Into<String>, hit: &SurfaceIntersection) -> Result<()>;
+    pub fn replace_top_from_intersection(&mut self, name: impl Into<String>, hit: &SurfaceIntersection) -> Result<()>;
 }
 
 pub struct Station { pub md: f64, pub inc_deg: f64, pub azi_deg: f64 }
@@ -236,6 +252,14 @@ impl Trajectory {
     pub fn tvd(&self, md: f64) -> Option<f64>;
     pub fn md_at_tvd(&self, tvd: f64) -> Option<f64>;
     pub fn md_range(&self) -> (f64, f64);
+    pub fn intersections<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Vec<SurfaceIntersection>>;
+    pub fn intersection<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Option<SurfaceIntersection>>;
+}
+
+pub trait IntersectableSurface { /* Surface + StructuredMeshSurface + TriSurface */ }
+pub struct SurfaceIntersection {
+    pub md: f64, pub xyz: Point3,
+    pub well: Option<String>, pub bore: Option<String>, pub surface: Option<String>,
 }
 
 pub struct Top { pub name: String, pub md: f64 }
@@ -510,6 +534,10 @@ impl GeoData {
     pub fn structured_surfaces_named(&self) -> impl Iterator<Item = (&str, &StructuredMeshSurface)>;
     pub fn polygons_named(&self) -> impl Iterator<Item = (&str, &PolygonSet)>;
     pub fn wells(&self) -> WellsView;
+    pub fn well_top_names(&self) -> Vec<String>;
+    pub fn well_top_set(&self, name: &str) -> Vec<WellTopRow>;
+    pub fn delete_well_top(&mut self, name: &str) -> usize;
+    pub fn replace_well_top_set(&mut self, name: &str, hits: &[SurfaceIntersection]) -> Result<()>;
 
     /// Model-ready inputs — the consumer contract (see below). Assembles
     /// normalize→validate→interpret→characterise across the project.
@@ -545,7 +573,12 @@ impl<'a> WellsView<'a> {
     pub fn filter(&self, pred: impl Fn(&Well) -> bool) -> WellsView<'a>;
     pub fn iter(&self) -> impl Iterator<Item = &Well>;
     pub fn tops(&self, name: &str) -> WellsView<'a>;         // narrow to wells with that top
+    pub fn intersection<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<WellIntersectionSet>;
+    pub fn intersections<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<WellIntersectionSet>;
 }
+pub struct IntersectionDiagnostic { pub well: String, pub bore: String, pub reason: String, pub message: String }
+pub struct WellIntersectionSet { pub hits: Vec<SurfaceIntersection>, pub skipped: Vec<IntersectionDiagnostic>, pub failed: Vec<IntersectionDiagnostic> }
+pub struct WellTopRow { pub well: String, pub bore: String, pub md: f64, pub xyz: Option<Point3> }
 ```
 
 ## Model-ready inputs — the consumer contract
@@ -787,6 +820,12 @@ w.is_multibore                           # True → the top-level accessors belo
 w.xyz(2450)                              # ValueError "well '99/9-1' has 3 bores (A, B, ST2) — use .sidetrack(name) or .set_default_bore(name)"
 w.set_default_bore("A"); w.default_bore  # route w.xyz/tvd/log/top through bore A ("A"); clears via load
 bore = w.sidetrack("A")                  # per-bore access is first-class + complete (never needs a default):
+bore.intersections(top, tolerance=1e-3)  # every crossing, MD ordered; pure/no mutation
+hit = bore.intersection(top)              # None=no hit; raises with guidance when multiple
+bore.add_top("Top reservoir", hit)        # explicit persisted Top{name,md}; duplicate errors
+bore.replace_top("Top reservoir", 2412.5)
+bore.remove_top("Top reservoir")
+bore.tops()                               # [(name, md), ...]
 bore.xyz(1200); bore.tvd(1200); bore.md_range()    # positioned by THIS bore's trajectory
 bore.mnemonics(); bore.log_stats("PHIE").mean      # whole-bore curve + stats
 bore.log("PHIE").values(); bore.log("PERM").geomean()   # per-sample view on a named bore; geometric-mean perm
@@ -811,6 +850,14 @@ w.zone_table("PHIE", zones=("Top A","Top B"))         # keep only these zones (c
 # averages are thickness-weighted by default (weighted=False for plain sample mean)
 w.zone_table("PHIE", cut=petekio.NetSettings(phi_min=0.10))  # net-condition each cell (phi/sw/vsh name the curves; default PHIE/SW/none — inert without cut)
 geo.wells.zone_table("PHIE")                          # multi-well; bore = "<well> <sidetrack>"
+
+# Project-wide report + atomic complete-horizon persistence:
+result = project.wells.intersection(project.surfaces["Top reservoir"])
+result.hits; result.skipped; result.failed; result.summary()
+project.well_tops["Reservoir/Top"] = result
+project.well_tops["Reservoir/Top"].rows      # WellTopSet: well/bore/md/xyz
+del project.well_tops["Reservoir/Top"]
+# project.tops remains the compatible imported source-table inventory.
 
 # Standalone trajectory from a directional survey (no project needed):
 traj = petekio.Trajectory.from_stations(      # [(md, inc_deg, azi_deg), ...]

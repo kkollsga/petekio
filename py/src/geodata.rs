@@ -15,6 +15,7 @@ use crate::{parse_unit, to_pyerr, unit_label};
 use petekio::GeoData as RsGeoData;
 use pyo3::exceptions::{PyAttributeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyAny;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 /// A load-once subsurface project under one declared length unit.
@@ -176,6 +177,26 @@ impl GeoData {
     /// Delete a stored polygon set. Returns whether anything was removed.
     fn delete_polygons(&mut self, name: &str) -> bool {
         self.inner.delete_polygons(name)
+    }
+
+    /// Distinct persisted formation-top names across every well/bore.
+    fn well_top_names(&self) -> Vec<String> {
+        self.inner.well_top_names()
+    }
+
+    /// Persisted picks for one horizon as `(well, bore, md, xyz-or-None)` rows.
+    #[allow(clippy::type_complexity)]
+    fn well_top_set(&self, name: &str) -> Vec<(String, String, f64, Option<(f64, f64, f64)>)> {
+        self.inner
+            .well_top_set(name)
+            .into_iter()
+            .map(|row| (row.well, row.bore, row.md, row.xyz.map(|p| (p.x, p.y, p.z))))
+            .collect()
+    }
+
+    /// Delete a persisted formation horizon globally; returns picks removed.
+    fn delete_well_top(&mut self, name: &str) -> usize {
+        self.inner.delete_well_top(name)
     }
 
     /// Load a well from `files` (a per-well directory or single file) under
@@ -508,6 +529,41 @@ impl WellsView {
             current_top,
         }
     }
+
+    fn evaluate_intersections(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+        all: bool,
+    ) -> PyResult<crate::intersection::WellIntersectionSet> {
+        let full_scope = {
+            let geo = self.geo.borrow(py);
+            let all_ids: Vec<&str> = geo.inner.wells_named().map(|(id, _)| id).collect();
+            all_ids.len() == self.ids.len()
+                && all_ids
+                    .iter()
+                    .zip(&self.ids)
+                    .all(|(actual, selected)| *actual == selected)
+        };
+        let (mut result, surface_name) = crate::intersection::with_surface(py, surface, |s| {
+            let geo = self.geo.borrow(py);
+            let view = geo.inner.wells_by_ids(&self.ids);
+            if all {
+                view.intersections(s, tolerance)
+            } else {
+                view.intersection(s, tolerance)
+            }
+        })?;
+        for hit in &mut result.hits {
+            hit.surface = surface_name.clone();
+        }
+        Ok(crate::intersection::WellIntersectionSet::new(
+            result,
+            self.geo.clone_ref(py),
+            full_scope,
+        ))
+    }
 }
 
 #[pymethods]
@@ -522,6 +578,29 @@ impl WellsView {
 
     fn is_empty(&self) -> bool {
         self.ids.is_empty()
+    }
+
+    /// One hit per bore across the view; no-hit and failed bores remain in the
+    /// returned diagnostics rather than aborting other wells.
+    #[pyo3(signature = (surface, tolerance=1e-3))]
+    fn intersection(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+    ) -> PyResult<crate::intersection::WellIntersectionSet> {
+        self.evaluate_intersections(py, surface, tolerance, false)
+    }
+
+    /// All crossings per bore across the view.
+    #[pyo3(signature = (surface, tolerance=1e-3))]
+    fn intersections(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+    ) -> PyResult<crate::intersection::WellIntersectionSet> {
+        self.evaluate_intersections(py, surface, tolerance, true)
     }
 
     /// The wells in this view as `Well` objects (insertion order).

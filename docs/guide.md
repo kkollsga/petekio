@@ -51,6 +51,11 @@ auto-routing sidetracks; a vertical trajectory spanning the logged MD is built w
 no survey is supplied. Named access (`geo.well(id)`, `geo.surface(name)`) and a
 broadcastable `geo.wells` view come for free.
 
+Surface picks remain explicit: `bore.intersection(surface)` computes without
+mutation, `bore.add_top(name, hit)` persists one selected crossing, and
+`project.well_tops[name] = project.wells.intersection(surface)` validates then
+atomically replaces a complete project horizon.
+
 ## Surfaces
 
 A `Surface` is a regular gridded layer (e.g. a depth horizon) on a `GridGeometry`.

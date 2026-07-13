@@ -3,6 +3,7 @@
 //! Imports from `foundation` and `io`.
 
 pub mod log; // Log + LogView — MD-indexed well curves and views
+pub mod intersection; // typed trajectory/surface crossings
 pub(crate) mod persist; // per-element save/load to a standalone .pproj
 pub mod points; // PointSet — scattered points + attributes + gridding
 pub mod polygons; // PolygonSet — rings + contains/area/bbox/clip
@@ -20,6 +21,7 @@ pub mod trajectory; // well path: minimum-curvature normalization + interpolatio
 pub mod value_layer; // iso-lines + value layers (trimesh views) on all surface levels
 pub mod well; // Well → Sidetrack → Trajectory hierarchy
 
+pub use intersection::{IntersectableSurface, SurfaceIntersection};
 pub use log::{Log, LogKind, LogView};
 pub use points::{GeometryEdge, GridMethod, PointSet};
 pub use polygons::PolygonSet;

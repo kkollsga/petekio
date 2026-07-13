@@ -11,7 +11,7 @@ mod model_inputs; // GeoData::model_inputs — the model-ready inputs contract
 mod project; // GeoData::save/open/inspect — whole-project .pproj persistence
 mod wells_view; // WellsView — broadcastable, filterable borrow over wells
 
-pub use geodata::GeoData;
+pub use geodata::{GeoData, WellTopRow};
 pub(crate) use project::ModelSection;
 pub use project::ProjectInfo;
-pub use wells_view::WellsView;
+pub use wells_view::{IntersectionDiagnostic, WellIntersectionSet, WellsView};

@@ -142,3 +142,16 @@ secondary contributors are role-prefixed, for example `rhs.*`, `mask.*`, or
 `petekio.Trajectory.from_stations([(md, inc_deg, azi_deg), ...], head=(x, y),
 kb=...)` builds a minimum-curvature trajectory without a project; `.tvd(md)`,
 `.xyz(md)`, `.md_at_tvd(tvd)`, `.md_range()`.
+
+`trajectory.intersection(surface, tolerance=1e-3)` returns the sole immutable
+`SurfaceIntersection` (`md`, `xyz`, optional `well`/`bore`/`surface` identity),
+`None` for no hit, and raises when multiple crossings require an explicit
+choice. `trajectory.intersections(...)` returns every MD-ordered crossing. The
+same methods are available on `Sidetrack`, resolved `Well`, and `WellsView`; the
+last returns `WellIntersectionSet(hits, skipped, failed)` with `.summary()`.
+
+`Sidetrack`/resolved `Well` expose strict `tops()`, `add_top(name, md_or_hit)`,
+`replace_top(name, md_or_hit)`, and `remove_top(name)`. At project level,
+`project.well_tops[name] = project.wells.intersection(surface)` atomically
+replaces the complete persisted horizon. Lookup returns a `WellTopSet` of
+`well`/`bore`/`md`/`xyz` rows; `del` removes it globally.

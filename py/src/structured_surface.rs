@@ -50,7 +50,7 @@ impl StructuredMeshSurface {
         self
     }
 
-    fn with<R>(
+    pub(crate) fn with<R>(
         &self,
         py: Python<'_>,
         f: impl FnOnce(&RsStructuredMeshSurface) -> R,
@@ -65,6 +65,10 @@ impl StructuredMeshSurface {
                 Ok(f(surface))
             }
         }
+    }
+
+    pub(crate) fn dataset_name(&self) -> Option<String> {
+        self.name.clone()
     }
 }
 

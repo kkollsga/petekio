@@ -12,6 +12,7 @@
 //! samples as plain `list[float]`.
 
 mod geodata;
+mod intersection;
 mod geometry;
 mod detect;
 mod points;
@@ -137,6 +138,8 @@ fn _petekio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<points::PolygonSet>()?;
     m.add_class::<points::PolygonColumn>()?;
     m.add_class::<trajectory::Trajectory>()?;
+    m.add_class::<intersection::SurfaceIntersection>()?;
+    m.add_class::<intersection::WellIntersectionSet>()?;
     m.add_class::<well::Well>()?;
     m.add_class::<well::Sidetrack>()?;
     m.add_class::<well::Interval>()?;

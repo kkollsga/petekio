@@ -11,7 +11,9 @@
 //! the extension-dispatched `load_*` ingest and its well-routing helpers live in
 //! the sibling [`loaders`](super::loaders) module.
 
-use crate::core::{PointSet, PolygonSet, StructuredMeshSurface, Surface, Well};
+use crate::core::{
+    PointSet, PolygonSet, StructuredMeshSurface, Surface, SurfaceIntersection, Well,
+};
 use crate::foundation::{GeoError, Result, Unit};
 use crate::manager::wells_view::WellsView;
 use indexmap::IndexMap;
@@ -56,6 +58,15 @@ pub struct GeoData {
     /// (the user map first, then the built-in table + vintage `_YYYY` strip), so
     /// e.g. `PHIE_2025` → `PHIE`. `None` (default) preserves raw mnemonics.
     pub(crate) curve_aliases: Option<crate::analysis::NameMap>,
+}
+
+/// One persisted formation-pick row aggregated from a well bore.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WellTopRow {
+    pub well: String,
+    pub bore: String,
+    pub md: f64,
+    pub xyz: Option<crate::foundation::Point3>,
 }
 impl GeoData {
     /// An empty project in `unit`.
@@ -215,6 +226,104 @@ impl GeoData {
         self.wells.get_mut(id)
     }
 
+    /// Distinct formation-top names across all bores, in first-seen order.
+    pub fn well_top_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for well in self.wells.values() {
+            for bore in well.sidetracks() {
+                for top in bore.tops() {
+                    if !names
+                        .iter()
+                        .any(|name: &String| name.eq_ignore_ascii_case(&top.name))
+                    {
+                        names.push(top.name.clone());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// All persisted picks named `name`, with recomputed XYZ where positioned.
+    pub fn well_top_set(&self, name: &str) -> Vec<WellTopRow> {
+        let mut rows = Vec::new();
+        for well in self.wells.values() {
+            for bore in well.sidetracks() {
+                for top in bore
+                    .tops()
+                    .filter(|top| top.name.eq_ignore_ascii_case(name))
+                {
+                    rows.push(WellTopRow {
+                        well: well.id.clone(),
+                        bore: bore.label.clone(),
+                        md: top.md,
+                        xyz: bore.xyz(top.md),
+                    });
+                }
+            }
+        }
+        rows
+    }
+
+    /// Remove a named formation horizon globally. Returns picks removed.
+    pub fn delete_well_top(&mut self, name: &str) -> usize {
+        let mut removed = 0;
+        for well in self.wells.values_mut() {
+            for label in well.bores().map(str::to_string).collect::<Vec<_>>() {
+                let bore = well.sidetrack_mut(&label);
+                let before = bore.tops().count();
+                bore.retain_tops_except(name);
+                removed += before - bore.tops().count();
+            }
+        }
+        removed
+    }
+
+    /// Atomically replace the complete named horizon with one validated hit per
+    /// bore. Validation performs no mutation; the subsequent replacement pass
+    /// is infallible and removes stale picks outside the hit set.
+    pub fn replace_well_top_set(&mut self, name: &str, hits: &[SurfaceIntersection]) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(GeoError::Parse("well-top name cannot be empty".into()));
+        }
+        let mut keys = std::collections::HashSet::new();
+        for hit in hits {
+            let well_id = hit.well.as_deref().ok_or_else(|| {
+                GeoError::Parse("project well-top assignment needs hit.well identity".into())
+            })?;
+            let bore_label = hit.bore.as_deref().ok_or_else(|| {
+                GeoError::Parse("project well-top assignment needs hit.bore identity".into())
+            })?;
+            if !keys.insert((well_id.to_string(), bore_label.to_string())) {
+                return Err(GeoError::Parse(format!(
+                    "well-top assignment has multiple hits for {well_id}/{bore_label}; select one crossing per bore"
+                )));
+            }
+            let well = self.wells.get(well_id).ok_or_else(|| {
+                GeoError::NotFound(format!("intersection well '{well_id}' in this project"))
+            })?;
+            let bore = well.sidetrack(bore_label).ok_or_else(|| {
+                GeoError::NotFound(format!(
+                    "intersection bore '{bore_label}' on well '{well_id}'"
+                ))
+            })?;
+            bore.validate_intersection(hit)?;
+        }
+
+        self.delete_well_top(name);
+        for hit in hits {
+            let well_id = hit.well.as_deref().expect("validated well identity");
+            let bore_label = hit.bore.as_deref().expect("validated bore identity");
+            self.wells
+                .get_mut(well_id)
+                .expect("validated well")
+                .sidetrack_mut(bore_label)
+                .push_top_validated(name.to_string(), hit.md);
+        }
+        Ok(())
+    }
+
     /// The point set stored under `name`, or `None`.
     pub fn points(&self, name: &str) -> Option<&PointSet> {
         self.points.get(name)
@@ -289,6 +398,18 @@ impl GeoData {
     /// A broadcastable, filterable view over all wells (insertion order).
     pub fn wells(&self) -> WellsView<'_> {
         WellsView::new(self.wells.values().collect())
+    }
+
+    /// A borrowed view over the requested well ids, preserving request order.
+    /// Missing ids are omitted; primarily used by the Python filtered view.
+    #[doc(hidden)]
+    pub fn wells_by_ids(&self, ids: &[String]) -> WellsView<'_> {
+        WellsView::new(ids.iter().filter_map(|id| self.wells.get(id)).collect())
+    }
+
+    /// All wells with ids, in insertion order.
+    pub fn wells_named(&self) -> impl Iterator<Item = (&str, &Well)> {
+        self.wells.iter().map(|(id, well)| (id.as_str(), well))
     }
 }
 

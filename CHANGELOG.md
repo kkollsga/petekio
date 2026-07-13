@@ -15,6 +15,17 @@ All notable changes to petekIO are recorded here. The format loosely follows
   clouds still fail loudly, and bridge/component/label behaviour is unchanged.
 
 ### Added
+- **Accurate well/surface intersections and persistent computed horizons.**
+  `Trajectory`, `Sidetrack`, resolved `Well`, and `WellsView` now intersect
+  regular, structured, and triangulated surfaces using adaptive sampling of the
+  actual minimum-curvature path, spatial triangle candidates, root/tangent
+  refinement, shared-edge de-duplication, null-hole handling, and loud coplanar
+  rejection. Typed immutable hits carry MD/XYZ plus source identity; aggregate
+  reports retain skipped/failed diagnostics. Strict per-bore add/replace/remove
+  APIs persist the unchanged `Top {name, md}` shape. The new folder-aware
+  `project.well_tops` mapping atomically validates and replaces complete
+  horizons, removes stale picks, and round-trips through `.pproj`; the older
+  `project.tops` source-table view is unchanged.
 - **`PointSet.infer_geometry()` now returns geometry-only roles.** Regular
   points return `GridGeometry`; validated topology-bearing curvilinear points
   return `StructuredShell`; triangulated/faulted/scattered fallback returns

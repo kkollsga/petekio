@@ -114,6 +114,44 @@ bore.zone_stats("PHIE", "Top A").mean # one zone's Stats directly (None if absen
 `Stats` carries the average (`mean`), `sum`, count, and percentiles; zones where
 the curve has no samples are omitted from `zone_stats`.
 
+### Intersecting surfaces and storing picks
+
+All three surface levels (`Surface`, `StructuredMeshSurface`, and `TriSurface`)
+intersect the actual minimum-curvature bore trajectory:
+
+```python
+hits = bore.intersections(surface, tolerance=1e-3)  # MD ordered, pure
+hit = bore.intersection(surface)                     # None, one, or loud multiple-hit error
+hit.md, hit.xyz, hit.well, hit.bore, hit.surface
+hit.to_dict()
+
+bore.add_top("Top reservoir", hit)
+bore.replace_top("Top reservoir", 2412.5)
+bore.remove_top("Top reservoir")
+bore.tops()
+```
+
+Null triangles are holes, outside trajectories are no-hit, shared triangle
+edges de-duplicate, tangencies are retained, and coplanar overlap is rejected
+because it has no discrete pick. `intersection` never chooses among multiple
+crossings; call `intersections` and select one explicitly.
+
+For a complete project horizon, use the aggregate report and atomic mapping:
+
+```python
+result = project.wells.intersection(surface)
+result.summary()                 # hits / skipped / failed
+project.well_tops["Reservoir/Top"] = result
+project.well_tops["Reservoir/Top"].rows  # well, bore, md, xyz
+del project.well_tops["Reservoir/Top"]
+```
+
+Outside/no-hit skips are accepted; any failure blocks assignment. The complete
+right-hand side is validated first (same project, full wells view, one hit per
+bore, matching MD/XYZ), then the horizon is replaced and stale picks removed.
+`project.tops` remains the source-table view from raw imports;
+`project.well_tops` is reconstructed from `.pproj` Well records.
+
 ### A tidy table across bores — `zone_table`
 
 For a per-`zone × bore` table, `zone_table` returns a ready

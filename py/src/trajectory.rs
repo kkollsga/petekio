@@ -6,6 +6,7 @@
 use crate::to_pyerr;
 use petekio::{Station, Trajectory as RsTrajectory, TrajectoryInput};
 use pyo3::prelude::*;
+use pyo3::types::PyAny;
 
 /// A minimum-curvature well path positioned from a wellhead + KB datum.
 #[pyclass(name = "Trajectory")]
@@ -55,6 +56,43 @@ impl Trajectory {
     /// Measured depth at a given TVD (shallowest crossing), or `None`.
     fn md_at_tvd(&self, tvd: f64) -> Option<f64> {
         self.inner.md_at_tvd(tvd)
+    }
+
+    /// Every MD-ordered crossing with a regular, structured, or triangulated
+    /// surface. Computation is pure; no tops are created.
+    #[pyo3(signature = (surface, tolerance=1e-3))]
+    fn intersections(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+    ) -> PyResult<Vec<crate::intersection::SurfaceIntersection>> {
+        let (hits, name) = crate::intersection::with_surface(py, surface, |s| {
+            self.inner.intersections(s, tolerance)
+        })?;
+        Ok(hits
+            .into_iter()
+            .map(|hit| {
+                crate::intersection::SurfaceIntersection::attach_surface(hit, name.as_deref())
+            })
+            .collect())
+    }
+
+    /// The sole crossing, `None` for no hit; multiple crossings raise with
+    /// guidance to call `intersections`.
+    #[pyo3(signature = (surface, tolerance=1e-3))]
+    fn intersection(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+    ) -> PyResult<Option<crate::intersection::SurfaceIntersection>> {
+        let (hit, name) = crate::intersection::with_surface(py, surface, |s| {
+            self.inner.intersection(s, tolerance)
+        })?;
+        Ok(hit.map(|hit| {
+            crate::intersection::SurfaceIntersection::attach_surface(hit, name.as_deref())
+        }))
     }
 
     fn __repr__(&self) -> String {

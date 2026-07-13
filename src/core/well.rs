@@ -35,6 +35,7 @@
 //! names (base = the next top's MD by sorted MD, else the active trajectory's
 //! total depth).
 
+use crate::core::intersection::{single, IntersectableSurface, SurfaceIntersection};
 use crate::core::log::{Log, LogView};
 use crate::core::tops::{FluidContact, Interval, Top};
 use crate::core::trajectory::{Trajectory, TrajectoryInput};
@@ -138,6 +139,37 @@ impl Well {
         }
     }
 
+    fn primary_mut(&mut self) -> &mut Sidetrack {
+        let label = if let Some(label) = self.default_bore.as_deref() {
+            label.to_string()
+        } else {
+            let labels: Vec<String> = self
+                .sidetracks
+                .values()
+                .filter(|s| !s.trajectories().is_empty())
+                .map(|s| s.label.clone())
+                .collect();
+            if labels.len() == 1 {
+                labels[0].clone()
+            } else {
+                MAIN.to_string()
+            }
+        };
+        self.sidetracks
+            .get_mut(&label)
+            .expect("resolved bore is present")
+    }
+
+    fn require_resolved(&self) -> Result<&Sidetrack> {
+        if self.is_multibore() && self.default_bore.is_none() {
+            return Err(GeoError::Unsupported(format!(
+                "well '{}' has multiple bores; select one with sidetrack(...) or set_default_bore(...) before this operation",
+                self.id
+            )));
+        }
+        Ok(self.primary())
+    }
+
     /// Whether this well is **multi-bore**: more than one bore carries a
     /// trajectory (so the single-trajectory rule does not apply and the
     /// delegating accessors need an explicit bore — see [`primary`](Self::primary)).
@@ -212,6 +244,112 @@ impl Well {
     /// active trajectory.
     pub fn xyz(&self, md: f64) -> Option<Point3> {
         self.primary().xyz(md)
+    }
+
+    /// Every crossing of the resolved bore with `surface`, MD ordered.
+    pub fn intersections<S: IntersectableSurface + ?Sized>(
+        &self,
+        surface: &S,
+        tolerance: f64,
+    ) -> Result<Vec<SurfaceIntersection>> {
+        let bore = self.require_resolved()?;
+        bore.intersections(surface, tolerance).map(|hits| {
+            hits.into_iter()
+                .map(|h| h.identify(Some(&self.id), Some(&bore.label), None))
+                .collect()
+        })
+    }
+
+    /// The sole crossing of the resolved bore, or `None`. Multiple crossings
+    /// fail with guidance to call [`intersections`](Self::intersections).
+    pub fn intersection<S: IntersectableSurface + ?Sized>(
+        &self,
+        surface: &S,
+        tolerance: f64,
+    ) -> Result<Option<SurfaceIntersection>> {
+        single(self.intersections(surface, tolerance)?)
+    }
+
+    /// Add a formation top on the resolved bore. Fails on duplicate name.
+    pub fn add_top(&mut self, name: impl Into<String>, md: f64) -> Result<()> {
+        if self.is_multibore() && self.default_bore.is_none() {
+            return Err(GeoError::Unsupported(format!(
+                "well '{}' has multiple bores; select a default bore before add_top",
+                self.id
+            )));
+        }
+        self.primary_mut().add_top(name, md)
+    }
+
+    /// Add a top from a typed intersection on the resolved bore.
+    pub fn add_top_from_intersection(
+        &mut self,
+        name: impl Into<String>,
+        hit: &SurfaceIntersection,
+    ) -> Result<()> {
+        if hit.well.as_deref().is_some_and(|well| well != self.id) {
+            return Err(GeoError::GeometryMismatch(format!(
+                "intersection belongs to well '{}', not '{}'",
+                hit.well.as_deref().unwrap_or_default(),
+                self.id
+            )));
+        }
+        if self.is_multibore() && self.default_bore.is_none() {
+            return Err(GeoError::Unsupported(format!(
+                "well '{}' has multiple bores; select a default bore before add_top",
+                self.id
+            )));
+        }
+        self.primary_mut().add_top_from_intersection(name, hit)
+    }
+
+    /// Replace an existing formation top on the resolved bore. Fails if absent.
+    pub fn replace_top(&mut self, name: impl Into<String>, md: f64) -> Result<()> {
+        if self.is_multibore() && self.default_bore.is_none() {
+            return Err(GeoError::Unsupported(format!(
+                "well '{}' has multiple bores; select a default bore before replace_top",
+                self.id
+            )));
+        }
+        self.primary_mut().replace_top(name, md)
+    }
+
+    /// Replace a top from a typed intersection on the resolved bore.
+    pub fn replace_top_from_intersection(
+        &mut self,
+        name: impl Into<String>,
+        hit: &SurfaceIntersection,
+    ) -> Result<()> {
+        if hit.well.as_deref().is_some_and(|well| well != self.id) {
+            return Err(GeoError::GeometryMismatch(format!(
+                "intersection belongs to well '{}', not '{}'",
+                hit.well.as_deref().unwrap_or_default(),
+                self.id
+            )));
+        }
+        if self.is_multibore() && self.default_bore.is_none() {
+            return Err(GeoError::Unsupported(format!(
+                "well '{}' has multiple bores; select a default bore before replace_top",
+                self.id
+            )));
+        }
+        self.primary_mut().replace_top_from_intersection(name, hit)
+    }
+
+    /// Remove an existing formation top on the resolved bore. Fails if absent.
+    pub fn remove_top(&mut self, name: &str) -> Result<Top> {
+        if self.is_multibore() && self.default_bore.is_none() {
+            return Err(GeoError::Unsupported(format!(
+                "well '{}' has multiple bores; select a default bore before remove_top",
+                self.id
+            )));
+        }
+        self.primary_mut().remove_top(name)
+    }
+
+    /// Formation tops on the resolved bore.
+    pub fn tops(&self) -> impl Iterator<Item = &Top> {
+        self.primary().tops()
     }
 
     /// TVD at `md` on the [resolved bore](Self::primary)'s active trajectory.
@@ -374,6 +512,32 @@ impl Sidetrack {
         self.active_traj().and_then(|t| t.xyz(md))
     }
 
+    /// Every crossing of this bore's active trajectory with `surface`, MD
+    /// ordered. The returned identity includes this bore label.
+    pub fn intersections<S: IntersectableSurface + ?Sized>(
+        &self,
+        surface: &S,
+        tolerance: f64,
+    ) -> Result<Vec<SurfaceIntersection>> {
+        let Some(traj) = self.active_traj() else {
+            return Ok(Vec::new());
+        };
+        traj.intersections(surface, tolerance).map(|hits| {
+            hits.into_iter()
+                .map(|h| h.identify(None, Some(&self.label), None))
+                .collect()
+        })
+    }
+
+    /// The sole crossing, or `None`; multiple crossings are ambiguous.
+    pub fn intersection<S: IntersectableSurface + ?Sized>(
+        &self,
+        surface: &S,
+        tolerance: f64,
+    ) -> Result<Option<SurfaceIntersection>> {
+        single(self.intersections(surface, tolerance)?)
+    }
+
     /// TVD at `md` on the active trajectory, or `None`.
     pub fn tvd(&self, md: f64) -> Option<f64> {
         self.active_traj().and_then(|t| t.tvd(md))
@@ -400,6 +564,137 @@ impl Sidetrack {
     /// top resolves an interval base).
     pub fn add_tops(&mut self, tops: Vec<Top>) {
         self.tops.extend(tops);
+        self.sort_tops();
+    }
+
+    /// Formation-top records on this bore in interval order.
+    pub fn tops(&self) -> impl Iterator<Item = &Top> {
+        self.tops.iter()
+    }
+
+    /// Add one top. Name matching is case-insensitive and duplicate names fail
+    /// loudly so interval lookup cannot become ambiguous.
+    pub fn add_top(&mut self, name: impl Into<String>, md: f64) -> Result<()> {
+        let name = validate_top_input(name.into(), md, self.active_traj())?;
+        if self
+            .tops
+            .iter()
+            .any(|top| top.name.eq_ignore_ascii_case(&name))
+        {
+            return Err(GeoError::Parse(format!(
+                "top '{name}' already exists on bore '{}'",
+                self.label
+            )));
+        }
+        self.tops.push(Top { name, md });
+        self.sort_tops();
+        Ok(())
+    }
+
+    /// Replace exactly one existing top. Missing and legacy-duplicate names are
+    /// errors rather than guesses.
+    pub fn replace_top(&mut self, name: impl Into<String>, md: f64) -> Result<()> {
+        let name = validate_top_input(name.into(), md, self.active_traj())?;
+        let matches: Vec<usize> = self
+            .tops
+            .iter()
+            .enumerate()
+            .filter_map(|(i, top)| top.name.eq_ignore_ascii_case(&name).then_some(i))
+            .collect();
+        match matches.as_slice() {
+            [] => Err(GeoError::NotFound(format!(
+                "top '{name}' on bore '{}'",
+                self.label
+            ))),
+            [i] => {
+                self.tops[*i] = Top { name, md };
+                self.sort_tops();
+                Ok(())
+            }
+            _ => Err(GeoError::Parse(format!(
+                "top '{name}' is duplicated on bore '{}'; remove the legacy duplicates explicitly",
+                self.label
+            ))),
+        }
+    }
+
+    /// Remove exactly one existing top. Missing and legacy-duplicate names fail.
+    pub fn remove_top(&mut self, name: &str) -> Result<Top> {
+        let matches: Vec<usize> = self
+            .tops
+            .iter()
+            .enumerate()
+            .filter_map(|(i, top)| top.name.eq_ignore_ascii_case(name).then_some(i))
+            .collect();
+        match matches.as_slice() {
+            [] => Err(GeoError::NotFound(format!(
+                "top '{name}' on bore '{}'",
+                self.label
+            ))),
+            [i] => Ok(self.tops.remove(*i)),
+            _ => Err(GeoError::Parse(format!(
+                "top '{name}' is duplicated on bore '{}'; cannot choose one to remove",
+                self.label
+            ))),
+        }
+    }
+
+    /// Validate and add an intersection-derived top. Identity, active MD range,
+    /// and recomputed XYZ must all agree with this bore.
+    pub fn add_top_from_intersection(
+        &mut self,
+        name: impl Into<String>,
+        hit: &SurfaceIntersection,
+    ) -> Result<()> {
+        self.validate_intersection(hit)?;
+        self.add_top(name, hit.md)
+    }
+
+    /// Validate and replace a top from an intersection result.
+    pub fn replace_top_from_intersection(
+        &mut self,
+        name: impl Into<String>,
+        hit: &SurfaceIntersection,
+    ) -> Result<()> {
+        self.validate_intersection(hit)?;
+        self.replace_top(name, hit.md)
+    }
+
+    pub(crate) fn validate_intersection(&self, hit: &SurfaceIntersection) -> Result<()> {
+        if let Some(bore) = hit.bore.as_deref() {
+            if bore != self.label {
+                return Err(GeoError::GeometryMismatch(format!(
+                    "intersection belongs to bore '{bore}', not '{}'",
+                    self.label
+                )));
+            }
+        }
+        let actual = self.xyz(hit.md).ok_or_else(|| {
+            GeoError::OutOfRange(format!(
+                "intersection MD {} is outside bore '{}'",
+                hit.md, self.label
+            ))
+        })?;
+        let delta = ((actual.x - hit.xyz.x).powi(2)
+            + (actual.y - hit.xyz.y).powi(2)
+            + (actual.z - hit.xyz.z).powi(2))
+        .sqrt();
+        let eps = 1e-6_f64.max(1e-9 * actual.x.abs().max(actual.y.abs()).max(actual.z.abs()));
+        if delta > eps {
+            return Err(GeoError::GeometryMismatch(format!(
+                "intersection XYZ does not match bore '{}' at MD {} (difference {delta})",
+                self.label, hit.md
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn retain_tops_except(&mut self, name: &str) {
+        self.tops.retain(|top| !top.name.eq_ignore_ascii_case(name));
+    }
+
+    pub(crate) fn push_top_validated(&mut self, name: String, md: f64) {
+        self.tops.push(Top { name, md });
         self.sort_tops();
     }
 
@@ -549,6 +844,27 @@ fn strat_rank(order: &[String]) -> HashMap<&str, usize> {
         .enumerate()
         .map(|(i, n)| (n.as_str(), i))
         .collect()
+}
+
+fn validate_top_input(name: String, md: f64, trajectory: Option<&Trajectory>) -> Result<String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err(GeoError::Parse("top name cannot be empty".into()));
+    }
+    if !md.is_finite() {
+        return Err(GeoError::OutOfRange(
+            "top measured depth must be finite".into(),
+        ));
+    }
+    if let Some(traj) = trajectory {
+        let (lo, hi) = traj.md_range();
+        if md < lo || md > hi {
+            return Err(GeoError::OutOfRange(format!(
+                "top MD {md} outside active trajectory range {lo}..{hi}"
+            )));
+        }
+    }
+    Ok(name)
 }
 
 #[cfg(test)]

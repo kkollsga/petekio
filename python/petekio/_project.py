@@ -11,7 +11,7 @@ import json
 import math
 import re
 import shlex
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from math import isfinite
 from pathlib import Path
@@ -242,6 +242,129 @@ class _TopsCollection:
         return repr(self._visible_names())
 
     __str__ = __repr__
+
+
+@dataclass(frozen=True)
+class WellTopSet:
+    """One persisted formation horizon aggregated across project well bores."""
+
+    name: str
+    rows: tuple[dict[str, Any], ...]
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        return iter(self.rows)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        return self.rows[index]
+
+    def summary(self) -> dict[str, int]:
+        return {
+            "picks": len(self.rows),
+            "wells": len({row["well"] for row in self.rows}),
+            "bores": len({(row["well"], row["bore"]) for row in self.rows}),
+        }
+
+    def to_dataframe(self) -> Any:
+        return _dataframe(list(self.rows))
+
+    def __repr__(self) -> str:
+        return f"WellTopSet(name={self.name!r}, picks={len(self.rows)})"
+
+
+class _WellTopsMapping(MutableMapping[str, WellTopSet]):
+    """Folder-aware mutable view over the actual persisted per-bore tops."""
+
+    def __init__(self, project: "Project", *, prefix: str = "") -> None:
+        self._project = project
+        self._prefix = _normalise_project_path(prefix)
+
+    def _names(self) -> list[str]:
+        return list(self._project.geodata.well_top_names())
+
+    def __len__(self) -> int:
+        return len(self._visible_names())
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._visible_names())
+
+    def __getitem__(self, name: str) -> WellTopSet | "_WellTopsMapping":
+        names = self._names()
+        resolved = _resolve_collection_name(name, names, prefix=self._prefix)
+        if resolved is not None:
+            rows = []
+            for well, bore, md, xyz in self._project.geodata.well_top_set(resolved):
+                rows.append({"well": well, "bore": bore, "md": md, "xyz": xyz})
+            return WellTopSet(resolved, tuple(rows))
+        folder = _resolve_collection_folder(name, names, prefix=self._prefix)
+        if folder is not None:
+            return _WellTopsMapping(self._project, prefix=folder)
+        raise KeyError(name)
+
+    def __setitem__(self, name: str, value: Any) -> None:
+        logical = _normalise_project_path(name)
+        full_name = "/".join(part for part in (self._prefix, logical) if part)
+        if not full_name:
+            raise ValueError("well-top name cannot be empty")
+        apply_top = getattr(value, "_apply_top", None)
+        if not callable(apply_top):
+            raise TypeError(
+                "well-top assignment requires project.wells.intersection(surface); "
+                "use bore.add_top(...) for an explicit single-bore pick"
+            )
+        # The compiled result validates same-project identity, complete-view
+        # scope, failure-free diagnostics, unique bore hits, and every XYZ/MD
+        # before its no-fail replacement pass mutates any Top record.
+        apply_top(self._project.geodata, full_name)
+
+    def __delitem__(self, name: str) -> None:
+        names = self._names()
+        resolved = _resolve_collection_name(name, names, prefix=self._prefix)
+        if resolved is None:
+            raise KeyError(name)
+        removed = self._project.geodata.delete_well_top(resolved)
+        if not removed:
+            raise KeyError(resolved)
+
+    def names(self) -> list[str]:
+        return self._visible_names()
+
+    def all_names(self) -> list[str]:
+        return self._names()
+
+    def folders(self) -> list[str]:
+        return [name for name in self._visible_names() if name.endswith("/")]
+
+    def values(self) -> list[WellTopSet]:
+        return [self[name] for name in self._object_names_at_prefix()]  # type: ignore[list-item]
+
+    def items(self) -> list[tuple[str, WellTopSet]]:
+        return [
+            (name.rsplit("/", 1)[-1], self[name])  # type: ignore[list-item]
+            for name in self._object_names_at_prefix()
+        ]
+
+    def _visible_names(self) -> list[str]:
+        return _visible_collection_names(self._names(), self._prefix)
+
+    def _object_names_at_prefix(self) -> list[str]:
+        return [
+            name
+            for name in self._names()
+            if _relative_to_project_prefix(name, self._prefix) is not None
+            and "/" not in _relative_to_project_prefix(name, self._prefix)
+        ]
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __repr__(self) -> str:
+        return repr(self._visible_names())
 
 
 class _ProjectWellView:
@@ -581,6 +704,16 @@ class Project:
         """Loaded well-top set names; index by set name for a pandas DataFrame."""
 
         return _TopsCollection(self._inventory.get("tops", []), self._tops_tables)
+
+    @property
+    def well_tops(self) -> _WellTopsMapping:
+        """Mutable persisted formation horizons aggregated from actual bores.
+
+        ``project.tops`` remains the compatible imported source-table view;
+        this mapping is reconstructed from serialized ``Top {name, md}`` records.
+        """
+
+        return _WellTopsMapping(self)
 
     @property
     def logs(self) -> Any:

@@ -30,6 +30,25 @@ ongrid = top.resample(grid_geom) # bilinear onto another GridGeometry
 
 Operations return **new** surfaces; the stored surface is unchanged.
 
+### Attributes, interpretation, and hole repair
+
+```python
+thick = top.thickness(base, clamp_zero=True)  # base - top; unbound form also works
+top.thickness = thick                         # typed attribute assignment
+top.attr["thickness"]                         # promote the lane as a Surface
+
+smoothed = top.smooth(radius=1)               # preserves the original NaN mask
+dip = top.dip_angle()                         # degrees from horizontal
+azimuth = top.dip_azimuth()                   # down-dip clockwise from North
+filled = top.extrapolate("nearest")            # also "idw" / "min_curvature"
+```
+
+An assigned lane must be another `Surface` with identical complete geometry.
+Assignment is copy-on-write for project views and does not shadow the instance
+`top.thickness(base)` method. Interpretation and extrapolation return detached,
+same-geometry surfaces containing only the derived primary lane. Extrapolation
+changes only original NaNs and uses finite nodes as controls.
+
 ## Points
 
 A `PointSet` is scattered `(x, y, z)` with optional per-point attributes. Load

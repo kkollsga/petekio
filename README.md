@@ -86,6 +86,8 @@ geo = petekio.GeoData(unit="m")
 top = geo.load_surface("top_res", "surfaces/top_res.irap")
 top.stats.mean
 top.area_below(2400)
+top.dip_angle()                         # world-frame dip, degrees
+top.extrapolate("nearest")              # fill NaN holes; IDW/min-curvature too
 
 # A multi-bore well: a Petrel export tree (one bore per .wellpath) + logs.
 # head/kb are optional — the .wellpath header fills them.
@@ -119,7 +121,7 @@ column.
 
 | Domain | What you get |
 | --- | --- |
-| **Surfaces** | IRAP-classic load, sample/resample (bilinear), edge polygons, arithmetic, stats, `area_below` volumetrics, gridding from scattered points (minimum-curvature) |
+| **Surfaces** | IRAP-classic load, sample/resample, typed attribute lanes, arithmetic, smoothing, dip angle/azimuth, NaN-hole extrapolation, edge polygons, stats/volumetrics, and gridding from scattered points |
 | **Wells** | Positioned `.wellpath` trajectories (MD preserved; minimum-curvature interpolation), multi-bore (sidetracks), imported logs stored as MD/value pairs with mnemonic aliasing, Petrel well-tops, per-zone stats, field-wide lithostratigraphic ordering |
 | **Points / polygons** | IRAP / GeoJSON / CSV load, strict regular-grid geometry inference, clip, point-to-surface gridding |
 | **Project** | `GeoData` substrate — import raw data once, broadcast across the collection; views are read-only filtered subsets; compact `.pproj` load/save |

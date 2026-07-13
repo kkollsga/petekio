@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-07-13
+
 ### Added
 - **Surface interpretation and hole repair.** Python `Surface` now exposes
   `smooth(radius=1)`, `dip_angle()`, `dip_azimuth()`, and

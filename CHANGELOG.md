@@ -7,6 +7,17 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- **`PointSet.infer_geometry()` now returns geometry-only roles.** Regular
+  points return `GridGeometry`; validated topology-bearing curvilinear points
+  return `StructuredShell`; triangulated/faulted/scattered fallback returns
+  `MeshShell`. Shell wrappers expose stable `kind` values and propagate project
+  names as `"<name> geometry"`, while retaining components, edge, labels, and
+  wireframe access. The mesh path keeps the 3.4-cell default bridge, explicit
+  `None` strictness, loud warning, and `fallback="error"`. The documented
+  default is now `fallback="mesh"`; legacy `fallback="tri"` remains accepted
+  with a `DeprecationWarning` but no longer implies a value-bearing result.
+  Values remain on the `PointSet` until explicit `to_surface`,
+  `to_structured_surface`, or `to_tri_surface` conversion.
 - **EarthVision grids are first-class structured project surfaces.**
   `StructuredMeshSurface.load_earthvision_grid(...)` and
   `GeoData.load_structured_surface(...)` retain every logical node, including

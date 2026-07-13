@@ -209,6 +209,17 @@ Every level exposes `iso_lines` (NaN-aware marching triangles; holes break
 lines, never bend them) and `value_layer` (the viewer's trimesh bundle).
 `.pproj` stores a level-2/3 surface's shell once with N property lanes.
 
+Python `PointSet.infer_geometry(...)` returns **only empty geometry roles**:
+`GridGeometry` when the points fit one affine lattice; `StructuredShell` when
+validated explicit `column`/`row` topology describes a curvilinear mesh; or
+`MeshShell` when the existing fault-aware triangulation is required. It never
+returns `Surface`, `StructuredMeshSurface`, or `TriSurface`; values remain on
+the `PointSet` until an explicit `to_surface`, `to_structured_surface`, or
+`to_tri_surface` call. Mesh fallback retains `max_bridge=3.4` by default and
+strict `None`; `fallback="error"` remains fatal. `fallback="tri"` is a
+deprecated compatibility spelling of `fallback="mesh"`, not a request for a
+value-bearing `TriSurface`.
+
 ### `Well` → `Sidetrack` → `Trajectory` (+ tops + logs)
 ```rust
 pub struct Well {

@@ -860,36 +860,41 @@ through `surface.attr["name"]`, so `surface.thickness = ...` does not shadow the
 instance/unbound `surface.thickness(...)` / `Surface.thickness(...)` operation.
 `surface.edge` and
 `surface.geometry.edge` expose matching `PolygonSet` outlines; `PointSet`
-exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=3.4, fallback="tri") -> GridGeometry | TriSurface`
+exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=3.4, fallback="mesh") -> GridGeometry | StructuredShell | MeshShell`
 and `to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
 `edge="occupied"|"convex_hull"|"full_rect"`; `detect_topology(nominal_cell=None)`
 returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
-`infer_geometry` preserves strict regular inference; when no regular lattice
-describes the points it delegates to `to_tri_surface(max_link=None,
-max_bridge=...)` **with a `UserWarning`** (`fallback="tri"`, the default) or
-raises a `ValueError` (`fallback="error"`). `max_bridge` (in cells) applies
-**only to the TriSurface fallback** — it closes boundary-fringe/fault-seam/
-data-gap edges up to that length (default `3.4`; explicit `None` = strictly
-lattice-closed) and has no effect on an inferred `GridGeometry`. Direct
+`infer_geometry` preserves strict regular inference; after that fails it returns
+a `StructuredShell` when explicit `column`/`row` topology validates, otherwise
+the `MeshShell` from the existing `to_tri_surface(max_link=None,
+max_bridge=...)` geometry, **with a `UserWarning`**, or raises a `ValueError`
+(`fallback="error"`). `fallback="tri"` remains a deprecated compatibility
+spelling for `fallback="mesh"`; it does not return values. `max_bridge` (in
+cells) applies **only to the MeshShell fallback** — it closes boundary-fringe/
+fault-seam/data-gap edges up to that length (default `3.4`; explicit `None` =
+strictly lattice-closed) and has no effect on an inferred `GridGeometry` or
+`StructuredShell`. Direct
 `to_tri_surface(max_link=None, max_bridge=None)` remains strictly lattice-closed
-by default. Both possible results carry a
+by default. All three possible results carry a
 discoverable `.kind` for import-free dispatch — every geometry/surface/point
-object exposes it: `"grid_geometry"` | `"surface"` | `"structured_mesh"` |
-`"tri_surface"` | `"point_set"` | `"polygon_set"`.
+object exposes it: `"grid_geometry"` | `"structured_shell"` | `"mesh_shell"` |
+`"surface"` | `"structured_mesh"` | `"tri_surface"` | `"point_set"` |
+`"polygon_set"`.
 `PointSet.to_surface(geom=None, method="idw", tolerance=1e-3) -> Surface`
 grids z onto `geom`; `geom=None` (default) infers the lattice internally
 (`tolerance` as in `infer_geometry`) and **raises a `ValueError`** when the
 points are not lattice-regular — it never grids onto an arbitrary bounding
 lattice (pass an explicit `GridGeometry` or use `to_tri_surface()`); passing
-the `infer_geometry` TriSurface fallback as `geom` is a `TypeError` pointing
-at `tri_surface.resample(geom, method)`;
+an `infer_geometry` shell as `geom` is a `TypeError` pointing at the explicit
+value-bearing `to_structured_surface()` / `to_tri_surface()` conversion;
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
 **Dataset names (duck-typed viewer seam):** every project-accessor hand-back
 (`project.points[...]`, `project.surfaces[...]`, `project.polygons[...]`,
 `geo.points(name)`, `geo.surface(name)`, `geo.polygons(name)`, and the
 `load_*` project loaders) carries a read-only `.name` property — the lookup
 key's leaf (`"Surfaces/IrapClassic_points/Top Dome"` → `"Top Dome"`).
-Derived objects propagate it: `infer_geometry`/`surface.geometry`/`infer_grid`
+Derived objects propagate it: `infer_geometry`/surface shells/
+`surface.geometry`/`infer_grid`
 → `"<name> geometry"`; `to_surface`/`to_tri_surface`/`to_structured_surface`/
 `to_structured_mesh`/`to_points`/`resample`/`detect_topology`'s labelled
 points/attr promotion keep `"<name>"`. Anonymous/in-memory objects

@@ -59,7 +59,7 @@ RMS/IRAP plain `X Y Z`.
 ```python
 pts = geo.load_points("picks", "picks.geojson")
 pts.bbox
-geom = pts.infer_geometry()                    # GridGeometry, or bridged TriSurface fallback
+geom = pts.infer_geometry()                    # GridGeometry | StructuredShell | MeshShell
 grid = pts.to_surface(grid_geom)               # or grid scattered points onto an explicit model grid
 mesh = pts.to_structured_surface()             # topology-bearing points, explicit shifted XY nodes
 ```
@@ -91,12 +91,14 @@ row/column topology while preserving each node's actual XY coordinate. This is
 the right home for Petrel surfaces that are locally shifted around faults.
 A mesh whose nodes do not sit on any regular lattice — varying cell size, a cell
 angle away from 90° — is **curvilinear**. `infer_geometry(...)` refuses to invent a
-regular lattice and returns a `TriSurface` over the original points instead. Its
-fallback bridges short open fringes and seams up to `3.4` cells by default; pass
-`max_bridge=None` for strict lattice-closed triangulation. Direct
-`to_tri_surface()` remains strict by default.
-`to_structured_surface(...)` remains its exact row/column representation when
-topology attributes are present.
+regular lattice and returns geometry only: `StructuredShell` when explicit
+topology validates, otherwise a fault-aware `MeshShell`. The MeshShell fallback
+bridges short open fringes and seams up to `3.4` cells by default; pass
+`max_bridge=None` for strict lattice-closed triangulation. `fallback="error"`
+raises; deprecated `fallback="tri"` aliases the default `"mesh"` spelling.
+Direct `to_tri_surface()` remains strict and value-bearing; similarly,
+`to_structured_surface(...)` explicitly attaches values to the exact row/column
+representation.
 
 `edge="full_rect"` is the default point footprint: the four corners of the
 inferred lattice. It over-claims whenever the data does not fill its bounding

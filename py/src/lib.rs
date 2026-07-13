@@ -65,7 +65,7 @@ pub(crate) fn deprecation_warning(py: Python<'_>, msg: &str) -> PyResult<()> {
 
 /// Emit a Python `UserWarning` with `msg` (via the `warnings` module, so it
 /// respects the interpreter's filters). Used to make silent behavioural
-/// fallbacks loud (e.g. `infer_geometry` returning a `TriSurface`).
+/// fallbacks loud (e.g. `infer_geometry` returning a geometry shell).
 pub(crate) fn user_warning(py: Python<'_>, msg: &str) -> PyResult<()> {
     let warnings = py.import("warnings")?;
     let category = py.get_type::<pyo3::exceptions::PyUserWarning>();

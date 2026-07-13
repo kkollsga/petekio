@@ -106,16 +106,20 @@ automatically under `Project.surfaces`); the IRAP finite-point export remains a
 separate `PointSet`.
 
 ```python
-geom = pts.infer_geometry(tolerance=1e-3)  # GridGeometry or bridged TriSurface fallback
+geom = pts.infer_geometry(tolerance=1e-3)  # GridGeometry | StructuredShell | MeshShell
 if isinstance(geom, petekio.GridGeometry):
     surf = pts.to_surface(geom, method="nearest")
-mesh = pts.to_structured_surface(edge="occupied")
+elif isinstance(geom, petekio.StructuredShell):
+    surf = pts.to_structured_surface(edge="occupied")  # attach values explicitly
+else:
+    surf = pts.to_tri_surface(max_bridge=3.4)           # attach values explicitly
 ```
 
-Regular inference is deliberately strict. When the points do not fit a lattice,
-`infer_geometry(...)` returns a `TriSurface` instead of inventing a geometry;
-topology-bearing curvilinear exports can also be promoted with
-`to_structured_surface(...)`, which stores explicit per-node XY.
+Regular inference is deliberately strict and geometry-only. It returns a
+`StructuredShell` when explicit `column`/`row` topology validates a curvilinear
+mesh, otherwise a fault-aware `MeshShell`; it never returns values. Use
+`to_structured_surface(...)` or `to_tri_surface(...)` explicitly to attach the
+point values.
 
 When a surface export has lost its `column`/`row` fields, recover them rather than
 forcing the points onto a lattice:
@@ -141,9 +145,11 @@ honoured rather than bridged — `TriSurface.components` reports how many blocks
 survived. `max_link` is the longest triangle edge to keep, in **cells**, and must lie
 in `(√2, 2)`. `max_bridge` (also in cells, `>= max_link`) opt-in closes the mesh where
 the geometry does not close — the boundary fringe, fault seams, interior data gaps —
-admitting edges up to that length. The higher-level `infer_geometry(...)` fallback
+admitting edges up to that length. The higher-level `infer_geometry(...)` MeshShell fallback
 defaults `max_bridge` to `3.4` cells to close ordinary export fringes and seams; pass
-`max_bridge=None` there for the strict lattice-closed result. Calling
+`max_bridge=None` there for the strict lattice-closed result. `fallback="mesh"`
+is the default; legacy `fallback="tri"` is accepted with a deprecation warning
+and still returns geometry only. Calling
 `to_tri_surface()` directly remains strict by default.
 
 Geometry is a **flat empty shell** in three levels of complexity — the rigid

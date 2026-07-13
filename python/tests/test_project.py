@@ -446,6 +446,41 @@ def test_dataset_name_propagates_to_derived_objects(tmp_path):
     assert labelled.name == "Top Dome"
 
 
+def test_project_point_geometry_shells_propagate_name_and_kind(tmp_path):
+    root = tmp_path / "Data"
+    curved_rows = ["x,y,z,column,row"]
+    for j in range(5):
+        for i in range(5):
+            curved_rows.append(
+                f"{10 * i * (1 + 0.08 * i)},{10 * j * (1 + 0.05 * j)},1,{i + 1},{j + 1}"
+            )
+    _write(root / "Points" / "Curved.csv", "\n".join(curved_rows) + "\n")
+
+    fault_rows = ["x,y,z"]
+    for j in range(6):
+        for i in range(4):
+            fault_rows.append(f"{50 * i},{50 * j},-1")
+        for i in range(6, 10):
+            fault_rows.append(f"{50 * i + 20},{50 * j + 25},-2")
+    _write(root / "Points" / "Fault.csv", "\n".join(fault_rows) + "\n")
+
+    project = petekio.Project.import_data(root)
+    curved = project.points["Curved"]
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
+        structured = curved.infer_geometry()
+    assert structured.kind == "structured_shell"
+    assert structured.name == "Curved geometry"
+    assert structured.to_mesh_shell().name == "Curved geometry"
+    assert curved.to_structured_surface().shell.name == "Curved geometry"
+
+    fault = project.points["Fault"]
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
+        mesh = fault.infer_geometry(max_bridge=None)
+    assert mesh.kind == "mesh_shell"
+    assert mesh.name == "Fault geometry"
+    assert fault.to_tri_surface().shell.name == "Fault geometry"
+
+
 def test_project_load_pproj_delegates_to_geodata_open(tmp_path):
     geo = petekio.GeoData(unit="m")
     geo.load_surface("top", str(_write(tmp_path / "top.irap", _irap())))

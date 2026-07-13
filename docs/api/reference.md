@@ -99,12 +99,13 @@ and percentiles (`.p10`, `.p50`, `.p90`).
 
 | Member | Description |
 | --- | --- |
-| `PointSet.bbox` / `.infer_geometry(...)` / `.to_surface(grid_geom)` | Bounds; strict regular-grid geometry inference with default `full_rect` point edge, returning a `TriSurface` with a 3.4-cell fallback bridge when no regular lattice fits (`max_bridge=None` opts out); grid points onto an explicit geometry. |
+| `PointSet.bbox` / `.infer_geometry(...)` / `.to_surface(grid_geom)` | Bounds; geometry-only inference returns `GridGeometry`, topology-bearing curvilinear `StructuredShell`, or triangulated/faulted `MeshShell`. Mesh construction defaults to a 3.4-cell bridge (`max_bridge=None` is strict). `fallback="error"` is fatal; deprecated `fallback="tri"` aliases `"mesh"`. Values require an explicit `to_*surface` conversion. |
 | `PointSet.to_structured_surface(...)` | Promote topology-bearing points (`column`/`row`) to `StructuredMeshSurface` while preserving explicit shifted XY nodes. |
 | `PointSet.detect_topology(nominal_cell=None)` | Recover `column`/`row` from bare XYZ without moving a point. Returns `(points \| None, TopologyReport)`; `.verified` gates the labels, `.blocks > 1` means fault-cut. |
 | `PointSet.to_tri_surface(max_link=None, max_bridge=None)` | The strict primitive when topology cannot be verified: a `TriSurface` over the original points, honouring faults rather than bridging them by default. `max_link` is in cells, in `(√2, 2)`; an explicit `max_bridge` opts into closing short fringes/seams. |
 | `TriSurface.points()` / `.xyz()` / `.triangles()` | Original vertices (`xyz()` is the generic `view2d` protocol) and unstructured triangle indices. |
 | `StructuredMeshSurface.to_points()` | Exact inverse of `to_structured_surface(...)` — copies node XY/Z, never resamples. |
+| `StructuredShell.kind` / `MeshShell.kind` | Stable geometry-only labels: `"structured_shell"` / `"mesh_shell"`; both propagate `"<dataset> geometry"` through `.name`. |
 | `PointSet.x` / `.y` / `.z` / `.<attr>` | Column objects for same-point-set calculations; assign with `points.new_attr = ...`. |
 | `GridGeometry.edge` | Edge polygon carried by inferred geometry, or a rectangular footprint for plain geometries. |
 | `PolygonSet.rings` | The constituent rings. |

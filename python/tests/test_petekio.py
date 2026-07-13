@@ -4,6 +4,7 @@ installed wheel.
 """
 
 import math
+import warnings
 from pathlib import Path
 
 import pytest
@@ -565,6 +566,9 @@ def test_detect_topology_labels_a_curvilinear_grid_and_round_trips():
     assert abs(report.detected_cell_j - 50.0) < 1.5
 
     # the labels are what let the mesh be built, and nothing moved
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
+        shell = pts.infer_geometry(tolerance=1e-3)
+    assert shell.kind == "structured_shell"
     back = pts.to_structured_surface().to_points()
     assert sorted(zip(x, y, z)) == sorted(back.xyz())
 
@@ -692,25 +696,26 @@ def test_infer_geometry_default_bridge_closes_fringe_and_explicit_none_is_strict
     z.append(-1800.0)
     p = petekio.PointSet.from_xyz(x, y, z)
 
-    with pytest.warns(UserWarning, match="TriSurface fallback"):
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
         default = p.infer_geometry(tolerance=1e-3)
-    with pytest.warns(UserWarning, match="TriSurface fallback"):
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
         strict = p.infer_geometry(tolerance=1e-3, max_bridge=None)
 
-    assert default.n_points == 64
+    assert default.kind == "mesh_shell"
+    assert default.n_nodes == 64
     assert default.components == 1
-    assert strict.n_points == 63
+    assert strict.n_nodes == 63
     assert p.to_tri_surface().n_points == 63
 
 
 def test_infer_geometry_max_bridge_closes_the_fault_seam():
     x, y, z = _faulted_blocks()
     p = petekio.PointSet.from_xyz(x, y, z)
-    with pytest.warns(UserWarning, match="TriSurface fallback"):
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
         strict = p.infer_geometry(tolerance=1e-3, max_bridge=None)
-    assert strict.kind == "tri_surface"
+    assert strict.kind == "mesh_shell"
     assert strict.components == 2
-    with pytest.warns(UserWarning, match="TriSurface fallback"):
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
         bridged = p.infer_geometry(tolerance=1e-3, max_bridge=4.0)
     assert bridged.components == 1
     with pytest.raises(ValueError, match="max_bridge"):
@@ -721,10 +726,10 @@ def test_infer_geometry_fallback_is_loud_and_controllable():
     x, y, z = _faulted_blocks()
     p = petekio.PointSet.from_xyz(x, y, z)
 
-    # Default: the TriSurface fallback fires a UserWarning naming the fit failure.
+    # Default: the MeshShell fallback fires a UserWarning naming the fit failure.
     with pytest.warns(UserWarning, match="no regular lattice fits these points"):
-        tri = p.infer_geometry(tolerance=1e-3)
-    assert tri.kind == "tri_surface"
+        mesh = p.infer_geometry(tolerance=1e-3)
+    assert mesh.kind == "mesh_shell"
 
     # fallback="error" raises instead of falling back.
     with pytest.raises(ValueError, match='fallback="error"'):
@@ -734,10 +739,19 @@ def test_infer_geometry_fallback_is_loud_and_controllable():
     with pytest.raises(ValueError, match="unknown geometry fallback"):
         p.infer_geometry(tolerance=1e-3, fallback="bogus")
 
+    # Legacy spelling remains accepted but is explicitly deprecated; the
+    # returned object follows the geometry-only contract.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        legacy = p.infer_geometry(tolerance=1e-3, fallback="tri")
+    assert legacy.kind == "mesh_shell"
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+    assert any(issubclass(w.category, UserWarning) for w in caught)
+
 
 def test_infer_geometry_reports_both_failures_when_fallback_also_fails():
     # Five scattered points: no regular lattice fits, and the cloud is too
-    # degenerate for the TriSurface fallback to triangulate — the error must
+    # degenerate for the MeshShell fallback to triangulate — the error must
     # chain BOTH causes, not swallow the fallback's.
     p = petekio.PointSet.from_xyz(
         [0.0, 7.3, 2.9, 11.7, 5.5],
@@ -746,7 +760,7 @@ def test_infer_geometry_reports_both_failures_when_fallback_also_fails():
     )
     with pytest.raises(
         ValueError,
-        match=r"no regular lattice fits these points.*TriSurface fallback also failed",
+        match=r"no regular lattice fits these points.*MeshShell fallback also failed",
     ):
         p.infer_geometry(tolerance=1e-3, max_bridge=3.5)
 
@@ -789,11 +803,12 @@ def test_pointset_to_surface_rejects_non_lattice_clouds_and_wrong_geom_types():
     with pytest.raises(ValueError, match="not lattice-regular"):
         p.to_surface()
 
-    # The infer_geometry TriSurface fallback passed by mistake names itself.
+    # A geometry-only fallback passed by mistake names itself and the explicit
+    # value-bearing conversion to use.
     with pytest.warns(UserWarning):
-        tri = p.infer_geometry(tolerance=1e-3)
-    with pytest.raises(TypeError, match="TriSurface"):
-        p.to_surface(tri)
+        mesh = p.infer_geometry(tolerance=1e-3)
+    with pytest.raises(TypeError, match="MeshShell.*to_tri_surface"):
+        p.to_surface(mesh)
 
     # Any other wrong type names what was received.
     with pytest.raises(TypeError, match="GridGeometry"):
@@ -817,8 +832,8 @@ def test_infer_geometry_results_carry_discoverable_kinds():
     assert regular.to_surface(geom).kind == "surface"
     fx, fy, fz = _faulted_blocks()
     with pytest.warns(UserWarning):
-        tri = petekio.PointSet.from_xyz(fx, fy, fz).infer_geometry(tolerance=1e-3)
-    assert tri.kind == "tri_surface"
+        shell = petekio.PointSet.from_xyz(fx, fy, fz).infer_geometry(tolerance=1e-3)
+    assert shell.kind == "mesh_shell"
 
 
 def test_tri_surface_wireframe_edges_hide_interior_diagonals():
@@ -888,7 +903,8 @@ def test_structured_surface_round_trips_points_exactly():
 def test_pointset_infer_geometry_falls_back_for_curvilinear_mesh_with_topology():
     # Regular column/row, but the node spacing swells across the grid: no single
     # (xinc, yinc, rotation) lattice fits it. The strict detector must refuse to
-    # invent one, and the Python convenience API must return the TIN fallback.
+    # invent one, and the Python convenience API must return the empty
+    # StructuredShell because explicit topology is available.
     x, y, z, col, row = [], [], [], [], []
     for j in range(12):
         for i in range(12):
@@ -901,16 +917,17 @@ def test_pointset_infer_geometry_falls_back_for_curvilinear_mesh_with_topology()
     p.column = col
     p.row = row
 
-    with pytest.warns(UserWarning, match="TriSurface fallback"):
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
         inferred = p.infer_geometry(tolerance=1e-3)
-    assert isinstance(inferred, petekio.TriSurface)
-    assert inferred.kind == "tri_surface"
-    assert inferred.n_points > 0
-    assert inferred.n_triangles > 0
+    assert isinstance(inferred, petekio.StructuredShell)
+    assert inferred.kind == "structured_shell"
+    assert inferred.ncol == 12 and inferred.nrow == 12
     assert inferred.edge.area() > 0.0
-    assert len(inferred.points()) == inferred.n_points
-    assert inferred.xyz() == inferred.points()
-    assert len(inferred.triangles()) == inferred.n_triangles
+    assert len(inferred.x()) == 12
+    assert len(inferred.y()) == 12
+
+    with pytest.raises(TypeError, match="StructuredShell.*to_structured_surface"):
+        p.to_surface(inferred)
 
     # The exact representation still works, and reports no regular geometry.
     mesh = p.to_structured_surface(tolerance=1e-3)

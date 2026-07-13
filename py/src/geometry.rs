@@ -109,7 +109,7 @@ impl GridGeometry {
     }
 
     /// Stable kind label for type dispatch without imports: `"grid_geometry"`
-    /// (vs the `infer_geometry` fallback's `"tri_surface"`).
+    /// (vs `infer_geometry`'s `"structured_shell"` / `"mesh_shell"`).
     #[getter]
     fn kind(&self) -> &'static str {
         "grid_geometry"

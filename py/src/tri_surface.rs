@@ -133,9 +133,8 @@ impl TriSurface {
     /// the geometry in memory).
     #[getter]
     fn shell(&self) -> MeshShell {
-        MeshShell {
-            inner: Arc::clone(self.inner.shell()),
-        }
+        MeshShell::wrap(Arc::clone(self.inner.shell()))
+            .named(self.name.as_ref().map(|name| format!("{name} geometry")))
     }
 
     /// The primary per-node values (z). `NaN` = undefined.

@@ -174,8 +174,9 @@ impl StructuredMeshSurface {
     /// the geometry in memory).
     #[getter]
     fn shell(&self, py: Python<'_>) -> PyResult<StructuredShell> {
-        self.with(py, |surface| StructuredShell {
-            inner: Arc::clone(surface.shell()),
+        self.with(py, |surface| {
+            StructuredShell::wrap(Arc::clone(surface.shell()))
+                .named(self.name.as_ref().map(|name| format!("{name} geometry")))
         })
     }
 

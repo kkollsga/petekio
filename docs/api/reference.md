@@ -78,7 +78,7 @@ and percentiles (`.p10`, `.p50`, `.p90`).
 | `.extrapolate(method="nearest")` | Fill original NaNs only using `nearest`, `idw`, or `min_curvature`; finite nodes are controls. |
 | `.attr[name]` / `.set_attr(name, surface)` | Read or add/replace a named attribute lane. The assigned `Surface` must have identical complete grid geometry. |
 | `.attribute_name = surface` | Typed assignment sugar for `.set_attr("attribute_name", surface)`; mutation is copy-on-write for project views. |
-| `Surface.thickness(top, base, clamp_zero=False)` | Compute `base − top`; remains a class operation even when a `thickness` lane exists. |
+| `top.thickness(base, clamp_zero=False)` / `Surface.thickness(top, base, ...)` | Compute `base − top`; instance and unbound forms are equivalent even when a `thickness` lane exists. |
 | operators | `+ - * /` with a scalar or a matching-geometry surface (elementwise). |
 
 ## StructuredMeshSurface

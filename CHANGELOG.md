@@ -21,10 +21,15 @@ All notable changes to petekIO are recorded here. The format loosely follows
   copy-on-write attribute lane, readable through `surface.attr["thickness"]`.
   The right-hand side must be a `Surface` with identical complete grid geometry;
   same-shaped grids with different origins, increments, rotations, or y-flip
-  are rejected. Class operations such as `Surface.thickness(...)` remain
-  callable.
+  are rejected. Instance/unbound operations such as `surface.thickness(...)`
+  and `Surface.thickness(...)` remain callable.
 
 ### Fixed
+- **Python `Surface.thickness` instance ergonomics.** Both
+  `top.thickness(base, clamp_zero=True)` and the equivalent unbound
+  `Surface.thickness(top, base, clamp_zero=True)` now work. Assigning a
+  `thickness` attribute lane remains supported and does not shadow either call
+  form; geometry validation, clamp defaults, and operation history are unchanged.
 - **`infer_geometry()` now closes ordinary TriSurface fallback fringes and seams.**
   The Python fallback defaults `max_bridge` to 3.4 cells, avoiding fragmented,
   ragged boundaries when a point export does not quite close on its recovered

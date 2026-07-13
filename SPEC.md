@@ -162,7 +162,8 @@ Python ergonomics:
 ```python
 top  = geo.load_surface("top.irap")
 base = geo.load_surface("base.irap")
-thick = petekio.Surface.thickness(top, base, clamp_zero=True)   # or (base - top).clamp_min(0)
+thick = top.thickness(base, clamp_zero=True)                    # normal instance form
+petekio.Surface.thickness(top, base, clamp_zero=True)           # equivalent unbound form
 top.thickness = thick                    # assignment sugar for top.set_attr("thickness", thick)
 top.attr["thickness"]                    # promoted attribute Surface; exact geometry required
 trend = top.attr("seismic").ln()
@@ -178,7 +179,8 @@ Python `Surface` attribute assignment is typed: the right-hand side must be a
 `Surface` with identical complete `GridGeometry` (origin, increments, node
 counts, rotation, and `yflip`). Assignment adds or replaces a copy-on-write
 attribute lane; read it through `surface.attr[name]`, so a lane named
-`thickness` does not shadow the class-level `Surface.thickness(...)` operation.
+`thickness` does not shadow either the normal `surface.thickness(base)` instance
+form or the equivalent unbound `Surface.thickness(surface, base)` form.
 
 ### Geometry shells — the three-level system (level 2/3 surfaces)
 

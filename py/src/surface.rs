@@ -241,15 +241,11 @@ impl Surface {
     }
 
     /// `base - top`, optionally clamped at zero (negative thickness → 0).
-    #[staticmethod]
-    #[pyo3(signature = (top, base, clamp_zero = false))]
-    fn thickness(
-        py: Python<'_>,
-        top: &Surface,
-        base: &Surface,
-        clamp_zero: bool,
-    ) -> PyResult<Surface> {
-        top.with2(py, base, |t, b| RsSurface::thickness(t, b, clamp_zero))?
+    /// Works as `top.thickness(base)` and, through Python's normal unbound
+    /// method protocol, as `Surface.thickness(top, base)`.
+    #[pyo3(signature = (base, clamp_zero = false))]
+    fn thickness(&self, py: Python<'_>, base: &Surface, clamp_zero: bool) -> PyResult<Surface> {
+        self.with2(py, base, |t, b| RsSurface::thickness(t, b, clamp_zero))?
             .map(Surface::wrap)
             .map_err(to_pyerr)
     }
@@ -356,8 +352,8 @@ impl Surface {
     }
 
     /// `surface.thickness = values` assigns a typed surface attribute lane.
-    /// Read it through `surface.attr["thickness"]`; class methods with the same
-    /// name (notably `Surface.thickness`) remain callable on the class.
+    /// Read it through `surface.attr["thickness"]`; methods with the same name
+    /// remain callable on the instance and unbound through the class.
     fn __setattr__(
         &mut self,
         py: Python<'_>,

@@ -124,12 +124,22 @@ def test_surface_surface_operators_and_mismatch():
     assert minus.stats().mean == 30.0
     assert any("rhs.surface.constant(value=100" in h for h in minus.history())
     assert any("surface.minus(surface)" in h for h in minus.history())
-    # thickness staticmethod (base - top)
-    assert petekio.Surface.thickness(top, base).stats().mean == 30.0
+    # thickness computes base - top in both unbound and instance forms.
+    unbound = petekio.Surface.thickness(top, base)
+    assert unbound.stats().mean == 30.0
+    assert any("surface.thickness(clamp_zero=false)" in h for h in unbound.history())
+    # Normal instance method and unbound class form are equivalent.
+    assert top.thickness(base).stats().mean == 30.0
+    assert top.thickness(base, clamp_zero=True).stats().mean == 30.0
+    assert petekio.Surface.thickness(top, base, clamp_zero=True).stats().mean == 30.0
+    assert base.thickness(top).stats().mean == -30.0
+    assert base.thickness(top, clamp_zero=True).stats().mean == 0.0
     # geometry mismatch raises
     other = petekio.Surface.constant(petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 4, 4), 1.0)
     with pytest.raises(ValueError):
         _ = top + other
+    with pytest.raises(ValueError):
+        top.thickness(other)
 
 
 def test_surface_elementwise_math():
@@ -272,9 +282,9 @@ def test_surface_attribute_assignment_is_typed_geometry_safe_and_replaceable():
     assert s.attr_names() == ["thickness"]
     assert s.attr["thickness"].stats().mean == 9.0
 
-    # The class-level operation is not shadowed by the instance attribute lane.
+    # The instance/unbound operation is not shadowed by the attribute lane.
     assert petekio.Surface.thickness(s, s).stats().mean == 0.0
-    assert s.thickness(s, s).stats().mean == 0.0
+    assert s.thickness(s).stats().mean == 0.0
 
     with pytest.raises(TypeError):
         s.invalid = [1.0, 2.0, 3.0, 4.0]

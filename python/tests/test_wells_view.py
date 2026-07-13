@@ -243,3 +243,39 @@ def test_live_viewer_roundtrip(tmp_path):
         assert url.startswith("http://127.0.0.1:")
     finally:
         httpd.server_close()
+
+
+def test_template_is_additive_validated_and_bound_project_callable(tmp_path):
+    from petektools import viewer
+
+    if not hasattr(viewer, "CorrelationTemplate"):
+        pytest.skip("installed optional petektools predates correlation templates")
+
+    geo = _geo(tmp_path)
+    plain = geo.well("99/3-1").view(serve=False).bundle()
+    assert "template" not in plain
+
+    template = viewer.CorrelationTemplate("reservoir").add_track(
+        viewer.CorrelationTrack("phi", minimum=0, maximum=0.35).curve("PHIE")
+    )
+    direct = geo.well("99/3-1").view(template=template, serve=False).bundle()
+    assert direct["template"] == template.to_dict()
+
+    missing = viewer.CorrelationTemplate("missing").add_track(
+        viewer.CorrelationTrack("absent").curve("DOES_NOT_EXIST")
+    )
+    with pytest.raises(ValueError, match="absent from every well"):
+        geo.wells.view(template=missing.to_dict(), serve=False)
+
+    path = tmp_path / "bound.pproj"
+    geo.save(str(path))
+    project = petekio.Project.load(path)
+    bound = project.templates.add(template)
+    via_collection = project.wells.view(template=bound, serve=False).bundle()
+    via_callable = project.templates.reservoir(wells=["99/3-1"], serve=False).bundle()
+    assert via_collection["template"] == template.to_dict()
+    assert via_callable["template"] == template.to_dict()
+
+    html = tmp_path / "templated.html"
+    project.templates.reservoir(wells="99/3-1", save=str(html))
+    assert html.exists() and "CorrelationTemplate" in html.read_text()

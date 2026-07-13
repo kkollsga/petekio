@@ -13,5 +13,5 @@ mod wells_view; // WellsView — broadcastable, filterable borrow over wells
 
 pub use geodata::{GeoData, WellTopRow};
 pub(crate) use project::ModelSection;
-pub use project::ProjectInfo;
+pub use project::{ProjectAsset, ProjectInfo};
 pub use wells_view::{IntersectionDiagnostic, WellIntersectionSet, WellsView};

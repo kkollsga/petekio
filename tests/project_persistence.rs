@@ -130,3 +130,97 @@ fn model_sections_export_split_merge_byte_lossless() {
     assert!(m.well("99/9-X").is_some());
     assert_eq!(m.model_section("model/field-a/props"), Some((3, model)));
 }
+
+#[test]
+fn generic_assets_are_separate_versioned_and_byte_lossless() {
+    let mut geo = GeoData::new(Unit::Metres);
+    let envelope = br#"{"asset_type":"mystery","codec":"application/octet-stream","future":{"x":1},"provider":"example.Future","schema_version":7}"#.to_vec();
+    let bytes = vec![0, 255, 9, 0, 42];
+    geo.add_asset(
+        "@asset/future/nested/value",
+        "mystery",
+        envelope.clone(),
+        vec!["share".into()],
+        1,
+        bytes.clone(),
+    )
+    .unwrap();
+    assert!(geo
+        .add_asset(
+            "@asset/future/nested/value",
+            "mystery",
+            envelope.clone(),
+            vec![],
+            1,
+            vec![],
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("already exists"));
+
+    let dir = common::tmpdir("assets");
+    let first = dir.join("first.pproj");
+    geo.save(&first).unwrap();
+    let info = GeoData::inspect(&first).unwrap();
+    assert!(info.elements.contains(&(
+        "asset".to_string(),
+        "@asset/future/nested/value".to_string()
+    )));
+
+    let mut reopened = GeoData::open(&first).unwrap();
+    let asset = reopened.asset("@asset/future/nested/value").unwrap();
+    assert_eq!(asset.kind, "mystery");
+    assert_eq!(asset.version, 1);
+    assert_eq!(asset.tags, ["share"]);
+    assert_eq!(asset.envelope, envelope);
+    assert_eq!(asset.bytes, bytes);
+
+    reopened
+        .rename_asset("@asset/future/nested/value", "@asset/future/nested/renamed")
+        .unwrap();
+    let second = dir.join("second.pproj");
+    reopened.save(&second).unwrap();
+    let twice = GeoData::open(&second).unwrap();
+    let asset = twice.asset("@asset/future/nested/renamed").unwrap();
+    assert_eq!(asset.envelope, envelope);
+    assert_eq!(asset.bytes, bytes);
+
+    let split = dir.join("split.pproj");
+    GeoData::split(&second, &split, &["future/nested/renamed"]).unwrap();
+    assert!(GeoData::open(&split)
+        .unwrap()
+        .asset("@asset/future/nested/renamed")
+        .is_some());
+}
+
+#[test]
+fn generic_asset_names_and_envelopes_are_strict() {
+    let mut geo = GeoData::new(Unit::Metres);
+    let envelope = br#"{"asset_type":"template","codec":"application/json","provider":"petektools.viewer.CorrelationTemplate","schema_version":1}"#.to_vec();
+    for bad in ["templates/x", "@asset/templates/../x", "@asset//x"] {
+        assert!(geo
+            .add_asset(bad, "template", envelope.clone(), vec![], 1, vec![])
+            .is_err());
+    }
+    let noncanonical = br#"{"provider": "x", "asset_type":"template","codec":"application/json","schema_version":1}"#.to_vec();
+    assert!(geo
+        .add_asset(
+            "@asset/templates/x",
+            "template",
+            noncanonical,
+            vec![],
+            1,
+            vec![],
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("canonical"));
+
+    geo.put_model_section("@asset/templates/collision", vec![], 1, vec![]);
+    let path = common::tmpdir("asset_collision").join("bad.pproj");
+    assert!(geo
+        .save(path)
+        .unwrap_err()
+        .to_string()
+        .contains("reserved prefix"));
+}

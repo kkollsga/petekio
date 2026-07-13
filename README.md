@@ -79,6 +79,11 @@ project.surfaces.structure.top_dome
 project.save("field.pproj")
 project = petekio.Project.load("field.pproj")
 
+# Persist a petekTools correlation layout as a project-owned snapshot.
+project.templates.add(template)
+project.wells.view(template=project.templates.reservoir, serve=False)
+project.templates.reservoir(wells=["A-1", "A-2"], save="correlation.html")
+
 # Or build the same substrate manually:
 geo = petekio.GeoData(unit="m")
 

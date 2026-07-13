@@ -514,7 +514,7 @@ impl Well {
     /// serves non-blocking, `save="out.html"` exports instead. Passing a `spec`
     /// with any legacy WHAT kwarg (or `settings` with a HOW kwarg) is a loud
     /// error. Returns the `LogSession` (`.serve()` / `.save(path)` / `.bundle()`).
-    #[pyo3(name = "view", signature = (spec=None, settings=None, curves=None, tops=None, flatten_default=None, phie_cutoff=None, flags=None, serve=None, save=None))]
+    #[pyo3(name = "view", signature = (spec=None, settings=None, curves=None, tops=None, flatten_default=None, phie_cutoff=None, flags=None, serve=None, save=None, *, template=None))]
     #[allow(clippy::too_many_arguments)]
     fn view_session(
         &self,
@@ -528,6 +528,7 @@ impl Well {
         flags: Option<Vec<String>>,
         serve: Option<bool>,
         save: Option<String>,
+        template: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let what_set = curves.is_some()
             || tops.is_some()
@@ -546,6 +547,7 @@ impl Well {
             data,
             spec,
             settings,
+            template,
             tops,
             flatten_default,
             phie_cutoff,

@@ -546,7 +546,7 @@ impl GeoData {
 
     // Persistence — a single structured .pproj file (see the persistence design).
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()>;          // atomic whole-project write
-    pub fn open(path: impl AsRef<Path>) -> Result<GeoData>;            // materialize; model/*+unknown kinds skipped
+    pub fn open(path: impl AsRef<Path>) -> Result<GeoData>;            // materialize; opaque model + generic assets retained
     pub fn inspect(path: impl AsRef<Path>) -> Result<ProjectInfo>;     // manifest only (list without loading)
     pub fn split(src: impl AsRef<Path>, dst: impl AsRef<Path>, names: &[&str]) -> Result<()>; // byte-lossless
     pub fn export(src: impl AsRef<Path>, dst: impl AsRef<Path>, tags: &[&str]) -> Result<()>; // tag-filtered subset
@@ -560,6 +560,14 @@ impl GeoData {
     pub fn put_model_section(&mut self, name: impl Into<String>, tags: Vec<String>, version: u32, bytes: Vec<u8>);
     pub fn model_section_names(&self) -> Vec<String>;
     pub fn model_section(&self, name: &str) -> Option<(u32, Vec<u8>)>;
+    // Generic provider-owned assets. Physical names are reserved @asset/<collection>/<logical>.
+    // Add never overwrites; replace requires an existing name; envelope + bytes remain opaque.
+    pub fn add_asset(&mut self, name: impl Into<String>, kind: impl Into<String>, envelope: Vec<u8>, tags: Vec<String>, version: u32, bytes: Vec<u8>) -> Result<()>;
+    pub fn replace_asset(&mut self, name: &str, kind: impl Into<String>, envelope: Vec<u8>, tags: Vec<String>, version: u32, bytes: Vec<u8>) -> Result<()>;
+    pub fn rename_asset(&mut self, old: &str, new: &str) -> Result<()>;
+    pub fn delete_asset(&mut self, name: &str) -> bool;
+    pub fn asset_names(&self) -> Vec<String>;
+    pub fn asset(&self, name: &str) -> Option<ProjectAsset>;
 }
 // Per element: Surface/Well/PointSet/PolygonSet/StructuredMeshSurface/TriSurface each
 // expose `save(path)`/`load(path)` (a standalone one-section .pproj). Level-2/3 surface
@@ -884,6 +892,16 @@ w.view(spec=petekio.ViewSpec(...), settings=petekio.ViewSettings(save="well.html
 w.view(save="well.html")                 # export one self-contained HTML file instead (legacy)
 sess = w.view(settings=petekio.ViewSettings(serve=False)); sess.bundle()   # build only; inspect the payload dict
 geo.wells.view(settings=petekio.ViewSettings(serve=False))   # multi-well logs-only session (same surface)
+
+# Persistent, named correlation layouts (petekTools owns their semantics):
+project.templates.add(template)             # intrinsic template.name; fails if present
+project.templates.replace(updated_template) # fails if absent; no implicit upsert
+bound = project.templates.qc.reservoir       # immutable BoundTemplate snapshot
+bound.to_dict(); bound.materialize()          # materialize imports petektools lazily
+project.wells.view(template=bound, serve=False)
+bound(wells=["A-1", "A-2"], save="correlation.html")
+project.templates.rename("qc/reservoir", "production/reservoir")
+project.templates.delete("production/reservoir")
 # legacy kwargs (spec/settings absent): curves=None, tops=None|True|[names], flatten_default=None,
 #   phie_cutoff=0.08, flags=None, serve=True, save=None.  Standalone bundles carry NO ties.
 petekio.build_well_log_bundle(raws, spec=petekio.ViewSpec(tops=True))   # pure-Python producer (spec= or legacy kwargs; testable)

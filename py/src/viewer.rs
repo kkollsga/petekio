@@ -160,6 +160,7 @@ pub(crate) fn render(
     data: Bound<'_, PyAny>,
     spec: Option<Py<PyAny>>,
     settings: Option<Py<PyAny>>,
+    template: Option<Py<PyAny>>,
     tops: Option<Py<PyAny>>,
     flatten_default: Option<String>,
     phie_cutoff: Option<f64>,
@@ -178,6 +179,9 @@ pub(crate) fn render(
     }
     if let Some(s) = settings {
         kwargs.set_item("settings", s)?;
+    }
+    if let Some(t) = template {
+        kwargs.set_item("template", t)?;
     }
     if let Some(t) = tops {
         kwargs.set_item("tops", t)?;

@@ -15,6 +15,14 @@ All notable changes to petekIO are recorded here. The format loosely follows
   clouds still fail loudly, and bridge/component/label behaviour is unchanged.
 
 ### Added
+- **Persistent project correlation templates.** `.pproj` now retains generic,
+  typed/versioned provider assets in collision-safe `@asset/...` sections with
+  exact envelope/payload preservation, including unknown asset fields and
+  types. Python adds the folder-aware `project.templates` library with explicit
+  add/replace/rename/delete, immutable callable `BoundTemplate` snapshots, and
+  lazy optional petekTools materialization. `Well.view()` and `WellsView.view()`
+  accept `template=`; the template is an additive plain dictionary in the
+  `WellLogBundle`, while calls without a template remain wire-identical.
 - **Accurate well/surface intersections and persistent computed horizons.**
   `Trajectory`, `Sidetrack`, resolved `Well`, and `WellsView` now intersect
   regular, structured, and triangulated surfaces using adaptive sampling of the

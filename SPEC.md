@@ -389,6 +389,16 @@ inventory). Assigning a complete `project.wells` intersection report validates
 every hit and diagnostic before mutation, then atomically creates/replaces the
 whole horizon and removes stale same-name picks. Outside/no-hit skips are
 allowed; failures block assignment.
+
+Provider-owned project values are separate generic `.pproj` `asset` sections,
+never model/domain elements. Their collision-safe physical names live below
+`@asset/<collection>/`; a versioned binary frame retains the exact canonical
+JSON envelope and exact provider bytes. The envelope declares asset type,
+provider, codec, and schema version. petekIO validates framing and paths but
+does not interpret provider semantics, and unknown asset types/fields survive
+open/save byte-for-byte. Correlation templates use `@asset/templates/<name>`;
+Python exposes them as immutable, folder-aware `project.templates` snapshots
+whose petekTools materialization remains lazy and optional.
 ```python
 geo = petekio.GeoData(unit="ft")
 geo.load_surface("top.irap"); geo.load_well("wells/A1/", wellhead=(x,y), kb=82)

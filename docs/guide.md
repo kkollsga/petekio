@@ -266,6 +266,20 @@ w.view(spec=petekio.ViewSpec(curves=("PHIE", "SW"), tops=True),
        settings=petekio.ViewSettings(save="well.html", serve=False))  # declarative
 ```
 
+Named layouts can be snapshotted with the project. `template=` is presentation
+state, separate from `ViewSpec`; without it the historical bundle is unchanged.
+petekTools is imported only when a template is materialized or rendered.
+
+```python
+project.templates.add(template)                 # uses template.name; no upsert
+bound = project.templates.qc.reservoir          # immutable BoundTemplate
+project.wells.view(template=bound, serve=False)
+bound(wells=["A-1", "A-2"], save="correlation.html")
+project.templates.replace(revised_template)     # requires an existing name
+project.templates.rename("qc/reservoir", "production/reservoir")
+project.templates.delete("production/reservoir")
+```
+
 ## Projects & persistence
 
 A whole project serialises to a single structured `.pproj` file — atomic to write,
@@ -290,6 +304,10 @@ petekio.GeoData.inspect("field.pproj")           # manifest dict: unit, owner, e
 geo2 = petekio.GeoData.open("field.pproj")        # materialize
 petekio.GeoData.export("field.pproj", "share.pproj", ["field-a"])  # tagged subset
 ```
+
+Generic project assets are stored separately from model/data sections below the
+reserved physical namespace `@asset/`. Their typed/versioned envelope and bytes
+round-trip without provider imports; unknown asset types and fields are retained.
 
 ## Spec value-objects
 

@@ -24,6 +24,10 @@ SKIP_UNSUPPORTED_FORMAT = "unsupported_format"
 SKIP_AMBIGUOUS_GEOJSON = "ambiguous_geojson"
 SKIP_IMPORT_ERROR = "import_error"
 
+_TEMPLATE_ASSET_PREFIX = "@asset/templates/"
+_ASSET_FRAME_VERSION = 1
+_TEMPLATE_CODEC = "application/json"
+
 
 @dataclass(frozen=True)
 class _FileRecord:
@@ -437,6 +441,35 @@ class _ProjectWellsView:
         except KeyError:
             return default
 
+    def view(
+        self,
+        *args: Any,
+        template: Any = None,
+        wells: Iterable[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Render this project's wells, optionally narrowed by well id.
+
+        ``template`` is presentation state and remains independent of
+        ``ViewSpec`` (WHAT) and ``ViewSettings`` (HOW).
+        """
+
+        target = self._view
+        if wells is not None:
+            requested = [wells] if isinstance(wells, str) else list(wells)
+            selected: set[str] = set()
+            for name in requested:
+                if not isinstance(name, str):
+                    raise TypeError("view wells must be well-id strings")
+                resolved = _resolve_collection_name(name, self._names)
+                if resolved is None:
+                    raise KeyError(name)
+                selected.add(resolved)
+            target = target.filter(lambda well: well.id in selected)
+        if template is not None:
+            kwargs["template"] = template
+        return target.view(*args, **kwargs)
+
     def assign_log(
         self,
         name: str,
@@ -545,6 +578,159 @@ class _ProjectWellsView:
         return repr(self._names)
 
     __str__ = __repr__
+
+
+@dataclass(frozen=True, slots=True)
+class BoundTemplate:
+    """Immutable project-owned snapshot of one persisted view template."""
+
+    _project: "Project" = field(repr=False, compare=False)
+    name: str
+    kind: str
+    schema_version: int
+    _provider: str = field(repr=False)
+    _bytes: bytes = field(repr=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a detached plain-data copy of the stored snapshot."""
+
+        value = json.loads(self._bytes.decode("utf-8"))
+        if not isinstance(value, dict):  # guarded on insertion/open; defensive
+            raise ValueError(f"template '{self.name}' payload is not a JSON object")
+        return value
+
+    def materialize(self) -> Any:
+        """Decode through the optional provider that owns template semantics."""
+
+        if not self._provider.startswith("petektools.viewer."):
+            raise ValueError(
+                f"template '{self.name}' declares unsupported provider {self._provider!r}"
+            )
+        try:
+            from petektools import viewer
+        except (ImportError, AttributeError) as exc:
+            raise ImportError(_template_provider_guidance(self.kind)) from exc
+        template_type = getattr(viewer, self._provider.rsplit(".", 1)[-1], None)
+        if template_type is None or not callable(getattr(template_type, "from_dict", None)):
+            raise ImportError(_template_provider_guidance(self.kind))
+        return template_type.from_dict(self.to_dict())
+
+    def __call__(
+        self,
+        *,
+        wells: Iterable[str] | str | None = None,
+        spec: Any = None,
+        settings: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Render all project wells, or the explicitly selected well ids."""
+
+        if spec is not None:
+            kwargs["spec"] = spec
+        if settings is not None:
+            kwargs["settings"] = settings
+        return self._project.wells.view(template=self, wells=wells, **kwargs)
+
+
+class _TemplatesCollection(_NamedCollection):
+    """Folder-aware mutable library of immutable project template snapshots."""
+
+    def __init__(self, project: "Project", *, prefix: str = "") -> None:
+        self._project = project
+        super().__init__(self._logical_names(), project._bound_template, prefix=prefix)
+
+    def _logical_names(self) -> list[str]:
+        return [
+            name[len(_TEMPLATE_ASSET_PREFIX) :]
+            for name in self._project.geodata.asset_names()
+            if name.startswith(_TEMPLATE_ASSET_PREFIX)
+        ]
+
+    def _refresh(self) -> None:
+        self._names = self._logical_names()
+
+    def _descend(self, prefix: str) -> "_TemplatesCollection":
+        return _TemplatesCollection(self._project, prefix=prefix)
+
+    def add(self, template: Any, *, tags: Iterable[str] = ()) -> BoundTemplate:
+        """Add a named snapshot; fail if its intrinsic name already exists."""
+
+        name, _, _, _, envelope, payload = _template_snapshot(template)
+        physical = _template_physical_name(name)
+        self._project.geodata.add_asset(
+            physical,
+            "template",
+            envelope,
+            [str(tag) for tag in tags],
+            _ASSET_FRAME_VERSION,
+            payload,
+        )
+        self._refresh()
+        return self._project._bound_template(name)
+
+    def replace(
+        self,
+        template: Any,
+        *,
+        tags: Iterable[str] | None = None,
+    ) -> BoundTemplate:
+        """Replace a named snapshot; fail if its intrinsic name is absent."""
+
+        name, _, _, _, envelope, payload = _template_snapshot(template)
+        physical = _template_physical_name(name)
+        existing = self._project.geodata.asset(physical)
+        if existing is None:
+            raise KeyError(name)
+        kept_tags = existing["tags"] if tags is None else [str(tag) for tag in tags]
+        self._project.geodata.replace_asset(
+            physical,
+            "template",
+            envelope,
+            kept_tags,
+            _ASSET_FRAME_VERSION,
+            payload,
+        )
+        self._refresh()
+        return self._project._bound_template(name)
+
+    def rename(self, old: str, new: str) -> BoundTemplate:
+        """Rename the physical asset and its intrinsic template name."""
+
+        self._refresh()
+        resolved = _resolve_collection_name(old, self._names, prefix=self._prefix)
+        if resolved is None:
+            raise KeyError(old)
+        new_name = _validate_template_name(new)
+        new_physical = _template_physical_name(new_name)
+        if self._project.geodata.asset(new_physical) is not None:
+            raise ValueError(f"template '{new_name}' already exists")
+        bound = self._project._bound_template(resolved)
+        data = bound.to_dict()
+        data["name"] = new_name
+        _, _, _, _, envelope, payload = _template_snapshot(data)
+        old_physical = _template_physical_name(resolved)
+        existing = self._project.geodata.asset(old_physical)
+        assert existing is not None
+        self._project.geodata.rename_asset(old_physical, new_physical)
+        self._project.geodata.replace_asset(
+            new_physical,
+            "template",
+            envelope,
+            existing["tags"],
+            _ASSET_FRAME_VERSION,
+            payload,
+        )
+        self._refresh()
+        return self._project._bound_template(new_name)
+
+    def delete(self, name: str) -> None:
+        self._refresh()
+        resolved = _resolve_collection_name(name, self._names, prefix=self._prefix)
+        if resolved is None:
+            raise KeyError(name)
+        if not self._project.geodata.delete_asset(_template_physical_name(resolved)):
+            raise KeyError(resolved)
+        self._refresh()
 
 
 class Project:
@@ -716,6 +902,12 @@ class Project:
         return _WellTopsMapping(self)
 
     @property
+    def templates(self) -> _TemplatesCollection:
+        """Folder-aware persistent correlation-template library."""
+
+        return _TemplatesCollection(self)
+
+    @property
     def logs(self) -> Any:
         """Compatibility alias for ``project.wells.logs``."""
 
@@ -732,6 +924,52 @@ class Project:
 
     def well(self, well_id: str) -> Any:
         return self._geo.well(well_id)
+
+    def _bound_template(self, logical_name: str) -> BoundTemplate:
+        name = _validate_template_name(logical_name)
+        physical = _template_physical_name(name)
+        asset = self._geo.asset(physical)
+        if asset is None:
+            raise KeyError(name)
+        if asset["version"] != _ASSET_FRAME_VERSION:
+            raise ValueError(
+                f"template '{name}' uses unsupported asset frame v{asset['version']}"
+            )
+        try:
+            envelope = json.loads(bytes(asset["envelope"]).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"template '{name}' has an invalid asset envelope") from exc
+        if not isinstance(envelope, dict) or envelope.get("asset_type") != "template":
+            raise ValueError(f"asset '{physical}' is not a template")
+        if envelope.get("codec") != _TEMPLATE_CODEC:
+            raise ValueError(
+                f"template '{name}' uses unsupported codec {envelope.get('codec')!r}"
+            )
+        provider = envelope.get("provider")
+        if not isinstance(provider, str) or not provider:
+            raise ValueError(f"template '{name}' has no provider")
+        payload = bytes(asset["bytes"])
+        data = _decode_template_payload(payload, name=name)
+        intrinsic = _validate_template_name(data.get("name"))
+        if intrinsic != name:
+            raise ValueError(
+                f"template asset '{name}' contains intrinsic name '{intrinsic}'"
+            )
+        kind = data.get("spec")
+        schema_version = data.get("schema_version")
+        _validate_template_header(kind, schema_version)
+        if envelope.get("schema_version") != schema_version:
+            raise ValueError(
+                f"template '{name}' envelope/payload schema versions disagree"
+            )
+        return BoundTemplate(
+            self,
+            name,
+            kind,
+            schema_version,
+            provider,
+            payload,
+        )
 
     def rename(self, kind: str, old: str, new: str) -> None:
         """Rename a project object of `kind` to `new`.
@@ -844,8 +1082,17 @@ class Project:
         inv = dict(self._inventory)
         inv["counts"] = dict(self._inventory.get("counts", {}))
         inv["skipped"] = [dict(item) for item in self._inventory.get("skipped", [])]
-        for key in ("surfaces", "wells", "tops", "points", "polygons", "sidecars"):
+        for key in (
+            "surfaces",
+            "wells",
+            "tops",
+            "points",
+            "polygons",
+            "sidecars",
+        ):
             inv[key] = list(self._inventory.get(key, []))
+        if "templates" in self._inventory:
+            inv["templates"] = list(self._inventory["templates"])
         return inv
 
     def resolve_log_expression(self, source: Any) -> list[dict[str, Any]]:
@@ -969,6 +1216,8 @@ class Project:
                 inv["points"].append(name)
             elif kind == "polygons":
                 inv["polygons"].append(name)
+            elif kind == "asset" and name.startswith(_TEMPLATE_ASSET_PREFIX):
+                inv.setdefault("templates", []).append(name[len(_TEMPLATE_ASSET_PREFIX) :])
         inv["counts"] = {
             "surfaces": len(inv["surfaces"]),
             "wells": len(inv["wells"]),
@@ -977,6 +1226,8 @@ class Project:
             "polygons": len(inv["polygons"]),
             "skipped": 0,
         }
+        if "templates" in inv:
+            inv["counts"]["templates"] = len(inv["templates"])
         return inv
 
 
@@ -1279,6 +1530,107 @@ def _project_kind_key(kind: str) -> str:
         return aliases[token]
     except KeyError as exc:
         raise ValueError(f"unsupported project object kind {kind!r}") from exc
+
+
+def _canonical_json_bytes(value: Any, *, what: str) -> bytes:
+    try:
+        text = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{what} must contain only finite JSON data: {exc}") from exc
+    return text.encode("utf-8")
+
+
+def _validate_template_name(value: Any) -> str:
+    if not isinstance(value, str):
+        raise TypeError("template name must be a string")
+    if not value or value != value.strip() or len(value.encode("utf-8")) > 900:
+        raise ValueError("template name must be non-empty, trimmed, and at most 900 UTF-8 bytes")
+    if value.startswith("/") or value.endswith("/") or "\\" in value or "\0" in value:
+        raise ValueError(f"invalid template name {value!r}")
+    parts = value.split("/")
+    if any(not part or part in {".", ".."} for part in parts) or parts[0] == "@asset":
+        raise ValueError(
+            "template names may use folders but not empty, reserved, or traversal segments"
+        )
+    return value
+
+
+def _validate_template_header(kind: Any, schema_version: Any) -> tuple[str, int]:
+    if not isinstance(kind, str) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", kind) is None:
+        raise ValueError("template 'spec' must be a provider type name")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version <= 0
+        or schema_version > 2**32 - 1
+    ):
+        raise ValueError("template 'schema_version' must be a positive 32-bit integer")
+    return kind, schema_version
+
+
+def _template_snapshot(
+    template: Any,
+) -> tuple[str, str, int, str, bytes, bytes]:
+    if isinstance(template, Mapping):
+        raw = template
+    else:
+        to_dict = getattr(template, "to_dict", None)
+        if not callable(to_dict):
+            raise TypeError("template must be a mapping or expose to_dict()")
+        raw = to_dict()
+    if not isinstance(raw, Mapping):
+        raise TypeError("template.to_dict() must return a mapping")
+    data = dict(raw)
+    name = _validate_template_name(data.get("name"))
+    kind, schema_version = _validate_template_header(
+        data.get("spec"), data.get("schema_version")
+    )
+    payload = _canonical_json_bytes(data, what=f"template '{name}'")
+    # Decode once to prove the snapshot is a JSON object rather than relying on
+    # a Mapping implementation with surprising conversion behaviour.
+    _decode_template_payload(payload, name=name)
+    provider = f"petektools.viewer.{kind}"
+    envelope = _canonical_json_bytes(
+        {
+            "asset_type": "template",
+            "codec": _TEMPLATE_CODEC,
+            "provider": provider,
+            "schema_version": schema_version,
+        },
+        what="template asset envelope",
+    )
+    return name, kind, schema_version, provider, envelope, payload
+
+
+def _decode_template_payload(payload: bytes, *, name: str) -> dict[str, Any]:
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"template '{name}' payload is not valid UTF-8 JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"template '{name}' payload must be a JSON object")
+    canonical = _canonical_json_bytes(data, what=f"template '{name}'")
+    if canonical != payload:
+        raise ValueError(f"template '{name}' payload is not canonical JSON")
+    return data
+
+
+def _template_physical_name(logical_name: str) -> str:
+    return f"{_TEMPLATE_ASSET_PREFIX}{_validate_template_name(logical_name)}"
+
+
+def _template_provider_guidance(kind: str) -> str:
+    return (
+        f"rendering/materializing {kind} requires a compatible petektools.viewer. "
+        "Install or upgrade it with `pip install -U 'petekio[toolkit]'`. "
+        "Project template listing and .pproj persistence work without petektools."
+    )
 
 
 def _well_attr_lookup(attr: str, well_ids: Iterable[str]) -> str | None:

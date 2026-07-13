@@ -1,8 +1,123 @@
 import math
+import builtins
+import json
 from pathlib import Path
 
 import petekio
 import pytest
+
+
+def _correlation_template_dict(name: str = "reservoir", **extra):
+    return {
+        "spec": "CorrelationTemplate",
+        "schema_version": 1,
+        "name": name,
+        "tracks": [],
+        **extra,
+    }
+
+
+def test_project_template_library_snapshots_and_mutates_explicitly(tmp_path, monkeypatch):
+    project = petekio.Project(petekio.GeoData(unit="m"))
+    source = _correlation_template_dict("qc/default", note={"threshold": 0.2})
+    bound = project.templates.add(source, tags=["qc"])
+    source["note"]["threshold"] = 999
+
+    assert isinstance(bound, petekio.BoundTemplate)
+    assert (bound.name, bound.kind, bound.schema_version) == (
+        "qc/default",
+        "CorrelationTemplate",
+        1,
+    )
+    assert bound.to_dict()["note"] == {"threshold": 0.2}
+    assert project.templates == ["qc/"]
+    assert project.templates.qc.default.name == "qc/default"
+    assert project.templates["qc/default"].to_dict() == bound.to_dict()
+
+    with pytest.raises(ValueError, match="already exists"):
+        project.templates.add(_correlation_template_dict("qc/default"))
+    with pytest.raises(KeyError):
+        project.templates.replace(_correlation_template_dict("missing"))
+
+    replaced = project.templates.replace(
+        _correlation_template_dict("qc/default", note={"threshold": 0.3})
+    )
+    assert replaced.to_dict()["note"]["threshold"] == 0.3
+    renamed = project.templates.rename("qc/default", "production/reservoir")
+    assert renamed.name == renamed.to_dict()["name"] == "production/reservoir"
+    assert project.templates.production.reservoir.name == "production/reservoir"
+
+    path = tmp_path / "templates.pproj"
+    project.save(path)
+    info = petekio.GeoData.inspect(str(path))
+    assert ("asset", "@asset/templates/production/reservoir") in info["elements"]
+    reopened = petekio.Project.load(path)
+    assert reopened.templates.production.reservoir.to_dict() == renamed.to_dict()
+    assert reopened.inventory()["templates"] == ["production/reservoir"]
+
+    real_import = builtins.__import__
+
+    def without_petektools(name, *args, **kwargs):
+        if name == "petektools" or name.startswith("petektools."):
+            raise ImportError("blocked for optional-dependency test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_petektools)
+    # Persistence/listing remains provider-free; only materialization is loud.
+    assert reopened.templates.production.reservoir.name == "production/reservoir"
+    with pytest.raises(ImportError, match="Install or upgrade"):
+        reopened.templates.production.reservoir.materialize()
+
+    reopened.templates.delete("production/reservoir")
+    assert reopened.templates == []
+    with pytest.raises(KeyError):
+        reopened.templates.delete("production/reservoir")
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../escape", "folder/../escape", "/absolute", "folder//name", "folder\\name"],
+)
+def test_project_template_names_reject_traversal(name):
+    project = petekio.Project(petekio.GeoData(unit="m"))
+    with pytest.raises((TypeError, ValueError)):
+        project.templates.add(_correlation_template_dict(name))
+
+
+def test_generic_unknown_asset_round_trips_without_provider(tmp_path):
+    geo = petekio.GeoData(unit="m")
+    envelope = json.dumps(
+        {
+            "asset_type": "future-value",
+            "codec": "application/octet-stream",
+            "future": {"untouched": True},
+            "provider": "example.Future",
+            "schema_version": 42,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    payload = b"\x00\xfffuture\x00"
+    geo.add_asset(
+        "@asset/future/example",
+        "future-value",
+        envelope,
+        ["keep"],
+        1,
+        payload,
+    )
+    first = tmp_path / "first.pproj"
+    second = tmp_path / "second.pproj"
+    geo.save(str(first))
+    reopened = petekio.GeoData.open(str(first))
+    asset = reopened.asset("@asset/future/example")
+    assert asset["envelope"] == envelope
+    assert asset["bytes"] == payload
+    reopened.rename_asset("@asset/future/example", "@asset/future/renamed")
+    reopened.save(str(second))
+    twice = petekio.GeoData.open(str(second)).asset("@asset/future/renamed")
+    assert twice["envelope"] == envelope
+    assert twice["bytes"] == payload
 
 
 def _write(path: Path, text: str) -> Path:

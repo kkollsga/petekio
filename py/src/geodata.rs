@@ -505,6 +505,63 @@ impl GeoData {
             .model_section(name)
             .map(|(v, b)| (v, PyBytes::new(py, &b)))
     }
+
+    /// Add a generic provider-owned project asset. `envelope` and `data` are
+    /// retained exactly; existing physical names are never overwritten.
+    fn add_asset(
+        &mut self,
+        name: &str,
+        kind: &str,
+        envelope: &[u8],
+        tags: Vec<String>,
+        version: u32,
+        data: &[u8],
+    ) -> PyResult<()> {
+        self.inner
+            .add_asset(name, kind, envelope.to_vec(), tags, version, data.to_vec())
+            .map_err(to_pyerr)
+    }
+
+    /// Replace an existing generic project asset; missing names are an error.
+    fn replace_asset(
+        &mut self,
+        name: &str,
+        kind: &str,
+        envelope: &[u8],
+        tags: Vec<String>,
+        version: u32,
+        data: &[u8],
+    ) -> PyResult<()> {
+        self.inner
+            .replace_asset(name, kind, envelope.to_vec(), tags, version, data.to_vec())
+            .map_err(to_pyerr)
+    }
+
+    fn rename_asset(&mut self, old: &str, new: &str) -> PyResult<()> {
+        self.inner.rename_asset(old, new).map_err(to_pyerr)
+    }
+
+    fn delete_asset(&mut self, name: &str) -> bool {
+        self.inner.delete_asset(name)
+    }
+
+    fn asset_names(&self) -> Vec<String> {
+        self.inner.asset_names()
+    }
+
+    /// Snapshot one generic asset as plain fields, or `None`.
+    fn asset<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(asset) = self.inner.asset(name) else {
+            return Ok(None);
+        };
+        let out = PyDict::new(py);
+        out.set_item("kind", asset.kind)?;
+        out.set_item("envelope", PyBytes::new(py, &asset.envelope))?;
+        out.set_item("version", asset.version)?;
+        out.set_item("tags", asset.tags)?;
+        out.set_item("bytes", PyBytes::new(py, &asset.bytes))?;
+        Ok(Some(out))
+    }
 }
 
 /// A lightweight, broadcastable, filterable view over a project's wells.
@@ -686,7 +743,7 @@ impl WellsView {
     /// Arguments mirror `Well.view` (`spec=ViewSpec`/`settings=ViewSettings` or
     /// the legacy per-call kwargs; spec XOR kwargs, loud on both). Returns the
     /// `LogSession`.
-    #[pyo3(signature = (spec=None, settings=None, curves=None, tops=None, flatten_default=None, phie_cutoff=None, flags=None, serve=None, save=None))]
+    #[pyo3(signature = (spec=None, settings=None, curves=None, tops=None, flatten_default=None, phie_cutoff=None, flags=None, serve=None, save=None, *, template=None))]
     #[allow(clippy::too_many_arguments)]
     fn view(
         &self,
@@ -700,6 +757,7 @@ impl WellsView {
         flags: Option<Vec<String>>,
         serve: Option<bool>,
         save: Option<String>,
+        template: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let what_set = curves.is_some()
             || tops.is_some()
@@ -724,6 +782,7 @@ impl WellsView {
             list.into_any(),
             spec,
             settings,
+            template,
             tops,
             flatten_default,
             phie_cutoff,

@@ -52,6 +52,10 @@ pub struct GeoData {
     /// bytes + a per-section version. petekIO frames/compresses them on save and
     /// hands them back untouched — it never parses their contents.
     pub(crate) model_sections: IndexMap<String, crate::manager::ModelSection>,
+    /// Generic project assets (viewer templates today, other provider-owned
+    /// values later). They are persisted separately from domain/model sections
+    /// and retain their envelope + payload bytes exactly.
+    pub(crate) assets: IndexMap<String, crate::manager::ProjectAsset>,
     /// Opt-in curve-mnemonic canonicalization applied at `load_well` time. When
     /// `Some`, each loaded log's mnemonic is passed through
     /// [`canonical_mnemonic_with`](crate::analysis::canonical_mnemonic_with)
@@ -85,6 +89,7 @@ impl GeoData {
             created: None,
             element_tags: IndexMap::new(),
             model_sections: IndexMap::new(),
+            assets: IndexMap::new(),
             curve_aliases: None,
         }
     }

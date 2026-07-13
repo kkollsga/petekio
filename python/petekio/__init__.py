@@ -45,7 +45,7 @@ from ._viewer import (
     build_well_log_bundle,
     encode_lane,
 )
-from ._project import ImportSettings, Project, WellTopSet
+from ._project import BoundTemplate, ImportSettings, Project, WellTopSet
 from ._logs import Logs, LogChannel, LogPredicate
 
 # The pure-Python view spec value-objects (WHAT / HOW for well.view()). The
@@ -57,6 +57,7 @@ from ._specs import (
 
 __all__ = [
     "BBox",
+    "BoundTemplate",
     "FormatKind",
     "GeoData",
     "GridGeometry",

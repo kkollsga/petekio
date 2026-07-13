@@ -3,9 +3,9 @@
 //! `save` assembles every element into a container section plus a JSON manifest
 //! (unit / owner / created+modified / tags / strat_hints / strat_order) and
 //! writes atomically. `open` reads the manifest and materializes the elements;
-//! unknown / `model/*` section kinds are **skipped** (forward-compatible — a
-//! newer petekSim sidecar loads in an older petekIO). `inspect` reads only the
-//! manifest — list a project without decoding any element.
+//! generic `asset` and opaque `model` sections are retained without interpreting
+//! provider data. `inspect` reads only the manifest — list a project without
+//! decoding any element.
 
 use crate::core::persist::Persistable;
 use crate::core::{PointSet, PolygonSet, StructuredMeshSurface, Surface, Well};
@@ -14,8 +14,14 @@ use crate::io::container::{self, Section};
 use crate::io::serial::DATA_VERSION;
 use crate::manager::GeoData;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const ASSET_SECTION_KIND: &str = "asset";
+const ASSET_PREFIX: &str = "@asset/";
+const ASSET_FRAME_VERSION: u32 = 1;
+const ASSET_MAGIC: &[u8; 8] = b"PIOASSET";
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -30,6 +36,21 @@ pub struct ModelSection {
     pub version: u32,
     pub tags: Vec<String>,
     pub bytes: Vec<u8>,
+}
+
+/// A provider-owned project asset. `envelope` is canonical UTF-8 JSON for new
+/// assets; `bytes` is an opaque provider payload. petekIO validates only the
+/// generic envelope fields and never interprets renderer/domain semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectAsset {
+    pub kind: String,
+    pub envelope: Vec<u8>,
+    pub version: u32,
+    pub tags: Vec<String>,
+    pub bytes: Vec<u8>,
+    // Opened assets retain the complete framed payload. This is deliberately
+    // reused on save so unknown envelope fields and future versions are exact.
+    raw_payload: Option<Vec<u8>>,
 }
 
 /// A project's manifest without its element data — the result of [`inspect`].
@@ -100,6 +121,101 @@ impl GeoData {
             .map(|m| (m.version, m.bytes.clone()))
     }
 
+    /// Add a generic asset under a collision-safe physical name such as
+    /// `@asset/templates/reservoir`. Existing names are never overwritten.
+    pub fn add_asset(
+        &mut self,
+        name: impl Into<String>,
+        kind: impl Into<String>,
+        envelope: Vec<u8>,
+        tags: Vec<String>,
+        version: u32,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        let name = name.into();
+        let kind = kind.into();
+        validate_asset_name(&name)?;
+        validate_new_asset(&kind, &envelope, version)?;
+        if self.assets.contains_key(&name) {
+            return Err(GeoError::Parse(format!("asset '{name}' already exists")));
+        }
+        self.assets.insert(
+            name,
+            ProjectAsset {
+                kind,
+                envelope,
+                version,
+                tags,
+                bytes,
+                raw_payload: None,
+            },
+        );
+        Ok(())
+    }
+
+    /// Replace an existing generic asset. Missing names are an error.
+    pub fn replace_asset(
+        &mut self,
+        name: &str,
+        kind: impl Into<String>,
+        envelope: Vec<u8>,
+        tags: Vec<String>,
+        version: u32,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        validate_asset_name(name)?;
+        if !self.assets.contains_key(name) {
+            return Err(GeoError::NotFound(format!("asset '{name}'")));
+        }
+        let kind = kind.into();
+        validate_new_asset(&kind, &envelope, version)?;
+        self.assets.insert(
+            name.to_string(),
+            ProjectAsset {
+                kind,
+                envelope,
+                version,
+                tags,
+                bytes,
+                raw_payload: None,
+            },
+        );
+        Ok(())
+    }
+
+    /// Rename an asset without decoding or re-encoding it.
+    pub fn rename_asset(&mut self, old: &str, new: &str) -> Result<()> {
+        validate_asset_name(old)?;
+        validate_asset_name(new)?;
+        if old == new {
+            return Ok(());
+        }
+        if self.assets.contains_key(new) {
+            return Err(GeoError::Parse(format!("asset '{new}' already exists")));
+        }
+        let value = self
+            .assets
+            .shift_remove(old)
+            .ok_or_else(|| GeoError::NotFound(format!("asset '{old}'")))?;
+        self.assets.insert(new.to_string(), value);
+        Ok(())
+    }
+
+    /// Delete an asset, returning whether it existed.
+    pub fn delete_asset(&mut self, name: &str) -> bool {
+        self.assets.shift_remove(name).is_some()
+    }
+
+    /// Collision-safe physical asset names in insertion order.
+    pub fn asset_names(&self) -> Vec<String> {
+        self.assets.keys().cloned().collect()
+    }
+
+    /// A snapshot of one generic asset.
+    pub fn asset(&self, name: &str) -> Option<ProjectAsset> {
+        self.assets.get(name).cloned()
+    }
+
     /// Re-key a self-framed element [`Section`] to its project collection key and
     /// stamp the project's per-element tags onto it.
     fn named_section(&self, name: &str, mut sec: Section) -> Section {
@@ -111,6 +227,21 @@ impl GeoData {
     /// Save the whole project to a single `.pproj` file (written atomically).
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let mut sections: Vec<Section> = Vec::new();
+        for name in self
+            .surfaces
+            .keys()
+            .chain(self.structured_surfaces.keys())
+            .chain(self.wells.keys())
+            .chain(self.points.keys())
+            .chain(self.polygons.keys())
+            .chain(self.model_sections.keys())
+        {
+            if name.starts_with(ASSET_PREFIX) {
+                return Err(GeoError::Parse(format!(
+                    "project element name '{name}' uses reserved prefix '{ASSET_PREFIX}'"
+                )));
+            }
+        }
         // Each element frames itself via the shared `Persistable` mapping (kind +
         // payload + version); the project overrides the section name with the
         // collection key and stamps its element tags.
@@ -136,6 +267,20 @@ impl GeoData {
                 tags: m.tags.clone(),
                 version: m.version,
                 payload: m.bytes.clone(),
+            });
+        }
+        for (name, asset) in &self.assets {
+            validate_asset_name(name)?;
+            let payload = match &asset.raw_payload {
+                Some(raw) => raw.clone(),
+                None => encode_asset_payload(&asset.envelope, &asset.bytes)?,
+            };
+            sections.push(Section {
+                kind: ASSET_SECTION_KIND.to_string(),
+                name: name.clone(),
+                tags: asset.tags.clone(),
+                version: asset.version,
+                payload,
             });
         }
         let now = now_secs();
@@ -175,6 +320,16 @@ impl GeoData {
         geo.created = app.get("created").and_then(Value::as_u64);
         geo.strat_hints = from_json(&app, "strat_hints");
         geo.strat_order = from_json(&app, "strat_order");
+
+        let mut physical_names = HashSet::new();
+        for entry in r.entries() {
+            if !physical_names.insert(entry.name.clone()) {
+                return Err(GeoError::Parse(format!(
+                    ".pproj contains duplicate physical section name '{}'",
+                    entry.name
+                )));
+            }
+        }
 
         let index: Vec<(String, String)> = r
             .entries()
@@ -226,6 +381,35 @@ impl GeoData {
                         },
                     );
                 }
+                ASSET_SECTION_KIND => {
+                    let s = r.read(&name)?;
+                    validate_asset_name(&name)?;
+                    let (kind, envelope, bytes) = if s.version == ASSET_FRAME_VERSION {
+                        let (envelope, bytes) = decode_asset_payload(&s.payload)?;
+                        let kind = validate_envelope(&envelope)?;
+                        (kind, envelope, bytes)
+                    } else {
+                        // A future frame remains listable/renamable/saveable. Its
+                        // provider bytes are not exposed as a current v1 asset.
+                        let namespace = name[ASSET_PREFIX.len()..]
+                            .split('/')
+                            .next()
+                            .unwrap_or("unknown")
+                            .to_string();
+                        (namespace, Vec::new(), Vec::new())
+                    };
+                    geo.assets.insert(
+                        name,
+                        ProjectAsset {
+                            kind,
+                            envelope,
+                            version: s.version,
+                            tags: s.tags,
+                            bytes,
+                            raw_payload: Some(s.payload),
+                        },
+                    );
+                }
                 _ => {} // unknown kind → skipped (forward-compatible)
             }
         }
@@ -237,6 +421,9 @@ impl GeoData {
     pub fn split(src: impl AsRef<Path>, dst: impl AsRef<Path>, names: &[&str]) -> Result<()> {
         Ok(container::filter_to(src.as_ref(), dst.as_ref(), |e| {
             names.contains(&e.name.as_str())
+                || (e.kind == ASSET_SECTION_KIND
+                    && e.name.starts_with(ASSET_PREFIX)
+                    && names.contains(&&e.name[ASSET_PREFIX.len()..]))
         })?)
     }
 
@@ -271,6 +458,105 @@ impl GeoData {
                 .collect(),
         })
     }
+}
+
+fn validate_asset_name(name: &str) -> Result<()> {
+    if name.len() > 1024
+        || !name.starts_with(ASSET_PREFIX)
+        || name.contains('\\')
+        || name.contains('\0')
+    {
+        return Err(GeoError::Parse(format!(
+            "invalid asset name '{name}': expected '{ASSET_PREFIX}<collection>/<name>'"
+        )));
+    }
+    let parts: Vec<&str> = name.split('/').collect();
+    if parts.len() < 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
+        return Err(GeoError::Parse(format!(
+            "invalid asset name '{name}': empty and traversal path segments are forbidden"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_new_asset(kind: &str, envelope: &[u8], version: u32) -> Result<()> {
+    if version != ASSET_FRAME_VERSION {
+        return Err(GeoError::Parse(format!(
+            "cannot create asset frame v{version}; supported version is {ASSET_FRAME_VERSION}"
+        )));
+    }
+    let declared = validate_envelope(envelope)?;
+    if declared != kind {
+        return Err(GeoError::Parse(format!(
+            "asset kind '{kind}' disagrees with envelope asset_type '{declared}'"
+        )));
+    }
+    let value: Value = serde_json::from_slice(envelope)
+        .map_err(|e| GeoError::Parse(format!("invalid asset envelope JSON: {e}")))?;
+    let canonical = serde_json::to_vec(&value)
+        .map_err(|e| GeoError::Parse(format!("invalid asset envelope JSON: {e}")))?;
+    if canonical != envelope {
+        return Err(GeoError::Parse(
+            "asset envelope must be canonical compact UTF-8 JSON".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_envelope(envelope: &[u8]) -> Result<String> {
+    let value: Value = serde_json::from_slice(envelope)
+        .map_err(|e| GeoError::Parse(format!("invalid asset envelope JSON: {e}")))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| GeoError::Parse("asset envelope must be a JSON object".into()))?;
+    let required_string = |key: &str| -> Result<&str> {
+        obj.get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| GeoError::Parse(format!("asset envelope missing non-empty '{key}'")))
+    };
+    let kind = required_string("asset_type")?;
+    required_string("provider")?;
+    required_string("codec")?;
+    let schema = obj
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            GeoError::Parse("asset envelope missing positive integer 'schema_version'".into())
+        })?;
+    if schema == 0 || schema > u32::MAX as u64 {
+        return Err(GeoError::Parse(
+            "asset envelope schema_version is out of range".into(),
+        ));
+    }
+    Ok(kind.to_string())
+}
+
+fn encode_asset_payload(envelope: &[u8], bytes: &[u8]) -> Result<Vec<u8>> {
+    let header_len = u32::try_from(envelope.len())
+        .map_err(|_| GeoError::Parse("asset envelope is too large".into()))?;
+    let mut out = Vec::with_capacity(12 + envelope.len() + bytes.len());
+    out.extend_from_slice(ASSET_MAGIC);
+    out.extend_from_slice(&header_len.to_le_bytes());
+    out.extend_from_slice(envelope);
+    out.extend_from_slice(bytes);
+    Ok(out)
+}
+
+fn decode_asset_payload(payload: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    if payload.len() < 12 || &payload[..8] != ASSET_MAGIC {
+        return Err(GeoError::Parse("invalid asset frame magic/length".into()));
+    }
+    let header_len = u32::from_le_bytes(payload[8..12].try_into().expect("four bytes")) as usize;
+    let split = 12usize
+        .checked_add(header_len)
+        .filter(|end| *end <= payload.len())
+        .ok_or_else(|| GeoError::Parse("invalid asset envelope length".into()))?;
+    Ok((payload[12..split].to_vec(), payload[split..].to_vec()))
 }
 
 /// The element-schema (`data_version`) compatibility gate. A file newer than

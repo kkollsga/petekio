@@ -35,6 +35,7 @@ import math
 import struct
 import sys
 from array import array
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union
 
 from ._specs import phie_cutoff_value
@@ -325,6 +326,7 @@ def render(
     *,
     spec: Optional["ViewSpec"] = None,
     settings: Optional["ViewSettings"] = None,
+    template: Any = None,
     tops: Union[None, bool, Sequence[str]] = None,
     flatten_default: Optional[str] = None,
     phie_cutoff: Optional[float] = 0.08,
@@ -355,9 +357,52 @@ def render(
         phie_cutoff=phie_cutoff,
         flags=flags,
     )
+    if template is not None:
+        payload = _materialize_template(template).apply(payload)
     session = LogSession(payload)
     if save is not None:
         session.save(save)
     elif serve:
         session.serve()
     return session
+
+
+def _materialize_template(template: Any) -> Any:
+    """Resolve a plain/bound template through its optional semantic provider."""
+
+    materialize = getattr(template, "materialize", None)
+    if callable(materialize):
+        return materialize()
+
+    if isinstance(template, Mapping):
+        data = dict(template)
+    else:
+        to_dict = getattr(template, "to_dict", None)
+        if not callable(to_dict):
+            raise TypeError("template= requires a mapping or an object exposing to_dict()")
+        data = to_dict()
+        if not isinstance(data, Mapping):
+            raise TypeError("template.to_dict() must return a mapping")
+        apply = getattr(template, "apply", None)
+        if callable(apply):
+            return template
+        data = dict(data)
+
+    kind = data.get("spec")
+    if not isinstance(kind, str) or not kind:
+        raise ValueError("template dictionary is missing non-empty 'spec'")
+    try:
+        from petektools import viewer
+    except (ImportError, AttributeError) as exc:
+        raise ImportError(_template_provider_error(kind)) from exc
+    template_type = getattr(viewer, kind, None)
+    if template_type is None or not callable(getattr(template_type, "from_dict", None)):
+        raise ImportError(_template_provider_error(kind))
+    return template_type.from_dict(data)
+
+
+def _template_provider_error(kind: str) -> str:
+    return (
+        f"rendering/materializing {kind} requires a compatible petektools.viewer. "
+        "Install or upgrade it with `pip install -U 'petekio[toolkit]'`."
+    )

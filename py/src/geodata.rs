@@ -8,6 +8,7 @@
 
 use crate::points::{PointSet, PolygonSet};
 use crate::stats::Stats;
+use crate::structured_surface::StructuredMeshSurface;
 use crate::surface::Surface;
 use crate::well::Well;
 use crate::{parse_unit, to_pyerr, unit_label};
@@ -52,6 +53,23 @@ impl GeoData {
         Ok(Surface::view(slf.clone().unbind(), name.to_string()))
     }
 
+    /// Load an EarthVision grid into the shared surface namespace as a
+    /// null-preserving structured mesh surface.
+    fn load_structured_surface(
+        slf: Bound<'_, Self>,
+        name: &str,
+        path: &str,
+    ) -> PyResult<StructuredMeshSurface> {
+        slf.borrow_mut()
+            .inner
+            .load_structured_surface(name, path)
+            .map_err(to_pyerr)?;
+        Ok(StructuredMeshSurface::view(
+            slf.clone().unbind(),
+            name.to_string(),
+        ))
+    }
+
     /// Load a point set from `path` (extension-dispatched) under `name`,
     /// returning a view.
     fn load_points(slf: Bound<'_, Self>, name: &str, path: &str) -> PyResult<PointSet> {
@@ -88,12 +106,28 @@ impl GeoData {
     }
 
     /// The surface stored under `name` (view), or `None`.
-    fn surface(slf: Bound<'_, Self>, name: &str) -> Option<Surface> {
-        slf.borrow()
-            .inner
-            .surface(name)
-            .is_some()
-            .then(|| Surface::view(slf.clone().unbind(), name.to_string()))
+    fn surface(slf: Bound<'_, Self>, py: Python<'_>, name: &str) -> PyResult<Option<Py<PyAny>>> {
+        let geo = slf.borrow();
+        let regular = geo.inner.surface(name).is_some();
+        let structured = geo.inner.structured_surface(name).is_some();
+        drop(geo);
+        if regular {
+            return Ok(Some(
+                Surface::view(slf.clone().unbind(), name.to_string())
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            ));
+        }
+        if structured {
+            return Ok(Some(
+                StructuredMeshSurface::view(slf.clone().unbind(), name.to_string())
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            ));
+        }
+        Ok(None)
     }
 
     /// Rename a stored surface.
@@ -310,17 +344,37 @@ impl GeoData {
     }
 
     /// All surfaces in insertion order, as cheap views (no grid copy).
-    fn surfaces(slf: Bound<'_, Self>) -> Vec<Surface> {
-        let names: Vec<String> = slf
-            .borrow()
+    fn surfaces(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        let geo = slf.borrow();
+        let regular: Vec<String> = geo
             .inner
             .surfaces_named()
-            .map(|(n, _)| n.to_string())
+            .map(|(name, _)| name.to_string())
             .collect();
-        names
-            .into_iter()
-            .map(|name| Surface::view(slf.clone().unbind(), name))
-            .collect()
+        let structured: Vec<String> = geo
+            .inner
+            .structured_surfaces_named()
+            .map(|(name, _)| name.to_string())
+            .collect();
+        drop(geo);
+        let mut out = Vec::with_capacity(regular.len() + structured.len());
+        for name in regular {
+            out.push(
+                Surface::view(slf.clone().unbind(), name)
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            );
+        }
+        for name in structured {
+            out.push(
+                StructuredMeshSurface::view(slf.clone().unbind(), name)
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            );
+        }
+        Ok(out)
     }
 
     /// A broadcastable, filterable view over all wells (insertion order).

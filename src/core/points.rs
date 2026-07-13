@@ -157,9 +157,11 @@ impl PointSet {
         Ok(out)
     }
 
-    /// Load scattered points from an EarthVision grid ASCII file
+    /// Legacy finite-node compatibility view of an EarthVision grid ASCII file
     /// (`.EarthVisionGrid`) — `x y z` nodes with a directive header; null nodes
-    /// dropped (see [`crate::io::earthvision`]). Petrel `column`/`row` fields,
+    /// dropped (see [`crate::io::earthvision`]). New code should use
+    /// [`StructuredMeshSurface::load_earthvision_grid`](crate::StructuredMeshSurface::load_earthvision_grid).
+    /// Petrel `column`/`row` fields,
     /// when present, are preserved as attributes so geometry inference can use
     /// the exported grid topology instead of guessing from XY alone.
     pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<PointSet> {
@@ -563,7 +565,7 @@ fn topology_occupied_edge_from_points(
         .or_else(|_| convex_hull_from_node_arrays(&x, &y))
 }
 
-fn structured_edge(
+pub(crate) fn structured_edge(
     x: &Array2<f64>,
     y: &Array2<f64>,
     values: Option<&Array2<f64>>,

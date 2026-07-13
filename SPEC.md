@@ -342,15 +342,24 @@ Surface`, `cube.stats()`, `cube.resample(&CubeGeometry)`.
 Load everything once; named + collection access; views; broadcast.
 ```rust
 pub struct GeoData { unit: Unit, surfaces: IndexMap<String, Surface>,
+                     structured_surfaces: IndexMap<String, StructuredMeshSurface>,
                      wells: IndexMap<String, Well>, points: ..., polygons: ... }
 impl GeoData {
     pub fn load_surface(&mut self, path) -> Result<&Surface>;     // fluent (returns ref / self)
+    pub fn load_structured_surface(&mut self, path) -> Result<&StructuredMeshSurface>; // EarthVision, null-preserving
     pub fn load_well(&mut self, dir_or_files, head, kb) -> Result<&Well>;
     pub fn surface(&self, name) -> Option<&Surface>;
     pub fn well(&self, id) -> Option<&Well>;
     pub fn wells(&self) -> WellsView;            // broadcastable + filterable
 }
 ```
+
+Regular and structured surfaces have separate typed Rust collections so the
+existing `Surface` API remains exact, but share one name-uniqueness domain and
+one Python `project.surfaces` namespace. Whole-project `.pproj` persistence
+stores structured entries with the existing `structured_mesh` element kind.
+`model_inputs()` must fail loudly while its horizon contract cannot represent
+them; it must never silently omit a structured horizon.
 ```python
 geo = petekio.GeoData(unit="ft")
 geo.load_surface("top.irap"); geo.load_well("wells/A1/", wellhead=(x,y), kb=82)

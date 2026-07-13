@@ -2,6 +2,7 @@
 //! per-node XY coordinates: a shared `StructuredShell` (geometry) + primary
 //! values + attribute lanes.
 
+use crate::geodata::GeoData;
 use crate::geometry::{BBox, GridGeometry};
 use crate::points::{PointSet, PolygonSet};
 use crate::shell::{iso_lines_py, matrix_rows, value_layer_dict, PyIsoLines, StructuredShell};
@@ -14,18 +15,32 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::sync::Arc;
 
+enum StructuredSurfaceBacking {
+    Owned(Arc<RsStructuredMeshSurface>),
+    InGeo { geo: Py<GeoData>, name: String },
+}
+
 /// A structured mesh surface: regular logical topology, explicit XY nodes.
 #[pyclass(name = "StructuredMeshSurface")]
 pub struct StructuredMeshSurface {
-    inner: Arc<RsStructuredMeshSurface>,
+    backing: StructuredSurfaceBacking,
     name: Option<String>,
 }
 
 impl StructuredMeshSurface {
     pub(crate) fn wrap(inner: RsStructuredMeshSurface) -> StructuredMeshSurface {
         StructuredMeshSurface {
-            inner: Arc::new(inner),
+            backing: StructuredSurfaceBacking::Owned(Arc::new(inner)),
             name: None,
+        }
+    }
+
+    /// A cheap view into a project's structured surface (no shell/lane copy).
+    pub(crate) fn view(geo: Py<GeoData>, name: String) -> StructuredMeshSurface {
+        let display = crate::leaf_name(&name);
+        StructuredMeshSurface {
+            backing: StructuredSurfaceBacking::InGeo { geo, name },
+            name: Some(display),
         }
     }
 
@@ -34,13 +49,38 @@ impl StructuredMeshSurface {
         self.name = name;
         self
     }
+
+    fn with<R>(
+        &self,
+        py: Python<'_>,
+        f: impl FnOnce(&RsStructuredMeshSurface) -> R,
+    ) -> PyResult<R> {
+        match &self.backing {
+            StructuredSurfaceBacking::Owned(surface) => Ok(f(surface)),
+            StructuredSurfaceBacking::InGeo { geo, name } => {
+                let geo = geo.borrow(py);
+                let surface = geo.inner.structured_surface(name).ok_or_else(|| {
+                    PyValueError::new_err(format!("no structured surface '{name}'"))
+                })?;
+                Ok(f(surface))
+            }
+        }
+    }
 }
 
 #[pymethods]
 impl StructuredMeshSurface {
+    /// Load an EarthVision grid as a null-preserving structured surface.
+    #[staticmethod]
+    fn load_earthvision_grid(py: Python<'_>, path: &str) -> PyResult<StructuredMeshSurface> {
+        py.detach(|| RsStructuredMeshSurface::load_earthvision_grid(path))
+            .map(StructuredMeshSurface::wrap)
+            .map_err(to_pyerr)
+    }
+
     #[getter]
     fn kind(&self) -> &'static str {
-        self.inner.kind()
+        "structured_mesh"
     }
 
     /// The dataset name this surface derives from (propagated from the source
@@ -52,75 +92,80 @@ impl StructuredMeshSurface {
     }
 
     #[getter]
-    fn ncol(&self) -> usize {
-        self.inner.ncol()
+    fn ncol(&self, py: Python<'_>) -> PyResult<usize> {
+        self.with(py, RsStructuredMeshSurface::ncol)
     }
 
     #[getter]
-    fn nrow(&self) -> usize {
-        self.inner.nrow()
+    fn nrow(&self, py: Python<'_>) -> PyResult<usize> {
+        self.with(py, RsStructuredMeshSurface::nrow)
     }
 
     /// Optional approximate regular geometry. This is metadata, not the
     /// canonical coordinate model.
     #[getter]
-    fn nominal_geometry(&self) -> Option<GridGeometry> {
-        self.inner
-            .nominal_geometry()
-            .map(|g| GridGeometry::with_edge(g.clone(), self.inner.edge().clone()))
+    fn nominal_geometry(&self, py: Python<'_>) -> PyResult<Option<GridGeometry>> {
+        self.with(py, |surface| {
+            surface
+                .nominal_geometry()
+                .map(|geometry| GridGeometry::with_edge(geometry.clone(), surface.edge().clone()))
+        })
     }
 
     /// Edge polygon in modelling coordinates.
     #[getter]
-    fn edge(&self) -> PolygonSet {
-        PolygonSet::owned(self.inner.edge().clone())
+    fn edge(&self, py: Python<'_>) -> PyResult<PolygonSet> {
+        self.with(py, |surface| PolygonSet::owned(surface.edge().clone()))
     }
 
     /// Axis-aligned bounding box over finite XY nodes.
-    fn bbox(&self) -> BBox {
-        BBox::new(self.inner.bbox())
+    fn bbox(&self, py: Python<'_>) -> PyResult<BBox> {
+        self.with(py, |surface| BBox::new(surface.bbox()))
     }
 
     /// World `(x, y)` of logical node `(i, j)`.
-    fn node_xy(&self, i: usize, j: usize) -> PyResult<(f64, f64)> {
-        self.inner.node_xy(i, j).map_err(to_pyerr)
+    fn node_xy(&self, py: Python<'_>, i: usize, j: usize) -> PyResult<(f64, f64)> {
+        self.with(py, |surface| surface.node_xy(i, j))?
+            .map_err(to_pyerr)
     }
 
     /// Primary value at logical node `(i, j)`.
-    fn z(&self, i: usize, j: usize) -> PyResult<f64> {
-        self.inner.z(i, j).map_err(to_pyerr)
+    fn z(&self, py: Python<'_>, i: usize, j: usize) -> PyResult<f64> {
+        self.with(py, |surface| surface.z(i, j))?.map_err(to_pyerr)
     }
 
     /// X node coordinates as row-major nested lists: outer list is rows.
-    fn x(&self) -> Vec<Vec<f64>> {
-        matrix_rows(self.inner.x())
+    fn x(&self, py: Python<'_>) -> PyResult<Vec<Vec<f64>>> {
+        self.with(py, |surface| matrix_rows(surface.x()))
     }
 
     /// Y node coordinates as row-major nested lists: outer list is rows.
-    fn y(&self) -> Vec<Vec<f64>> {
-        matrix_rows(self.inner.y())
+    fn y(&self, py: Python<'_>) -> PyResult<Vec<Vec<f64>>> {
+        self.with(py, |surface| matrix_rows(surface.y()))
     }
 
     /// Z values as row-major nested lists: outer list is rows.
-    fn values(&self) -> Vec<Vec<f64>> {
-        matrix_rows(self.inner.values())
+    fn values(&self, py: Python<'_>) -> PyResult<Vec<Vec<f64>>> {
+        self.with(py, |surface| matrix_rows(surface.values()))
     }
 
     /// Explode the mesh back into a `PointSet`, one point per populated node, with
     /// its `column`/`row` topology. Exact — coordinates are copied, not resampled —
     /// so `points.to_structured_surface().to_points()` round-trips losslessly.
-    fn to_points(&self) -> PointSet {
-        PointSet::owned(self.inner.to_points()).named(self.name.clone())
+    fn to_points(&self, py: Python<'_>) -> PyResult<PointSet> {
+        self.with(py, |surface| {
+            PointSet::owned(surface.to_points()).named(self.name.clone())
+        })
     }
 
     /// Summary statistics over finite primary values.
-    fn stats(&self) -> Stats {
-        Stats::new(self.inner.stats())
+    fn stats(&self, py: Python<'_>) -> PyResult<Stats> {
+        self.with(py, |surface| Stats::new(surface.stats()))
     }
 
     /// Human-readable operation history.
-    fn history(&self) -> Vec<String> {
-        self.inner.history().to_vec()
+    fn history(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.with(py, |surface| surface.history().to_vec())
     }
 
     // ---- the geometry shell + property lanes ----
@@ -128,18 +173,17 @@ impl StructuredMeshSurface {
     /// The geometry shell (level 2, `Arc`-shared: N properties never repeat
     /// the geometry in memory).
     #[getter]
-    fn shell(&self) -> StructuredShell {
-        StructuredShell {
-            inner: Arc::clone(self.inner.shell()),
-        }
+    fn shell(&self, py: Python<'_>) -> PyResult<StructuredShell> {
+        self.with(py, |surface| StructuredShell {
+            inner: Arc::clone(surface.shell()),
+        })
     }
 
     /// A named attribute lane promoted to a standalone `StructuredMeshSurface`
     /// on the same shared shell (mirrors `Surface.attr`); raises `KeyError`
     /// if absent.
-    fn attr(&self, name: &str) -> PyResult<StructuredMeshSurface> {
-        self.inner
-            .as_attr_surface(name)
+    fn attr(&self, py: Python<'_>, name: &str) -> PyResult<StructuredMeshSurface> {
+        self.with(py, |surface| surface.as_attr_surface(name))?
             .map(|s| StructuredMeshSurface::wrap(s).named(self.name.clone()))
             .ok_or_else(|| {
                 pyo3::exceptions::PyKeyError::new_err(format!("no attribute layer '{name}'"))
@@ -147,19 +191,27 @@ impl StructuredMeshSurface {
     }
 
     /// The names of all attribute lanes, in insertion order.
-    fn attr_names(&self) -> Vec<String> {
-        self.inner
-            .attr_names()
-            .iter()
-            .map(|n| n.to_string())
-            .collect()
+    fn attr_names(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.with(py, |surface| {
+            surface
+                .attr_names()
+                .iter()
+                .map(|name| name.to_string())
+                .collect()
+        })
     }
 
     /// Set (or replace) attribute `name` from row-major nested lists (the
     /// same shape `values()` returns) — returns a **new**
     /// `StructuredMeshSurface` (surfaces are immutable; the shell is shared).
-    fn set_attr(&self, name: &str, values: Vec<Vec<f64>>) -> PyResult<StructuredMeshSurface> {
-        let (ncol, nrow) = (self.inner.ncol(), self.inner.nrow());
+    fn set_attr(
+        &self,
+        py: Python<'_>,
+        name: &str,
+        values: Vec<Vec<f64>>,
+    ) -> PyResult<StructuredMeshSurface> {
+        let mut out = self.with(py, Clone::clone)?;
+        let (ncol, nrow) = (out.ncol(), out.nrow());
         if values.len() != nrow || values.iter().any(|row| row.len() != ncol) {
             return Err(PyValueError::new_err(format!(
                 "set_attr expects {nrow} rows of {ncol} values (the shape values() returns)"
@@ -171,7 +223,6 @@ impl StructuredMeshSurface {
                 lane[[i, j]] = *v;
             }
         }
-        let mut out = (*self.inner).clone();
         out.set_attr(name, lane).map_err(to_pyerr)?;
         Ok(StructuredMeshSurface::wrap(out).named(self.name.clone()))
     }
@@ -181,7 +232,8 @@ impl StructuredMeshSurface {
     /// Lift to a `TriSurface` (free, lossless: node identity preserved; all
     /// attribute lanes carried 1:1).
     fn to_tri_surface(&self, py: Python<'_>) -> PyResult<TriSurface> {
-        py.detach(|| self.inner.to_tri_surface())
+        let surface = self.with(py, Clone::clone)?;
+        py.detach(|| surface.to_tri_surface())
             .map(|t| TriSurface::wrap(t).named(self.name.clone()))
             .map_err(to_pyerr)
     }
@@ -189,14 +241,14 @@ impl StructuredMeshSurface {
     /// Fit a regular `GridGeometry` (lossy downward conversion); raises when
     /// the mesh is curvilinear.
     #[pyo3(signature = (tolerance = 1e-3))]
-    fn infer_grid(&self, tolerance: f64) -> PyResult<GridGeometry> {
-        self.inner
-            .infer_grid(tolerance)
-            .map(|g| {
-                GridGeometry::with_edge(g, self.inner.edge().clone())
-                    .named(self.name.as_ref().map(|n| format!("{n} geometry")))
+    fn infer_grid(&self, py: Python<'_>, tolerance: f64) -> PyResult<GridGeometry> {
+        self.with(py, |surface| {
+            surface.infer_grid(tolerance).map(|geometry| {
+                GridGeometry::with_edge(geometry, surface.edge().clone())
+                    .named(self.name.as_ref().map(|name| format!("{name} geometry")))
             })
-            .map_err(to_pyerr)
+        })?
+        .map_err(to_pyerr)
     }
 
     /// Resample the primary values **and every attribute lane** onto a target
@@ -211,7 +263,8 @@ impl StructuredMeshSurface {
     ) -> PyResult<crate::surface::Surface> {
         let gm = parse_grid_method(method)?;
         let t = target.inner.clone();
-        py.detach(|| self.inner.resample(&t, gm))
+        let surface = self.with(py, Clone::clone)?;
+        py.detach(|| surface.resample(&t, gm))
             .map(|s| crate::surface::Surface::wrap(s).named(self.name.clone()))
             .map_err(to_pyerr)
     }
@@ -232,7 +285,8 @@ impl StructuredMeshSurface {
         attr: Option<&str>,
         simplify: Option<f64>,
     ) -> PyResult<PyIsoLines> {
-        py.detach(|| self.inner.iso_lines(interval, levels, attr, simplify))
+        let surface = self.with(py, Clone::clone)?;
+        py.detach(|| surface.iso_lines(interval, levels, attr, simplify))
             .map(iso_lines_py)
             .map_err(to_pyerr)
     }
@@ -248,15 +302,19 @@ impl StructuredMeshSurface {
         attr: Option<&str>,
         stride: Option<usize>,
     ) -> PyResult<Py<PyDict>> {
-        let layer = self.inner.value_layer(attr, stride).map_err(to_pyerr)?;
+        let layer = self
+            .with(py, |surface| surface.value_layer(attr, stride))?
+            .map_err(to_pyerr)?;
         value_layer_dict(py, layer)
     }
 
-    fn __repr__(&self) -> String {
-        format!(
-            "StructuredMeshSurface(ncol={}, nrow={})",
-            self.inner.ncol(),
-            self.inner.nrow()
-        )
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        self.with(py, |surface| {
+            format!(
+                "StructuredMeshSurface(ncol={}, nrow={})",
+                surface.ncol(),
+                surface.nrow()
+            )
+        })
     }
 }

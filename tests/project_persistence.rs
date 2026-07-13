@@ -45,6 +45,40 @@ fn project_save_open_inspect_round_trip() {
 }
 
 #[test]
+fn structured_surface_round_trips_in_whole_project() {
+    let dir = common::tmpdir("structured_project");
+    let source = dir.join("top.EarthVisionGrid");
+    std::fs::write(
+        &source,
+        "# Type: scattered data\n# Grid_size: 2 x 2\n# Null_value: 1.0e30\n# End:\n\
+         0 0 10 1 1\n10 0 11 2 1\n0 10 1.0e30 1 2\n10 10 13 2 2\n",
+    )
+    .unwrap();
+
+    let mut geo = GeoData::new(Unit::Metres);
+    geo.load_structured_surface("top", &source).unwrap();
+    assert!(geo
+        .model_inputs()
+        .err()
+        .expect("structured horizons must not be silently omitted")
+        .to_string()
+        .contains("top"));
+    let project = dir.join("structured.pproj");
+    geo.save(&project).unwrap();
+
+    let info = GeoData::inspect(&project).unwrap();
+    assert!(info
+        .elements
+        .iter()
+        .any(|(kind, name)| kind == "structured_mesh" && name == "top"));
+    let reopened = GeoData::open(&project).unwrap();
+    let surface = reopened.structured_surface("top").unwrap();
+    assert_eq!((surface.ncol(), surface.nrow()), (2, 2));
+    assert_eq!(surface.node_xy(0, 1).unwrap(), (0.0, 10.0));
+    assert!(surface.z(0, 1).unwrap().is_nan());
+}
+
+#[test]
 fn model_sections_export_split_merge_byte_lossless() {
     let well_dir = common::synth_well();
     let mut geo = GeoData::new(Unit::Metres);

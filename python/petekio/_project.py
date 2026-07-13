@@ -828,7 +828,7 @@ class Project:
         except Exception:
             return inv
         for kind, name in info.get("elements", []):
-            if kind == "surface":
+            if kind in {"surface", "structured_mesh"}:
                 inv["surfaces"].append(name)
             elif kind == "well":
                 inv["wells"].append(name)
@@ -1555,7 +1555,10 @@ def _load_surfaces_points_polygons(
         name = _asset_name_for(root, rec.path, role=role, stem_counts=stem_counts)
         try:
             if role == "surface":
-                geo.load_surface(name, str(rec.path))
+                if rec.kind == FormatKind.EarthVisionGrid:
+                    geo.load_structured_surface(name, str(rec.path))
+                else:
+                    geo.load_surface(name, str(rec.path))
                 inventory["surfaces"].append(name)
             elif role == "points":
                 topology = (
@@ -1618,14 +1621,26 @@ def _spatial_stem_counts(
             continue
         key = (role, rec.path.stem)
         counts[key] = counts.get(key, 0) + 1
+    # An EarthVision structured surface and its same-stem IRAP point export are
+    # distinct roles, but both historically received path-qualified names.
+    # Preserve those stable names while allowing both objects to coexist.
+    kinds_by_stem: dict[str, list[FormatKind]] = {}
+    for rec in records:
+        if rec.path in loaded_paths or _inside_any(rec.path, ignored_dirs):
+            continue
+        kinds_by_stem.setdefault(rec.path.stem, []).append(rec.kind)
+    for stem, kinds in kinds_by_stem.items():
+        if FormatKind.EarthVisionGrid in kinds and FormatKind.IrapClassicPoints in kinds:
+            counts[("surface", stem)] = max(2, counts.get(("surface", stem), 0))
+            counts[("points", stem)] = max(2, counts.get(("points", stem), 0))
     return counts
 
 
 def _spatial_role(path: Path, kind: FormatKind) -> str | None:
     suffix = path.suffix.lower()
-    if kind in (FormatKind.IrapClassicGrid, FormatKind.Cps3Grid):
+    if kind in (FormatKind.IrapClassicGrid, FormatKind.Cps3Grid, FormatKind.EarthVisionGrid):
         return "surface"
-    if kind in (FormatKind.EarthVisionGrid, FormatKind.IrapClassicPoints):
+    if kind == FormatKind.IrapClassicPoints:
         return "points"
     if kind == FormatKind.CsvPoints:
         return "points" if _csv_has_xyz(path) else None

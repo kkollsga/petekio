@@ -278,7 +278,7 @@ impl PointSet {
     pub fn load_csv(path: impl AsRef<Path>, x: &str, y: &str, z: &str) -> Result<PointSet>;
     pub fn load_geojson(path: impl AsRef<Path>) -> Result<PointSet>;
     pub fn load_irap_points(path: impl AsRef<Path>) -> Result<PointSet>;   // plain X Y Z; header-sniffed (foreign → GeoError::Format)
-    pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<PointSet>;  // EarthVision grid ASCII (null nodes dropped)
+    pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<PointSet>;  // deprecated finite-node compatibility view; prefer StructuredMeshSurface loader
     pub fn len(&self) -> usize;
     pub fn coords(&self) -> &[[f64; 3]];                     // raw [x,y,z] points, load order (read side of from_coords)
     pub fn filter(&self, pred: impl Fn(Point3) -> bool) -> PointSet;
@@ -430,6 +430,7 @@ impl TriSurface {
 /// metadata, never the coordinates.
 pub struct StructuredMeshSurface { /* Arc<StructuredShell> + values + attributes */ }
 impl StructuredMeshSurface {
+    pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<Self>;  // canonical EarthVision ingest; null z→NaN, XY/topology retained
     pub fn new(x: Array2<f64>, y: Array2<f64>, values: Array2<f64>,
                nominal_geometry: Option<GridGeometry>, edge: PolygonSet) -> Result<Self>;
     pub fn from_shell(shell: Arc<StructuredShell>, values: Array2<f64>) -> Result<Self>;
@@ -485,6 +486,7 @@ pub struct GeoData { pub unit: Unit /* surfaces, wells, points, polygons private
 impl GeoData {
     pub fn new(unit: Unit) -> GeoData;
     pub fn load_surface(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&Surface>; // content-first detect(); Unknown falls back to extension
+    pub fn load_structured_surface(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&StructuredMeshSurface>; // EarthVision explicit-node grid
     pub fn load_well(&mut self, id: &str, head: (f64,f64), kb: f64,
                      files: impl AsRef<Path>) -> Result<&Well>;  // content-first tree walk: one .wellpath→main bore (co-locates logs/tops), many→one bore each; LAS→logs; .csv→tops; crsmeta.xml→Well::crs label
     pub fn set_curve_aliases(&mut self, aliases: NameMap);  // opt-in STICKY: canonicalize log mnemonics at load (map→table→vintage strip); off by default (raw preserved)
@@ -497,12 +499,15 @@ impl GeoData {
     pub fn load_points(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PointSet>;     // content-first detect(); Unknown falls back to extension
     pub fn load_polygons(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PolygonSet>; // content-first detect(); Unknown falls back to extension
     pub fn surface(&self, name: &str) -> Option<&Surface>;
+    pub fn structured_surface(&self, name: &str) -> Option<&StructuredMeshSurface>;
     pub fn well(&self, id: &str) -> Option<&Well>;
     pub fn well_mut(&mut self, id: &str) -> Option<&mut Well>;   // in-place e.g. Well::set_default_bore
     pub fn points(&self, name: &str) -> Option<&PointSet>;
     pub fn polygons(&self, name: &str) -> Option<&PolygonSet>;
     pub fn surfaces(&self) -> impl Iterator<Item = &Surface>;
     pub fn surfaces_named(&self) -> impl Iterator<Item = (&str, &Surface)>;
+    pub fn structured_surfaces(&self) -> impl Iterator<Item = &StructuredMeshSurface>;
+    pub fn structured_surfaces_named(&self) -> impl Iterator<Item = (&str, &StructuredMeshSurface)>;
     pub fn polygons_named(&self) -> impl Iterator<Item = (&str, &PolygonSet)>;
     pub fn wells(&self) -> WellsView;
 
@@ -709,8 +714,10 @@ pproj_project = petekio.Project.load("field.pproj")  # compact .pproj read
 geo = petekio.GeoData(unit="ft")
 geo.load_surface("top", "top.irap")       # or top.CPS3grid (CPS-3 grid)
 # real-format dispatch by extension: .CPS3grid→surface, .CPS3lines→polygons,
-# .EarthVisionGrid/.IrapClassicPoints→points. Also as classmethods:
-# Surface.load_cps3_grid, PolygonSet.load_cps3_lines, PointSet.load_earthvision_grid
+# .EarthVisionGrid→StructuredMeshSurface; .IrapClassicPoints→points. Also:
+# StructuredMeshSurface.load_earthvision_grid (canonical);
+# PointSet.load_earthvision_grid remains a deprecated finite-node view.
+geo.load_structured_surface("faulted top", "top.EarthVisionGrid")
 top, base = geo.surface("top"), geo.surface("base")
 
 thick_via_operator = (base - top).clamp_min(0)

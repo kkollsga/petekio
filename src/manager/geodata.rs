@@ -11,7 +11,7 @@
 //! the extension-dispatched `load_*` ingest and its well-routing helpers live in
 //! the sibling [`loaders`](super::loaders) module.
 
-use crate::core::{PointSet, PolygonSet, Surface, Well};
+use crate::core::{PointSet, PolygonSet, StructuredMeshSurface, Surface, Well};
 use crate::foundation::{GeoError, Result, Unit};
 use crate::manager::wells_view::WellsView;
 use indexmap::IndexMap;
@@ -22,6 +22,10 @@ pub struct GeoData {
     /// The project's length unit; surfaces/wells/points/polygons share it.
     pub unit: Unit,
     pub(crate) surfaces: IndexMap<String, Surface>,
+    /// Explicit-node structured surfaces. Kept separate so the existing Rust
+    /// regular-surface API remains source-compatible; names are nevertheless
+    /// unique across both surface collections.
+    pub(crate) structured_surfaces: IndexMap<String, StructuredMeshSurface>,
     pub(crate) wells: IndexMap<String, Well>,
     pub(crate) points: IndexMap<String, PointSet>,
     pub(crate) polygons: IndexMap<String, PolygonSet>,
@@ -59,6 +63,7 @@ impl GeoData {
         GeoData {
             unit,
             surfaces: IndexMap::new(),
+            structured_surfaces: IndexMap::new(),
             wells: IndexMap::new(),
             points: IndexMap::new(),
             polygons: IndexMap::new(),
@@ -146,16 +151,36 @@ impl GeoData {
         self.surfaces.get(name)
     }
 
+    /// The structured mesh surface stored under `name`, or `None`.
+    pub fn structured_surface(&self, name: &str) -> Option<&StructuredMeshSurface> {
+        self.structured_surfaces.get(name)
+    }
+
     /// Rename a stored surface.
     pub fn rename_surface(&mut self, old: &str, new: &str) -> Result<()> {
-        rename_key(&mut self.surfaces, old, new, "surface")?;
+        if old == new {
+            return Ok(());
+        }
+        if self.surfaces.contains_key(new) || self.structured_surfaces.contains_key(new) {
+            return Err(GeoError::Parse(format!(
+                "rename_surface: destination '{new}' already exists"
+            )));
+        }
+        if self.surfaces.contains_key(old) {
+            rename_key(&mut self.surfaces, old, new, "surface")?;
+        } else if self.structured_surfaces.contains_key(old) {
+            rename_key(&mut self.structured_surfaces, old, new, "surface")?;
+        } else {
+            return Err(GeoError::NotFound(format!("surface '{old}'")));
+        }
         rename_element_tags(&mut self.element_tags, old, new);
         Ok(())
     }
 
     /// Delete a stored surface. Returns whether anything was removed.
     pub fn delete_surface(&mut self, name: &str) -> bool {
-        let removed = self.surfaces.shift_remove(name).is_some();
+        let removed = self.surfaces.shift_remove(name).is_some()
+            || self.structured_surfaces.shift_remove(name).is_some();
         if removed {
             self.element_tags.shift_remove(name);
         }
@@ -240,6 +265,20 @@ impl GeoData {
     /// All surfaces with their names, in insertion order.
     pub fn surfaces_named(&self) -> impl Iterator<Item = (&str, &Surface)> {
         self.surfaces.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /// All structured mesh surfaces in insertion order.
+    pub fn structured_surfaces(&self) -> impl Iterator<Item = &StructuredMeshSurface> {
+        self.structured_surfaces.values()
+    }
+
+    /// All structured mesh surfaces with names, in insertion order.
+    pub fn structured_surfaces_named(
+        &self,
+    ) -> impl Iterator<Item = (&str, &StructuredMeshSurface)> {
+        self.structured_surfaces
+            .iter()
+            .map(|(k, v)| (k.as_str(), v))
     }
 
     /// All polygon sets with their names, in insertion order.

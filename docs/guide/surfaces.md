@@ -53,7 +53,8 @@ changes only original NaNs and uses finite nodes as controls.
 
 A `PointSet` is scattered `(x, y, z)` with optional per-point attributes. Load
 GeoJSON, CSV (with `x`/`y`/`z` columns; other numeric columns become
-attributes), EarthVision/Petrel point grids, or RMS/IRAP plain `X Y Z`.
+attributes), the deprecated finite-node view of EarthVision/Petrel grids, or
+RMS/IRAP plain `X Y Z`.
 
 ```python
 pts = geo.load_points("picks", "picks.geojson")
@@ -104,8 +105,11 @@ carry data, following interior holes and a non-rectangular boundary — and is t
 default for `to_structured_surface(...)`. `edge="convex_hull"` is intentionally
 broader for envelope/QC comparison.
 
-During `Project.import_data(...)`, same-stem Petrel IRAP point exports are
-enriched from matching EarthVision topology files when both are present.
+During `Project.import_data(...)`, an EarthVision grid is loaded canonically as
+a `StructuredMeshSurface` under `project.surfaces`; null nodes retain XY and
+become `NaN` values. Same-stem Petrel IRAP point exports remain separate point
+sets and are enriched from the EarthVision topology. Both retain stable,
+path-qualified names when they coexist.
 Standalone plain IRAP/XYZ point exports must infer from XY only, so they cannot
 recover exact grid topology once those fields are lost. For genuinely scattered
 picks or irregular vendor exports, choose the model/template `GridGeometry`
@@ -116,6 +120,11 @@ explicitly and call `to_surface(...)`.
 `values()`, `edge`, `nominal_geometry`, `bbox()`, `stats()`, and `history()`.
 Use `nominal_geometry` only as approximate metadata; the explicit node XY arrays
 are canonical.
+
+```python
+mesh = petekio.StructuredMeshSurface.load_earthvision_grid("top.EarthVisionGrid")
+mesh = geo.load_structured_surface("top", "top.EarthVisionGrid")
+```
 
 ## Polygons
 

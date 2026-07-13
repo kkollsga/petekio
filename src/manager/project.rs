@@ -8,7 +8,7 @@
 //! manifest — list a project without decoding any element.
 
 use crate::core::persist::Persistable;
-use crate::core::{PointSet, PolygonSet, Surface, Well};
+use crate::core::{PointSet, PolygonSet, StructuredMeshSurface, Surface, Well};
 use crate::foundation::{GeoError, Result, Unit};
 use crate::io::container::{self, Section};
 use crate::io::serial::DATA_VERSION;
@@ -117,6 +117,9 @@ impl GeoData {
         for (name, s) in &self.surfaces {
             sections.push(self.named_section(name, s.to_section()?));
         }
+        for (name, s) in &self.structured_surfaces {
+            sections.push(self.named_section(name, s.to_section()?));
+        }
         for (id, w) in &self.wells {
             sections.push(self.named_section(id, w.to_section()?));
         }
@@ -182,8 +185,22 @@ impl GeoData {
             // Kind strings come from the same `Persistable::KIND` the writer used.
             match kind.as_str() {
                 k if k == Surface::KIND => {
+                    if geo.structured_surfaces.contains_key(&name) {
+                        return Err(GeoError::Parse(format!(
+                            ".pproj contains duplicate surface name '{name}' across surface kinds"
+                        )));
+                    }
                     let s = Surface::from_payload(&r.read(&name)?.payload)?;
                     geo.surfaces.insert(name, s);
+                }
+                k if k == StructuredMeshSurface::KIND => {
+                    if geo.surfaces.contains_key(&name) {
+                        return Err(GeoError::Parse(format!(
+                            ".pproj contains duplicate surface name '{name}' across surface kinds"
+                        )));
+                    }
+                    let s = StructuredMeshSurface::from_payload(&r.read(&name)?.payload)?;
+                    geo.structured_surfaces.insert(name, s);
                 }
                 k if k == Well::KIND => {
                     let w = Well::from_payload(&r.read(&name)?.payload)?;

@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import petekio
@@ -303,10 +304,11 @@ def test_project_import_enriches_irap_points_from_matching_earthvision_topology(
 # Field: 4 column
 # Field: 5 row
 # Grid_size: 3 x 2
+# Null_value: 1.0e30
 # End:
 100.0 200.0 -50.0 1 1
 110.0 200.0 -51.0 2 1
-110.0 200.0 -51.0 3 1
+120.0 200.0 1.0e30 3 1
 100.0 210.0 -52.0 1 2
 110.0 210.0 -53.0 2 2
 120.0 210.0 -54.0 3 2
@@ -324,7 +326,12 @@ def test_project_import_enriches_irap_points_from_matching_earthvision_topology(
 
     project = petekio.Project.import_data(root)
     pts = project.points["Surfaces/IrapClassic_points/Top Dome"]
+    surface = project.surfaces["Surfaces/EarthVision_grid/Top Dome"]
 
+    assert isinstance(surface, petekio.StructuredMeshSurface)
+    assert (surface.ncol, surface.nrow) == (3, 2)
+    assert surface.node_xy(2, 0) == (120.0, 200.0)
+    assert math.isnan(surface.z(2, 0))
     assert pts.attr("column") == [1.0, 2.0, 1.0, 2.0, 3.0]
     assert pts.attr("row") == [1.0, 1.0, 2.0, 2.0, 2.0]
     assert project.points.Surfaces.IrapClassic_points.top_dome.attr("row") == [
@@ -337,6 +344,39 @@ def test_project_import_enriches_irap_points_from_matching_earthvision_topology(
     geom = pts.infer_geometry(tolerance=1e-3, edge="convex_hull")
     assert geom.ncol == 3
     assert geom.nrow == 2
+
+    saved = tmp_path / "field.pproj"
+    project.save(saved)
+    reopened = petekio.Project.load(saved)
+    restored = reopened.surfaces["Surfaces/EarthVision_grid/Top Dome"]
+    assert isinstance(restored, petekio.StructuredMeshSurface)
+    assert math.isnan(restored.z(2, 0))
+
+
+def test_ambiguous_earthvision_stems_do_not_guess_irap_topology(tmp_path):
+    root = tmp_path / "Data"
+    grid = """# Type: scattered data
+# Grid_size: 2 x 2
+# End:
+0 0 10 1 1
+10 0 11 2 1
+0 10 12 1 2
+10 10 13 2 2
+"""
+    _write(root / "A" / "Top.EarthVisionGrid", grid)
+    _write(root / "B" / "Top.EarthVisionGrid", grid)
+    _write(root / "Points" / "Top.IrapClassicPoints", "0 0 10\n10 0 11\n")
+
+    project = petekio.Project.import_data(root)
+
+    assert project.surfaces.all_names() == ["A/Top", "B/Top"]
+    assert all(
+        isinstance(project.surface(name), petekio.StructuredMeshSurface)
+        for name in project.surfaces.all_names()
+    )
+    points = project.points["Points/Top"]
+    assert "column" not in points.attr_names()
+    assert "row" not in points.attr_names()
 
 
 def _top_dome_tree(tmp_path: Path) -> Path:

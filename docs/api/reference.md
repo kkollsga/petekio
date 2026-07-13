@@ -13,12 +13,13 @@ The load-once project substrate.
 | --- | --- |
 | `GeoData(unit="m")` | New project; `unit` is `"m"`/`"metres"` or `"ft"`/`"feet"`. |
 | `.unit` | The project length unit (`"m"` / `"ft"`). |
-| `.load_surface(name, path)` | Load an IRAP-classic surface under `name`; returns an owned `Surface`. |
+| `.load_surface(name, path)` | Load a regular IRAP/CPS-3 surface under `name`; returns a project-backed `Surface` view. |
+| `.load_structured_surface(name, path)` | Load an EarthVision grid under the shared surface namespace; retains null-node XY/topology and returns a project-backed `StructuredMeshSurface` view. |
 | `.load_well(id, head=None, kb=None, files=...)` | Load a well from a directory/file; `head`/`kb` optional when a `.wellpath` supplies them. `files` is required. Returns a `Well` view. |
 | `.load_well_tops(path)` | Load a multi-well Petrel tops file (Horizon picks → matching well + bore). Derives `strat_order` across the whole file. Returns the count assigned. |
 | `.strat_order` | The global lithostratigraphic column (top names, shallow→deep) from the last `load_well_tops`; `[]` before any tops. |
 | `.surface(name)` / `.points(name)` / `.polygons(name)` / `.well(id)` | Named access (`None` if absent). |
-| `.surfaces()` | All surfaces, insertion order. |
+| `.surfaces()` | Regular and structured surfaces as project-backed views. |
 | `.wells` | A broadcastable, filterable `WellsView`. |
 
 ## Well
@@ -85,6 +86,7 @@ and percentiles (`.p10`, `.p50`, `.p90`).
 
 | Member | Description |
 | --- | --- |
+| `StructuredMeshSurface.load_earthvision_grid(path)` | Canonical EarthVision ingest; null z becomes NaN while XY and logical topology remain. |
 | `.kind` | Always `"structured_mesh"`. |
 | `.ncol` / `.nrow` | Logical column/row node counts. |
 | `.node_xy(i, j)` / `.z(i, j)` | Explicit node coordinate and primary value at logical node `(i, j)`. |

@@ -100,6 +100,10 @@ with `column` and `row` fields can instead become a `StructuredMeshSurface`,
 which keeps logical topology but stores explicit XY per node. Plain IRAP/XYZ
 point exports have to infer from XY alone unless `Project.import_data(...)` can
 enrich them from a same-stem EarthVision topology export in the raw project tree.
+EarthVision itself is canonically loaded as a null-preserving
+`StructuredMeshSurface` (`StructuredMeshSurface.load_earthvision_grid(...)`, or
+automatically under `Project.surfaces`); the IRAP finite-point export remains a
+separate `PointSet`.
 
 ```python
 geom = pts.infer_geometry(tolerance=1e-3)  # GridGeometry or bridged TriSurface fallback

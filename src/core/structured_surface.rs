@@ -9,13 +9,15 @@
 //! [`TriSurface`](crate::TriSurface). The shell is immutable and shared — N
 //! properties/clones never repeat the geometry in memory.
 
+use crate::core::points::structured_edge;
 use crate::core::shell::StructuredShell;
-use crate::core::{PointSet, PolygonSet};
+use crate::core::{GeometryEdge, PointSet, PolygonSet};
 use crate::foundation::{
     BBox, GeoError, GridGeometry, HasHistory, OperationHistory, Result, Stats,
 };
 use indexmap::IndexMap;
 use ndarray::Array2;
+use std::path::Path;
 use std::sync::Arc;
 
 /// A logically regular surface with explicit per-node coordinates: shell +
@@ -55,6 +57,113 @@ impl TryFrom<StructuredMeshSurfaceData> for StructuredMeshSurface {
 }
 
 impl StructuredMeshSurface {
+    /// Load an EarthVision ASCII grid as a topology-preserving structured
+    /// surface. Every logical node is retained; a null z value becomes `NaN`
+    /// while its finite XY coordinate remains part of the shell.
+    pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let data = crate::io::earthvision::load_earthvision_grid_all(path)?;
+        if data.nodes.is_empty() {
+            return Err(GeoError::GeometryInference(
+                "EarthVision grid contains no data nodes".into(),
+            ));
+        }
+        let any_index = data
+            .nodes
+            .iter()
+            .any(|node| node.column.is_some() || node.row.is_some());
+        let all_index = data
+            .nodes
+            .iter()
+            .all(|node| node.column.is_some() && node.row.is_some());
+        if any_index && !all_index {
+            return Err(GeoError::GeometryInference(
+                "EarthVision grid mixes indexed and unindexed nodes".into(),
+            ));
+        }
+
+        let (ncol, nrow, indexed): (usize, usize, Vec<(usize, usize)>) = if all_index {
+            let mut raw = Vec::with_capacity(data.nodes.len());
+            for node in &data.nodes {
+                raw.push((
+                    earthvision_index(node.column.unwrap(), "column")?,
+                    earthvision_index(node.row.unwrap(), "row")?,
+                ));
+            }
+            let min_col = raw.iter().map(|(i, _)| *i).min().unwrap_or(0);
+            let max_col = raw.iter().map(|(i, _)| *i).max().unwrap_or(0);
+            let min_row = raw.iter().map(|(_, j)| *j).min().unwrap_or(0);
+            let max_row = raw.iter().map(|(_, j)| *j).max().unwrap_or(0);
+            let shape = (max_col - min_col + 1, max_row - min_row + 1);
+            if let Some(header) = data.grid_size {
+                if header != shape {
+                    return Err(GeoError::GeometryMismatch(format!(
+                        "EarthVision Grid_size {header:?} disagrees with column/row topology {shape:?}"
+                    )));
+                }
+            }
+            (
+                shape.0,
+                shape.1,
+                raw.into_iter()
+                    .map(|(i, j)| (i - min_col, j - min_row))
+                    .collect(),
+            )
+        } else {
+            let (ncol, nrow) = data.grid_size.ok_or_else(|| {
+                GeoError::GeometryInference(
+                    "EarthVision grid needs column/row fields or a Grid_size directive".into(),
+                )
+            })?;
+            let expected = ncol.checked_mul(nrow).ok_or_else(|| {
+                GeoError::GeometryMismatch("EarthVision Grid_size overflows usize".into())
+            })?;
+            if data.nodes.len() != expected {
+                return Err(GeoError::GeometryMismatch(format!(
+                    "EarthVision Grid_size {ncol} x {nrow} expects {expected} nodes, found {}",
+                    data.nodes.len()
+                )));
+            }
+            (
+                ncol,
+                nrow,
+                (0..data.nodes.len())
+                    .map(|slot| (slot % ncol, slot / ncol))
+                    .collect(),
+            )
+        };
+
+        let mut x = Array2::from_elem((ncol, nrow), f64::NAN);
+        let mut y = Array2::from_elem((ncol, nrow), f64::NAN);
+        let mut values = Array2::from_elem((ncol, nrow), f64::NAN);
+        let mut occupied = vec![false; ncol * nrow];
+        for (node, (i, j)) in data.nodes.iter().zip(indexed) {
+            let slot = i + j * ncol;
+            if occupied[slot] {
+                return Err(GeoError::GeometryInference(format!(
+                    "multiple EarthVision nodes map to column={}, row={}",
+                    i + 1,
+                    j + 1
+                )));
+            }
+            occupied[slot] = true;
+            x[[i, j]] = node.x;
+            y[[i, j]] = node.y;
+            values[[i, j]] = node.z;
+        }
+
+        let edge = structured_edge(&x, &y, None, None, GeometryEdge::Occupied)?;
+        let nominal_geometry = StructuredShell::new(x.clone(), y.clone(), None, edge.clone())?
+            .infer_grid(1e-3)
+            .ok();
+        let mut out = Self::new(x, y, values, nominal_geometry, edge)?;
+        out.history = OperationHistory::from_entry(format!(
+            "structured_surface.load_earthvision_grid(path={})",
+            path.display()
+        ));
+        Ok(out)
+    }
+
     /// Build a structured mesh surface from explicit node coordinate/value
     /// arrays. Arrays must all be shaped `(ncol, nrow)`.
     pub fn new(
@@ -228,6 +337,20 @@ impl StructuredMeshSurface {
     }
 }
 
+fn earthvision_index(value: f64, label: &str) -> Result<usize> {
+    if !value.is_finite() || value.fract().abs() > 1e-9 || value < 0.0 {
+        return Err(GeoError::GeometryInference(format!(
+            "EarthVision {label} index must be a finite non-negative integer, got {value}"
+        )));
+    }
+    if value > usize::MAX as f64 {
+        return Err(GeoError::GeometryInference(format!(
+            "EarthVision {label} index exceeds platform range: {value}"
+        )));
+    }
+    Ok(value as usize)
+}
+
 impl HasHistory for StructuredMeshSurface {
     fn operation_history(&self) -> &OperationHistory {
         &self.history
@@ -271,6 +394,31 @@ mod tests {
         assert_eq!(s.node_xy(1, 1).unwrap(), (12.0, 10.0));
         assert_eq!(s.z(1, 1).unwrap(), 130.0);
         assert_eq!(s.stats().count, 4);
+    }
+
+    #[test]
+    fn earthvision_loader_preserves_null_node_and_topology() {
+        use std::io::Write;
+
+        let path = std::env::temp_dir().join(format!(
+            "petekio_structured_ev_{}.EarthVisionGrid",
+            std::process::id()
+        ));
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(
+                b"# Type: scattered data\n# Grid_size: 2 x 2\n# Null_value: 1.0e30\n# End:\n\
+                  100 200 -50 1 1\n110 200 -51 2 1\n100 210 1.0e30 1 2\n110 210 -53 2 2\n",
+            )
+            .unwrap();
+
+        let surface = StructuredMeshSurface::load_earthvision_grid(&path).unwrap();
+        assert_eq!((surface.ncol(), surface.nrow()), (2, 2));
+        assert_eq!(surface.node_xy(0, 1).unwrap(), (100.0, 210.0));
+        assert!(surface.z(0, 1).unwrap().is_nan());
+        assert_eq!(surface.to_points().len(), 4);
+        assert!(surface.nominal_geometry().is_some());
+        std::fs::remove_file(path).ok();
     }
 
     #[test]

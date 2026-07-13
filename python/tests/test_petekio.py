@@ -437,6 +437,30 @@ def test_earthvision_pointset_infer_geometry_uses_column_row(tmp_path):
     assert math.isclose(geom.yinc, 10.0, abs_tol=1e-9)
 
 
+def test_earthvision_structured_surface_preserves_null_xy(tmp_path):
+    path = tmp_path / "null_surface.EarthVisionGrid"
+    path.write_text(
+        """# Type: scattered data
+# Grid_size: 2 x 2
+# Null_value: 1.0e30
+# End:
+0 0 10 1 1
+10 0 11 2 1
+0 10 1.0e30 1 2
+10 10 13 2 2
+""",
+        encoding="utf-8",
+    )
+    surface = petekio.StructuredMeshSurface.load_earthvision_grid(str(path))
+    assert (surface.ncol, surface.nrow) == (2, 2)
+    assert surface.node_xy(0, 1) == (0.0, 10.0)
+    assert math.isnan(surface.z(0, 1))
+    assert len(surface.to_points()) == 4
+
+    # Deprecated compatibility remains a finite-only point view.
+    assert len(petekio.PointSet.load_earthvision_grid(str(path))) == 3
+
+
 def _l_shaped_lattice():
     x, y, z = [], [], []
     for j in range(4):

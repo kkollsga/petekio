@@ -6,6 +6,19 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **EarthVision grids are first-class structured project surfaces.**
+  `StructuredMeshSurface.load_earthvision_grid(...)` and
+  `GeoData.load_structured_surface(...)` retain every logical node, including
+  null-z nodes as `NaN` with their finite XY and row/column topology. Raw
+  `Project.import_data(...)` routes EarthVision grids into the unified surface
+  namespace while same-stem IRAP point exports remain topology-enriched point
+  sets with stable path-qualified names. Structured surfaces now round-trip in
+  whole-project `.pproj` files using the existing `structured_mesh` kind, with
+  no data-version bump. `PointSet.load_earthvision_grid(...)` remains as a
+  deprecated finite-node compatibility view. `model_inputs()` errors rather
+  than silently dropping structured horizons it cannot yet represent.
+
 ## [0.3.13] - 2026-07-13
 
 ### Added

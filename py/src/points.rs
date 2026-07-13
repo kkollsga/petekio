@@ -118,10 +118,16 @@ impl PointSet {
             .map_err(to_pyerr)
     }
 
-    /// Load scattered points from an EarthVision grid ASCII file
-    /// (`.EarthVisionGrid`); null nodes are dropped.
+    /// Deprecated finite-node compatibility view of an EarthVision grid.
+    /// Prefer `StructuredMeshSurface.load_earthvision_grid`; null nodes are
+    /// dropped here.
     #[staticmethod]
     fn load_earthvision_grid(py: Python<'_>, path: &str) -> PyResult<PointSet> {
+        crate::deprecation_warning(
+            py,
+            "PointSet.load_earthvision_grid() is deprecated; use \
+             StructuredMeshSurface.load_earthvision_grid() to preserve null nodes and topology.",
+        )?;
         py.detach(|| RsPointSet::load_earthvision_grid(path))
             .map(PointSet::owned)
             .map_err(to_pyerr)

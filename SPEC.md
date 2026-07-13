@@ -411,7 +411,13 @@ structured and triangular surfaces retain the value-layer fallback.
 `project.view()` adds petekIO-native role/folder selection, surface-property
 defaults, automatic metadata-only per-bore correlation discovery, optional
 per-bore `ViewSpec` overrides, and stored-template resolution. Correlation
-resources start hidden and gather samples only when selected. Equal-TVD picks
+resources start hidden and gather samples only when selected. Automatic curves
+are a deterministic project-wide intent of at most six tracks: one available
+source mnemonic per gamma, shale-volume, porosity, water-saturation,
+permeability, and deep-resistivity family, with safe continuous fallbacks to a
+practical minimum. Coordinate/discrete curves are excluded. Explicit
+`ViewSpec` remains exact; inspectable template layers restrict gathering and
+remain layout-authoritative. Equal-TVD picks
 retain stable stratigraphic identity and represent zero-thickness intervals;
 only decreasing stacks fail.
 Surface Map resources also carry surface-context `well_overlays`: petekIO runs

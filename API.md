@@ -983,8 +983,9 @@ template=None, tab="auto", lod=True, settings=None) -> ProjectViewSession`
 uses canonical role/folder/path selectors. `selection=None` catalogs the whole
 project without materializing heavy values. Defaults show the first selected
 surface in Map/3-D plus every selected bore. Bores with mnemonic metadata gain
-a hidden lazy Wells resource using all curves and tops; `logs=ViewSpec(...)`
-overrides that selection. `ProjectViewSession` exposes `tree()`, `resource(...)`,
+a hidden lazy Wells resource using a deterministic maximum-six selection plus
+tops; `logs=ViewSpec(...)` overrides that selection exactly, while inspectable
+template tracks restrict automatic gathering. `ProjectViewSession` exposes `tree()`, `resource(...)`,
 `manifest()`, `diagnostics`, `url`, `refresh()`, `serve()`, and
 `save(path, include="visible"|"selected")`. `Project.view_catalog()` /
 `Project.view_resource(...)` are the generic provider seam used by petekTools.

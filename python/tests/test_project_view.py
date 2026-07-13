@@ -11,6 +11,7 @@ import pytest
 
 import petekio
 from petekio._project_view import ProjectViewProvider
+from petekio._project_view_curves import select_auto_curves
 
 
 viewer = pytest.importorskip("petektools.viewer")
@@ -241,6 +242,31 @@ def test_bore_ids_are_typed_and_log_gathering_is_never_catalog_work():
     assert all(leaf["visible"]["wells"] is False for leaf in leaves)
     assert all(bore.log_calls == 0 for bore in well._items.values())
     assert all(bore.mnemonic_calls == 1 for bore in well._items.values())
+
+
+def test_automatic_curve_priorities_are_small_and_cross_bore_consistent():
+    selected = select_auto_curves(
+        {
+            "a": ["MD", "CALI", "GR", "FACIES", "VSH", "PHIE", "SW", "PERM", "RDEP"],
+            "b": ["DEPTH", "DT", "GAMMA", "VCL", "NPHI", "SWT", "K", "RT"],
+        }
+    )
+    assert selected == {
+        "a": ("GR", "VSH", "PHIE", "SW", "PERM", "RDEP"),
+        "b": ("GAMMA", "VCL", "NPHI", "SWT", "K", "RT"),
+    }
+
+
+def test_automatic_curve_fallback_skips_coordinates_and_discrete_curves():
+    selected = select_auto_curves(
+        {
+            "a": ["MD", "CALI", "DT", "RHOB", "FACIES", "MISC"],
+            "b": ["DEPTH", "CALI", "DT", "NPHI", "NETFLAG"],
+        }
+    )
+    assert selected["a"] == ("CALI", "DT", "RHOB")
+    assert selected["b"] == ("NPHI", "CALI", "DT")
+    assert all(len(curves) <= 6 for curves in selected.values())
 
 
 def test_explicit_template_payload_is_still_lazy_during_catalog_build():
@@ -594,6 +620,53 @@ def test_bore_logs_are_discovered_from_metadata_and_explicit_spec_filters(tmp_pa
     assert bore["visible"]["wells"] is False
     resource = plain.resource(bore["id"], "wells")
     assert [c["mnemonic"] for c in resource["payload"]["wells_logs"]["wells"][0]["curves"]] == ["PHIE"]
+
+
+def test_automatic_resource_caps_tracks_and_template_or_spec_is_authoritative(tmp_path):
+    las = (
+        "~Version\n VERS. 2.0 :\n WRAP. NO :\n"
+        "~Well\n STRT.M 100 :\n STOP.M 101 :\n STEP.M 1 :\n NULL. -999.25 :\n"
+        "~Curve\n DEPT.M :\n CALI.IN :\n GR.API :\n FACIES.NONE :\n"
+        " VSH.v/v :\n PHIE.v/v :\n SW.v/v :\n PERM.MD :\n RDEP.OHMM :\n NPHI.v/v :\n"
+        "~ASCII\n"
+        "100 8.5 45 1 0.2 0.18 0.3 120 20 0.21\n"
+        "101 8.6 50 2 0.3 0.16 0.4 100 15 0.19\n"
+    )
+    root = tmp_path / "Data"
+    root.mkdir()
+    (root / "99_2-1.las").write_text(las)
+    project = petekio.Project.import_data(root)
+
+    automatic = project.view(settings=petekio.ViewSettings(serve=False))
+    bore = next(leaf for leaf in _walk(automatic.tree()) if leaf["role"] == "bore")
+    resource = automatic.resource(bore["id"], "wells")
+    curves = resource["payload"]["wells_logs"]["wells"][0]["curves"]
+    assert [curve["mnemonic"] for curve in curves] == [
+        "GR",
+        "VSH",
+        "PHIE",
+        "SW",
+        "PERM",
+        "RT",
+    ]
+    assert curves[-1]["display_name"] == "RDEP"
+
+    explicit = project.view(
+        logs=petekio.ViewSpec(curves=("CALI", "PHIE")),
+        settings=petekio.ViewSettings(serve=False),
+    )
+    curves = explicit.resource(bore["id"], "wells")["payload"]["wells_logs"]["wells"][0]["curves"]
+    assert [curve["mnemonic"] for curve in curves] == ["CALI", "PHIE"]
+
+    template = viewer.CorrelationTemplate("qc").add_track(
+        viewer.CorrelationTrack("selected").curve("CALI").curve("GR")
+    )
+    templated = project.view(
+        template=template,
+        settings=petekio.ViewSettings(serve=False),
+    )
+    curves = templated.resource(bore["id"], "wells")["payload"]["wells_logs"]["wells"][0]["curves"]
+    assert [curve["mnemonic"] for curve in curves] == ["CALI", "GR"]
 
     logs = project.view(
         logs=petekio.ViewSpec(curves=("PHIE",)),

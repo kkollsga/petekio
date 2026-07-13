@@ -40,9 +40,12 @@ All notable changes to petekIO are recorded here. The format loosely follows
   are unchanged.
 - **Project correlation is discovered automatically and remains lazy.** Bore
   catalog construction calls only `mnemonics()` and advertises a hidden Wells
-  resource when curves exist. Selecting it gathers all curves and tops by
-  default; `logs=ViewSpec(...)` remains the explicit override, and stored or
-  passed templates also apply to automatic curves.
+  resource when curves exist. Selecting it gathers tops plus at most six useful
+  tracks: one gamma, shale-volume, porosity, water-saturation, permeability,
+  and deep-resistivity curve, with deterministic safe continuous fallbacks when
+  needed. Coordinate and obvious discrete curves are excluded.
+  `logs=ViewSpec(...)` remains exact; inspectable stored/passed template tracks
+  restrict gathering and remain layout-authoritative.
 - **Lazy project workspaces.** `project.view()` now exposes the same generic
   workspace as `petektools.view(project)`: an ordered searchable project tree
   with canonical folder-qualified object IDs and bore-qualified well IDs.

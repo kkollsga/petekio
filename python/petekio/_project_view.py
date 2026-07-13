@@ -23,6 +23,7 @@ from ._project_view_catalog import (
     label as catalog_label,
     typed_id,
 )
+from ._project_view_curves import select_auto_curves, template_curve_names
 from ._project_view_surface import SurfaceViewResources
 from ._specs import ViewSettings, ViewSpec
 
@@ -85,6 +86,7 @@ class ProjectViewProvider:
         self._catalog: list[dict[str, Any]] = []
         self._diagnostics: list[dict[str, Any]] = []
         self._surface_resources = SurfaceViewResources(project, _viewer)
+        self._auto_curves: dict[str, tuple[str, ...]] = {}
         self._snapshot(strict=True)
 
     @property
@@ -186,6 +188,7 @@ class ProjectViewProvider:
                     )
                 )
 
+        bore_rows: list[tuple[str, str, str, list[str]]] = []
         for well_id in self.project.wells.names():
             well = self.project.well(well_id)
             if well is None:
@@ -198,31 +201,39 @@ class ProjectViewProvider:
                 continue
             for bore in bores:
                 label = "Main" if not bore else str(bore)
-                views: dict[str, dict[str, Any]] = {"map": {}, "scene3d": {}}
-                visible = {"map": True, "scene3d": True}
                 try:
                     sidetrack = well.sidetrack(bore)
                     mnemonics = [] if sidetrack is None else list(sidetrack.mnemonics())
                 except Exception as exc:
                     diagnostics.append(self._diag("catalog_error", "bore", well_id, exc))
                     mnemonics = []
-                if self.logs is not None or mnemonics:
-                    views["wells"] = {}
-                    # Correlation data is deliberately opt-in even when its
-                    # metadata is discovered automatically: an initially
-                    # visible bore must never gather every log sample.
-                    visible["wells"] = False
-                entries.append(
-                    Entry(
-                        bore_id(well_id, bore),
-                        label,
-                        "bore",
-                        (well_id, label),
-                        (well_id, bore),
-                        views,
-                        visible,
-                    )
+                bore_rows.append((well_id, bore, label, mnemonics))
+
+        metadata = {
+            bore_id(well_id, bore): mnemonics
+            for well_id, bore, _, mnemonics in bore_rows
+        }
+        self._auto_curves = select_auto_curves(metadata)
+        for well_id, bore, label, mnemonics in bore_rows:
+            views: dict[str, dict[str, Any]] = {"map": {}, "scene3d": {}}
+            visible = {"map": True, "scene3d": True}
+            if self.logs is not None or mnemonics:
+                views["wells"] = {}
+                # Correlation data is deliberately opt-in even when its
+                # metadata is discovered automatically: an initially
+                # visible bore must never gather every log sample.
+                visible["wells"] = False
+            entries.append(
+                Entry(
+                    bore_id(well_id, bore),
+                    label,
+                    "bore",
+                    (well_id, label),
+                    (well_id, bore),
+                    views,
+                    visible,
                 )
+            )
 
         for name in self.project.well_tops.all_names():
             entries.append(
@@ -490,10 +501,13 @@ class ProjectViewProvider:
         if view == "wells":
             spec = self.logs
             if spec is None:
-                # Catalog discovery already proved this bore has logs. Resolve
-                # the current metadata again at materialization time so a
-                # refresh-free replacement cannot leave stale curve names.
-                spec = ViewSpec(curves=sidetrack.mnemonics(), tops=True)
+                template_curves = self._template_curves()
+                curves = (
+                    template_curves
+                    if template_curves is not None
+                    else self._auto_curves.get(entry.id, ())
+                )
+                spec = ViewSpec(curves=curves, tops=True)
             curves = spec.curves
             raw = sidetrack._view_raw(curves)
             raw["id"] = entry.id
@@ -534,6 +548,16 @@ class ProjectViewProvider:
         for rendered in (payload.get("scene3d") or {}).get("wells", []):
             rendered["item_id"] = entry.id
         return payload
+
+    def _template_curves(self) -> tuple[str, ...] | None:
+        if self.template is None:
+            return None
+        template = (
+            self.project.templates[self.template]
+            if isinstance(self.template, str)
+            else self.template
+        )
+        return template_curve_names(template)
 
     def _well_top(self, entry: Entry, view: str) -> dict[str, Any]:
         try:

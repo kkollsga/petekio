@@ -57,11 +57,19 @@ session = project.view(
 ```
 
 Without `logs=ViewSpec(...)`, each bore whose metadata advertises curves gets a
-lazy Wells resource using all of its curves and tops. The resource starts hidden,
-and catalog construction calls only `mnemonics()`; no log samples are gathered
-until the bore is enabled in Wells. Passing `logs=ViewSpec(...)` explicitly
-filters curves, tops, cutoffs, and flags. A template may be passed with either
-the automatic curves or an explicit spec. Multi-bore wells use independent IDs
+lazy Wells resource using a small deterministic selection plus all tops. It
+chooses at most one gamma-ray, shale-volume, porosity, water-saturation,
+permeability, and deep-resistivity curve (maximum six tracks), preserving each
+bore's exact source mnemonic within the selected family. If fewer than four
+families exist, safe continuous-looking curves fill the layout consistently;
+depth/coordinate and obvious facies/flag curves are excluded. The resource
+starts hidden, and catalog construction calls only `mnemonics()`; no log samples
+are gathered until the bore is enabled in Wells.
+
+Passing `logs=ViewSpec(...)` is exact and explicitly controls curves, tops,
+cutoffs, and flags. A template may be passed with either the automatic curves or
+an explicit spec; when its track mnemonics are inspectable, only those available
+curves are gathered and the template remains the layout authority. Multi-bore wells use independent IDs
 such as `well:A-1/bore:ST2`; no default bore is required or mutated. Unknown assets
 remain preserved and appear disabled with a diagnostic.
 

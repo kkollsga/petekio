@@ -892,14 +892,19 @@ class Project:
         return ProjectViewProvider(self).view_catalog()
 
     def view_resource(
-        self, *, item_id: str, view: str, lane: str | None = None
+        self,
+        *,
+        item_id: str,
+        view: str,
+        lane: str | None = None,
+        detail: str | None = None,
     ) -> dict[str, Any]:
         """Materialize one default workspace resource for ``pto.view(project)``."""
 
         from ._project_view import ProjectViewProvider
 
         return ProjectViewProvider(self).view_resource(
-            item_id=item_id, view=view, lane=lane
+            item_id=item_id, view=view, lane=lane, detail=detail
         )
 
     @property

@@ -136,6 +136,13 @@ edges de-duplicate, tangencies are retained, and coplanar overlap is rejected
 because it has no discrete pick. `intersection` never chooses among multiple
 crossings; call `intersections` and select one explicitly.
 
+In `project.view()` only, the Map's surface-context display path uses the first
+MD-ordered hit and stops at its exact XYZ. This visual clipping never changes
+the public methods above: `intersection` remains loud for multiple crossings.
+Coincident formation picks are also retained as distinct stable markers; equal
+TVD is a valid zero-thickness interval, while a decreasing/overturned stack is
+still rejected.
+
 For a complete project horizon, use the aggregate report and atomic mapping:
 
 ```python

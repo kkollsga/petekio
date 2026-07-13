@@ -34,6 +34,19 @@ paths are safe when different folders contain the same leaf name; ambiguous
 leaf-only selectors fail with guidance. Surface depth and named attributes are
 lanes of one surface item, so switching `thickness` loads that lane once.
 
+Regular surfaces stay compact: Map receives the affine grid plus typed values
+and mask, not expanded nodes and triangles. The 3-D resource opens with a
+bounded preview spanning the complete surface footprint and refines to full
+detail without changing the camera. A named attribute colours the surface but
+the primary depth lane still defines elevations and geometry holes.
+
+Selected well paths on a surface Map end at their first exact MD-ordered
+surface crossing. The final display point is the intersection's exact MD/XYZ;
+a no-hit well keeps its complete trajectory. Multiple crossings are reported
+on the overlay while the display uses the first one. This is presentation only:
+`bore.intersection(surface)` still raises on ambiguity, and callers use
+`bore.intersections(surface)` to choose explicitly.
+
 ## Correlation logs and templates
 
 ```python
@@ -48,8 +61,8 @@ lazy Wells resource using all of its curves and tops. The resource starts hidden
 and catalog construction calls only `mnemonics()`; no log samples are gathered
 until the bore is enabled in Wells. Passing `logs=ViewSpec(...)` explicitly
 filters curves, tops, cutoffs, and flags. A template may be passed with either
-the automatic curves or an explicit spec. Multi-bore wells use independent IDs such as
-`well:A-1/bore:ST2`; no default bore is required or mutated. Unknown assets
+the automatic curves or an explicit spec. Multi-bore wells use independent IDs
+such as `well:A-1/bore:ST2`; no default bore is required or mutated. Unknown assets
 remain preserved and appear disabled with a diagnostic.
 
 ## Inspect, refresh, and save

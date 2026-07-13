@@ -23,6 +23,7 @@ from ._project_view_catalog import (
     label as catalog_label,
     typed_id,
 )
+from ._project_view_surface import SurfaceViewResources
 from ._specs import ViewSettings, ViewSpec
 
 if TYPE_CHECKING:
@@ -83,6 +84,7 @@ class ProjectViewProvider:
         self._entries: dict[str, Entry] = {}
         self._catalog: list[dict[str, Any]] = []
         self._diagnostics: list[dict[str, Any]] = []
+        self._surface_resources = SurfaceViewResources(project, _viewer)
         self._snapshot(strict=True)
 
     @property
@@ -119,6 +121,7 @@ class ProjectViewProvider:
             roots.append(root.to_dict())
         self._catalog = roots
         self._diagnostics = diagnostics
+        self._surface_resources.reset(self._entries, self._diagnostics)
 
     def _discover(self, diagnostics: list[dict[str, Any]]) -> list[Entry]:
         entries: list[Entry] = []
@@ -141,6 +144,14 @@ class ProjectViewProvider:
                     view: {"lanes": copy.deepcopy(lanes), "active_lane": "depth"}
                     for view in ("map", "scene3d")
                 }
+                if callable(getattr(surface, "_view_regular_grid", None)):
+                    views["scene3d"].update(
+                        tiers=[
+                            {"id": "preview", "label": "Preview"},
+                            {"id": "full", "label": "Full detail"},
+                        ],
+                        active_detail="preview",
+                    )
                 entries.append(
                     Entry(
                         typed_id("surface", name.split("/")),
@@ -231,7 +242,7 @@ class ProjectViewProvider:
             entries.append(self._disabled("source_top", name, reason))
         template_physical = {"@asset/templates/" + name for name in self.project.templates.all_names()}
         for name in self.project.templates.all_names():
-            reason = "Correlation templates are presentation assets; select one with template= and logs=."
+            reason = "Correlation templates are presentation assets; select one with template=."
             entries.append(self._disabled("template", name, reason))
         for name in self.project.geodata.asset_names():
             if name in template_physical:
@@ -397,7 +408,14 @@ class ProjectViewProvider:
             for view in entry.visible:
                 entry.visible[view] = entry.id in ids
 
-    def view_resource(self, *, item_id: str, view: str, lane: str | None = None) -> dict[str, Any]:
+    def view_resource(
+        self,
+        *,
+        item_id: str,
+        view: str,
+        lane: str | None = None,
+        detail: str | None = None,
+    ) -> dict[str, Any]:
         entry = self._entries.get(item_id)
         if entry is None:
             raise KeyError(f"unknown project workspace item {item_id!r}; call refresh()")
@@ -405,8 +423,10 @@ class ProjectViewProvider:
             raise ValueError(entry.reason or f"workspace item {item_id!r} is disabled")
         if view not in entry.views:
             raise KeyError(f"workspace item {item_id!r} has no {view!r} resource")
+        if detail is not None and view != "scene3d":
+            raise KeyError(f"workspace item {item_id!r} has no {view!r} detail tiers")
         if entry.role == "surface":
-            return self._surface(entry, view, lane)
+            return self._surface(entry, view, lane, detail)
         if entry.role in {"point", "polygon"}:
             return self._spatial(entry, view)
         if entry.role == "bore":
@@ -415,7 +435,9 @@ class ProjectViewProvider:
             return self._well_top(entry, view)
         raise ValueError(entry.reason or f"no materializer for {entry.role!r}")
 
-    def _surface(self, entry: Entry, view: str, lane: str | None) -> dict[str, Any]:
+    def _surface(
+        self, entry: Entry, view: str, lane: str | None, detail: str | None
+    ) -> dict[str, Any]:
         obj = self.project.surface(entry.source[0])
         if obj is None:
             raise KeyError(f"surface {entry.source[0]!r} was renamed or deleted; call refresh()")
@@ -423,11 +445,27 @@ class ProjectViewProvider:
         if lane not in entry.lane_attrs:
             raise KeyError(f"surface {entry.id!r} has no declared lane {lane!r}")
         attr = entry.lane_attrs[lane]
+        regular = getattr(obj, "_view_regular_grid", None)
+        if callable(regular):
+            if view == "map":
+                payload = self._surface_resources.regular_map(
+                    entry, regular(attr=attr, stride=1)
+                )
+                self._surface_resources.attach_well_overlays(entry, obj, payload)
+                return payload
+            stride = (
+                self._surface_resources.preview_stride(obj) if detail == "preview" else 1
+            )
+            return self._surface_resources.regular_scene(
+                entry, regular(attr=attr, stride=stride), detail
+            )
         fill: bool | str = True if attr is None else attr
         item = {"object": obj, "id": entry.id, "name": entry.label, "fill": fill}
         viewer = _viewer()
         if view == "map":
-            return viewer.view2d_payload([item], title=entry.label, lod=self.lod)
+            payload = viewer.view2d_payload([item], title=entry.label, lod=self.lod)
+            self._surface_resources.attach_well_overlays(entry, obj, payload)
+            return payload
         return viewer.view3d_payload([item], title=entry.label)
 
     def _spatial(self, entry: Entry, view: str) -> dict[str, Any]:
@@ -471,7 +509,12 @@ class ProjectViewProvider:
                 )
                 bundle = _materialize_template(template).apply(bundle)
             return LogSession(bundle)._viewer_payload()
-        rows = self._trajectory(sidetrack)
+        rows = [
+            point
+            for _, point in self._surface_resources.trajectory_samples(
+                entry.id, sidetrack
+            )
+        ]
         head = well.head
         wire = {
             "id": entry.id,
@@ -491,22 +534,6 @@ class ProjectViewProvider:
         for rendered in (payload.get("scene3d") or {}).get("wells", []):
             rendered["item_id"] = entry.id
         return payload
-
-    @staticmethod
-    def _trajectory(sidetrack: Any) -> list[list[float]]:
-        span = sidetrack.md_range()
-        if span is None:
-            return []
-        lo, hi = map(float, span)
-        if hi == lo:
-            point = sidetrack.xyz(lo)
-            return [] if point is None else [list(point)]
-        rows = []
-        for index in range(128):
-            point = sidetrack.xyz(lo + (hi - lo) * index / 127)
-            if point is not None:
-                rows.append(list(point))
-        return rows
 
     def _well_top(self, entry: Entry, view: str) -> dict[str, Any]:
         try:
@@ -552,8 +579,14 @@ class ProjectViewSession:
             )
         return self._workspace
 
-    def resource(self, item_id: str, view: str, lane: str | None = None) -> dict[str, Any]:
-        return self._session().resource(item_id, view, lane)
+    def resource(
+        self,
+        item_id: str,
+        view: str,
+        lane: str | None = None,
+        detail: str | None = None,
+    ) -> dict[str, Any]:
+        return self._session().resource(item_id, view, lane, detail)
 
     def manifest(self) -> dict[str, Any]:
         return self._session().manifest()

@@ -24,6 +24,7 @@ use crate::{parse_grid_method, to_pyerr};
 use petekio::{GeoError, PolygonSet as RsPolygonSet, Surface as RsSurface};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyDict};
 use std::sync::Arc;
 
 /// Where a `Surface` wrapper reads its grid from.
@@ -431,6 +432,158 @@ impl Surface {
             .with(py, |s| py.detach(|| s.value_layer(attr, stride)))?
             .map_err(to_pyerr)?;
         crate::shell::value_layer_dict(py, layer)
+    }
+
+    /// Private project-view transport for an affine regular surface. It copies
+    /// only compact row-major f32 lanes and u8 masks; unlike `value_layer`, it
+    /// never constructs node or triangle arrays. `stride` is display-only and
+    /// samples native nodes before marshaling.
+    #[pyo3(signature = (attr = None, stride = 1))]
+    fn _view_regular_grid(
+        &self,
+        py: Python<'_>,
+        attr: Option<&str>,
+        stride: usize,
+    ) -> PyResult<Py<PyDict>> {
+        if stride == 0 {
+            return Err(PyValueError::new_err(
+                "Surface._view_regular_grid: stride must be at least 1",
+            ));
+        }
+        let transport = self.with(py, |surface| {
+            let selected = match attr {
+                Some(name) => surface.attr(name).ok_or_else(|| {
+                    PyValueError::new_err(format!("no attribute layer '{name}'"))
+                })?,
+                None => surface.values(),
+            };
+            let geom = &surface.geom;
+            if geom.ncol < 2 || geom.nrow < 2 {
+                return Err(PyValueError::new_err(
+                    "Surface._view_regular_grid: affine viewer transport requires at least 2x2 nodes",
+                ));
+            }
+            let effective_stride = stride
+                .min(geom.ncol.saturating_sub(1).max(1))
+                .min(geom.nrow.saturating_sub(1).max(1));
+            // Preview dimensions use ceil division and then sample evenly from
+            // first through last source node. That preserves the complete
+            // world footprint even when `(n-1)` is not divisible by stride,
+            // so the later full-detail swap cannot change camera framing.
+            let ncol = geom.ncol.saturating_sub(1).div_ceil(effective_stride) + 1;
+            let nrow = geom.nrow.saturating_sub(1).div_ceil(effective_stride) + 1;
+            let mut elevations = Vec::with_capacity(ncol * nrow * 4);
+            let mut values = Vec::with_capacity(ncol * nrow * 4);
+            let mut elevation_mask = Vec::with_capacity(ncol * nrow);
+            let mut value_mask = Vec::with_capacity(ncol * nrow);
+            let mut sampled_elevation_mask = Vec::with_capacity(ncol * nrow);
+            for oj in 0..nrow {
+                let j = (oj * (geom.nrow - 1) + (nrow - 1) / 2) / (nrow - 1);
+                for oi in 0..ncol {
+                    let i = (oi * (geom.ncol - 1) + (ncol - 1) / 2) / (ncol - 1);
+                    let elevation = surface.values()[[i, j]];
+                    let value = selected[[i, j]];
+                    let elevation_finite = elevation.is_finite();
+                    let value_finite = value.is_finite();
+                    elevations.extend_from_slice(
+                        &(if elevation_finite {
+                            elevation as f32
+                        } else {
+                            f32::from_bits(0x7fc0_0000)
+                        })
+                        .to_le_bytes(),
+                    );
+                    values.extend_from_slice(
+                        &(if value_finite {
+                            value as f32
+                        } else {
+                            f32::from_bits(0x7fc0_0000)
+                        })
+                        .to_le_bytes(),
+                    );
+                    elevation_mask.push(u8::from(elevation_finite));
+                    value_mask.push(u8::from(value_finite));
+                    sampled_elevation_mask.push(elevation_finite);
+                }
+            }
+            let triangle_count = sampled_elevation_mask
+                .chunks_exact(ncol)
+                .collect::<Vec<_>>()
+                .windows(2)
+                .map(|rows| {
+                    (0..ncol.saturating_sub(1))
+                        .filter(|&i| rows[0][i] && rows[0][i + 1] && rows[1][i] && rows[1][i + 1])
+                        .count()
+                        * 2
+                })
+                .sum::<usize>();
+            let finite_range = |lane: &ndarray::Array2<f64>| {
+                lane.iter()
+                    .copied()
+                    .filter(|value| value.is_finite())
+                    .fold(None, |range, value| match range {
+                        None => Some((value, value)),
+                        Some((lo, hi)) => Some((lo.min(value), hi.max(value))),
+                    })
+                    .unwrap_or((0.0, 1.0))
+            };
+            let value_range = finite_range(selected);
+            let elevation_range = finite_range(surface.values());
+            let origin = geom.node_xy(0, 0);
+            let end_i = geom.node_xy(geom.ncol - 1, 0);
+            let end_j = geom.node_xy(0, geom.nrow - 1);
+            Ok::<_, PyErr>((
+                ncol,
+                nrow,
+                origin,
+                [
+                    (end_i.0 - origin.0) / (ncol - 1) as f64,
+                    (end_i.1 - origin.1) / (ncol - 1) as f64,
+                ],
+                [
+                    (end_j.0 - origin.0) / (nrow - 1) as f64,
+                    (end_j.1 - origin.1) / (nrow - 1) as f64,
+                ],
+                elevations,
+                values,
+                elevation_mask,
+                value_mask,
+                [elevation_range.0, elevation_range.1],
+                [value_range.0, value_range.1],
+                triangle_count,
+                effective_stride,
+            ))
+        })??;
+        let (
+            ncol,
+            nrow,
+            origin,
+            step_i,
+            step_j,
+            elevations,
+            values,
+            elevation_mask,
+            value_mask,
+            elevation_range,
+            value_range,
+            triangle_count,
+            effective_stride,
+        ) = transport;
+        let out = PyDict::new(py);
+        out.set_item("name", attr.unwrap_or("values"))?;
+        out.set_item("dimensions", [ncol, nrow])?;
+        out.set_item("origin", [origin.0, origin.1])?;
+        out.set_item("step_i", step_i)?;
+        out.set_item("step_j", step_j)?;
+        out.set_item("elevations", PyBytes::new(py, &elevations))?;
+        out.set_item("values", PyBytes::new(py, &values))?;
+        out.set_item("elevation_mask", PyBytes::new(py, &elevation_mask))?;
+        out.set_item("value_mask", PyBytes::new(py, &value_mask))?;
+        out.set_item("elevation_range", elevation_range)?;
+        out.set_item("range", value_range)?;
+        out.set_item("triangle_count", triangle_count)?;
+        out.set_item("stride", effective_stride)?;
+        Ok(out.unbind())
     }
 
     // ---- geometry getters ----

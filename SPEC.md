@@ -402,13 +402,23 @@ whose petekTools materialization remains lazy and optional.
 
 `Project` implements petekTools' generic workspace provider duck:
 `view_catalog()` returns an ordered metadata-only snapshot and
-`view_resource(item_id, view, lane)` materializes exactly one requested role.
+`view_resource(item_id, view, lane, detail)` materializes exactly one requested
+role. Regular surfaces use a private native row-major transport and emit
+block-backed affine `regular_grid` Map fills plus preview/full
+`regular_surface` 3-D resources without constructing a `ValueLayer`, nodes, or
+triangles. Preview sampling preserves the complete world footprint. General
+structured and triangular surfaces retain the value-layer fallback.
 `project.view()` adds petekIO-native role/folder selection, surface-property
 defaults, automatic metadata-only per-bore correlation discovery, optional
 per-bore `ViewSpec` overrides, and stored-template resolution. Correlation
 resources start hidden and gather samples only when selected. Equal-TVD picks
 retain stable stratigraphic identity and represent zero-thickness intervals;
 only decreasing stacks fail.
+Surface Map resources also carry surface-context `well_overlays`: petekIO runs
+the canonical exact intersection kernel, clips display geometry at the first
+MD-ordered crossing, and includes the exact MD/XYZ endpoint. No-hit keeps the
+full path and failures remain explicit diagnostics. This display choice does
+not change public `intersection()` ambiguity semantics.
 Stable IDs use canonical full paths with every segment percent-encoded; wells
 add an explicit bore segment. Surface primary/attribute values stay lanes of
 one item. Catalog building never calls `value_layer`, trajectory sampling, top

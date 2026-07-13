@@ -982,11 +982,18 @@ value-bearing `to_structured_surface()` / `to_tri_surface()` conversion;
 template=None, tab="auto", lod=True, settings=None) -> ProjectViewSession`
 uses canonical role/folder/path selectors. `selection=None` catalogs the whole
 project without materializing heavy values. Defaults show the first selected
-surface in Map/3-D plus every selected bore; logs are absent unless `logs` is an
-explicit `ViewSpec`. `ProjectViewSession` exposes `tree()`, `resource(...)`,
+surface in Map/3-D plus every selected bore. Bores with mnemonic metadata gain
+a hidden lazy Wells resource using all curves and tops; `logs=ViewSpec(...)`
+overrides that selection. `ProjectViewSession` exposes `tree()`, `resource(...)`,
 `manifest()`, `diagnostics`, `url`, `refresh()`, `serve()`, and
 `save(path, include="visible"|"selected")`. `Project.view_catalog()` /
 `Project.view_resource(...)` are the generic provider seam used by petekTools.
+Surface `scene3d` resources advertise `preview` / `full` details; an omitted
+detail remains compatible and materializes full resolution. Regular Map/3-D
+resources use compact affine typed blocks, while structured/triangular
+fallbacks retain their established payloads. Map resources carry exact
+surface-context well display overlays ending at the first MD-ordered crossing;
+this does not alter the public multi-hit error of `intersection()`.
 **Dataset names (duck-typed viewer seam):** every project-accessor hand-back
 (`project.points[...]`, `project.surfaces[...]`, `project.polygons[...]`,
 `geo.points(name)`, `geo.surface(name)`, `geo.polygons(name)`, and the

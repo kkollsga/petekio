@@ -29,6 +29,15 @@ All notable changes to petekIO are recorded here. The format loosely follows
   clouds still fail loudly, and bridge/component/label behaviour is unchanged.
 
 ### Added
+- **Responsive compact project surfaces and exact well overlays.** Regular
+  surface Map resources now emit block-backed affine grids directly from the
+  native row-major array, with no node/triangle expansion. 3-D advertises a
+  bounded full-footprint preview and compact full detail; attribute colour
+  values remain independent from primary depth elevations and holes.
+  Surface-context Map well paths use the canonical intersection kernel and end
+  at the exact MD/XYZ of the first MD-ordered hit, while no-hit paths remain
+  complete and errors stay diagnostic. Public intersection ambiguity semantics
+  are unchanged.
 - **Project correlation is discovered automatically and remains lazy.** Bore
   catalog construction calls only `mnemonics()` and advertises a hidden Wells
   resource when curves exist. Selecting it gathers all curves and tops by

@@ -279,15 +279,16 @@ impl PointSet {
     /// `max_bridge` (in cells) applies **only to the fallback `TriSurface`**: it
     /// admits triangle edges the closed-lattice rules reject — the boundary fringe,
     /// fault seams, interior data gaps — up to that length, closing the mesh where
-    /// the geometry does not close. `None` keeps the mesh strictly lattice-closed.
-    /// It has no effect when a regular `GridGeometry` is inferred.
+    /// the geometry does not close. The default is 3.4 cells; pass `None` to keep
+    /// the mesh strictly lattice-closed. It has no effect when a regular
+    /// `GridGeometry` is inferred.
     ///
     /// `fallback` controls what happens when the lattice fit fails:
     /// `"tri"` (default) returns the `TriSurface` fallback **and emits a
     /// `UserWarning`**; `"error"` raises a `ValueError` instead. Dispatch the
     /// result without importing types via its `kind` property
     /// (`"grid_geometry"` vs `"tri_surface"`).
-    #[pyo3(signature = (tolerance = 1e-3, edge = "full_rect", max_bridge = None, fallback = "tri"))]
+    #[pyo3(signature = (tolerance = 1e-3, edge = "full_rect", max_bridge = 3.4, fallback = "tri"))]
     fn infer_geometry(
         &self,
         py: Python<'_>,

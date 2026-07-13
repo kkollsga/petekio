@@ -6,6 +6,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+- **`infer_geometry()` now closes ordinary TriSurface fallback fringes and seams.**
+  The Python fallback defaults `max_bridge` to 3.4 cells, avoiding fragmented,
+  ragged boundaries when a point export does not quite close on its recovered
+  lattice. Pass `max_bridge=None` for the previous strict lattice-closed result.
+  Direct `to_tri_surface()` remains strict by default.
+
 ## [0.3.12] - 2026-07-10
 
 ### Added

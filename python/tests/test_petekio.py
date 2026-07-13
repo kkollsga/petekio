@@ -516,11 +516,31 @@ def _faulted_blocks():
     return x, y, z
 
 
+def test_infer_geometry_default_bridge_closes_fringe_and_explicit_none_is_strict():
+    # One point 2.5 cells beyond a regular boundary represents the short fringe
+    # produced when an export's edge does not close on the recovered lattice.
+    x, y, z = _rotated_lattice(9, 7, 50.0, 50.0, 0.0)
+    x.append(1000.0 + 8.0 * 50.0 + 125.0)
+    y.append(2000.0 + 3.0 * 50.0)
+    z.append(-1800.0)
+    p = petekio.PointSet.from_xyz(x, y, z)
+
+    with pytest.warns(UserWarning, match="TriSurface fallback"):
+        default = p.infer_geometry(tolerance=1e-3)
+    with pytest.warns(UserWarning, match="TriSurface fallback"):
+        strict = p.infer_geometry(tolerance=1e-3, max_bridge=None)
+
+    assert default.n_points == 64
+    assert default.components == 1
+    assert strict.n_points == 63
+    assert p.to_tri_surface().n_points == 63
+
+
 def test_infer_geometry_max_bridge_closes_the_fault_seam():
     x, y, z = _faulted_blocks()
     p = petekio.PointSet.from_xyz(x, y, z)
     with pytest.warns(UserWarning, match="TriSurface fallback"):
-        strict = p.infer_geometry(tolerance=1e-3)
+        strict = p.infer_geometry(tolerance=1e-3, max_bridge=None)
     assert strict.kind == "tri_surface"
     assert strict.components == 2
     with pytest.warns(UserWarning, match="TriSurface fallback"):

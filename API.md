@@ -836,7 +836,7 @@ petekio.ViewSettings(serve=True, save=None)                  # HOW view() delive
 Python rules: `Stats` fields exposed as read-only attributes; operators (`+ - * /`)
 on `Surface`; `surface.attr["name"]` indexed access; `surface.edge` and
 `surface.geometry.edge` expose matching `PolygonSet` outlines; `PointSet`
-exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=None, fallback="tri") -> GridGeometry | TriSurface`
+exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=3.4, fallback="tri") -> GridGeometry | TriSurface`
 and `to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
 `edge="occupied"|"convex_hull"|"full_rect"`; `detect_topology(nominal_cell=None)`
 returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
@@ -845,8 +845,10 @@ describes the points it delegates to `to_tri_surface(max_link=None,
 max_bridge=...)` **with a `UserWarning`** (`fallback="tri"`, the default) or
 raises a `ValueError` (`fallback="error"`). `max_bridge` (in cells) applies
 **only to the TriSurface fallback** — it closes boundary-fringe/fault-seam/
-data-gap edges up to that length (`None` = strictly lattice-closed) and has no
-effect on an inferred `GridGeometry`. Both possible results carry a
+data-gap edges up to that length (default `3.4`; explicit `None` = strictly
+lattice-closed) and has no effect on an inferred `GridGeometry`. Direct
+`to_tri_surface(max_link=None, max_bridge=None)` remains strictly lattice-closed
+by default. Both possible results carry a
 discoverable `.kind` for import-free dispatch — every geometry/surface/point
 object exposes it: `"grid_geometry"` | `"surface"` | `"structured_mesh"` |
 `"tri_surface"` | `"point_set"` | `"polygon_set"`.

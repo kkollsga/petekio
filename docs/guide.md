@@ -80,7 +80,7 @@ point exports have to infer from XY alone unless `Project.import_data(...)` can
 enrich them from a same-stem EarthVision topology export in the raw project tree.
 
 ```python
-geom = pts.infer_geometry(tolerance=1e-3)  # GridGeometry or TriSurface fallback
+geom = pts.infer_geometry(tolerance=1e-3)  # GridGeometry or bridged TriSurface fallback
 if isinstance(geom, petekio.GridGeometry):
     surf = pts.to_surface(geom, method="nearest")
 mesh = pts.to_structured_surface(edge="occupied")
@@ -109,13 +109,16 @@ the far side as its own **block** rather than silently welding them together.
 `report.blocks == 1` means an uninterrupted grid; more means the surface is fault-cut,
 and `verified` is `False`.
 
-`to_tri_surface(max_link=None, max_bridge=None)` is the fallback for that case: the
+`to_tri_surface(max_link=None, max_bridge=None)` is the strict primitive for that case: the
 points become the vertices of a triangulated surface, unmoved, and the fault is
 honoured rather than bridged — `TriSurface.components` reports how many blocks
 survived. `max_link` is the longest triangle edge to keep, in **cells**, and must lie
 in `(√2, 2)`. `max_bridge` (also in cells, `>= max_link`) opt-in closes the mesh where
 the geometry does not close — the boundary fringe, fault seams, interior data gaps —
-admitting edges up to that length; `infer_geometry(..., max_bridge=...)` forwards it.
+admitting edges up to that length. The higher-level `infer_geometry(...)` fallback
+defaults `max_bridge` to `3.4` cells to close ordinary export fringes and seams; pass
+`max_bridge=None` there for the strict lattice-closed result. Calling
+`to_tri_surface()` directly remains strict by default.
 
 Geometry is a **flat empty shell** in three levels of complexity — the rigid
 `GridGeometry` (eight scalars, XY computed), the `StructuredShell` (`(i, j)` nodes

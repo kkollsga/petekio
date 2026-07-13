@@ -436,6 +436,15 @@ fn drop_small_islands(tris: &[[usize; 3]]) -> Vec<[usize; 3]> {
     for t in tris {
         *size.entry(find(&mut parent, t[0])).or_insert(0) += 1;
     }
+    // `MIN_ISLAND` distinguishes clip-boundary specks from an established surface;
+    // it is not a minimum valid surface size. If the whole triangulation is small,
+    // discarding every component would turn valid three-to-five-point clouds into an
+    // empty mesh and make boundary extraction report the misleading "no boundary".
+    // Preserve all components unless there is a larger surface for tiny islands to be
+    // classified relative to.
+    if !size.values().any(|&n| n >= MIN_ISLAND) {
+        return tris.to_vec();
+    }
     tris.iter()
         .copied()
         .filter(|t| size[&find(&mut parent, t[0])] >= MIN_ISLAND)
@@ -512,6 +521,38 @@ mod tests {
         // The walk labels stay on the shell — one per node.
         assert_eq!(tin.shell().labels().len(), tin.points().len());
         assert!(tin.shell().labels().iter().all(Option::is_some));
+    }
+
+    #[test]
+    fn keeps_complete_small_scattered_surfaces() {
+        let clouds = [
+            vec![
+                [0.0, 0.0, -2600.0],
+                [10.0, 1.0, -2610.0],
+                [2.0, 9.0, -2620.0],
+                [12.0, 11.0, -2630.0],
+                [6.0, 5.0, -2615.0],
+            ],
+            vec![
+                [0.0, 0.0, -2600.0],
+                [10.0, 1.0, -2610.0],
+                [2.0, 9.0, -2620.0],
+                [12.0, 11.0, -2630.0],
+            ],
+        ];
+
+        for coords in clouds {
+            for max_bridge in [None, Some(3.4)] {
+                let tin = PointSet::from_coords(coords.clone())
+                    .to_tri_surface(None, max_bridge)
+                    .unwrap();
+                assert_eq!(tin.points().len(), coords.len());
+                assert!(!tin.triangles().is_empty());
+                assert_eq!(tin.components(), 1);
+                assert_eq!(tin.edge().rings().len(), 1);
+                assert_eq!(tin.shell().labels().len(), coords.len());
+            }
+        }
     }
 
     fn bits(c: &[f64; 3]) -> [u64; 3] {

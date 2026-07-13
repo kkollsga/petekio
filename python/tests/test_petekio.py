@@ -750,12 +750,11 @@ def test_infer_geometry_fallback_is_loud_and_controllable():
 
 
 def test_infer_geometry_reports_both_failures_when_fallback_also_fails():
-    # Five scattered points: no regular lattice fits, and the cloud is too
-    # degenerate for the MeshShell fallback to triangulate — the error must
-    # chain BOTH causes, not swallow the fallback's.
+    # Collinear points: no regular lattice fits, and the cloud is genuinely
+    # degenerate for the MeshShell fallback — the error must chain BOTH causes.
     p = petekio.PointSet.from_xyz(
-        [0.0, 7.3, 2.9, 11.7, 5.5],
-        [0.0, 1.1, 8.4, 9.2, 4.9],
+        [0.0, 1.0, 2.0, 3.0, 4.0],
+        [0.0, 2.0, 4.0, 6.0, 8.0],
         [-1.0, -2.0, -3.0, -4.0, -5.0],
     )
     with pytest.raises(
@@ -763,6 +762,34 @@ def test_infer_geometry_reports_both_failures_when_fallback_also_fails():
         match=r"no regular lattice fits these points.*MeshShell fallback also failed",
     ):
         p.infer_geometry(tolerance=1e-3, max_bridge=3.5)
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "z"),
+    [
+        (
+            [0.0, 10.0, 2.0, 12.0, 6.0],
+            [0.0, 1.0, 9.0, 11.0, 5.0],
+            [-2600.0, -2610.0, -2620.0, -2630.0, -2615.0],
+        ),
+        (
+            [0.0, 10.0, 2.0, 12.0],
+            [0.0, 1.0, 9.0, 11.0],
+            [-2600.0, -2610.0, -2620.0, -2630.0],
+        ),
+    ],
+)
+def test_infer_geometry_keeps_complete_small_scattered_meshes(x, y, z):
+    p = petekio.PointSet.from_xyz(x, y, z)
+    for kwargs in ({}, {"edge": "convex_hull"}, {"max_bridge": None}):
+        with pytest.warns(UserWarning, match="MeshShell fallback"):
+            shell = p.infer_geometry(tolerance=0.1, **kwargs)
+        assert shell.kind == "mesh_shell"
+        assert shell.n_nodes == len(x)
+        assert shell.n_triangles > 0
+        assert shell.components == 1
+        assert len(shell.edge.rings()) == 1
+        assert len(shell.labels()) == len(x)
 
 
 def test_pointset_to_surface_infers_geometry_when_omitted():
@@ -979,14 +1006,18 @@ def test_pointset_to_structured_surface_requires_topology():
         p.to_structured_surface()
 
 
-def test_pointset_infer_geometry_rejects_scattered_points():
+def test_pointset_infer_geometry_falls_back_for_scattered_points():
     p = petekio.PointSet.from_xyz(
         [0.0, 11.0, 3.0, 19.0, 7.0],
         [0.0, 0.2, 8.7, 4.1, 17.3],
         [1.0, 2.0, 3.0, 4.0, 5.0],
     )
-    with pytest.raises(ValueError, match="geometry inference failed"):
-        p.infer_geometry()
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
+        shell = p.infer_geometry()
+    assert shell.kind == "mesh_shell"
+    assert shell.n_nodes == 5
+    assert shell.components == 1
+    assert len(shell.edge.rings()) == 1
 
 
 def test_polygonset_geojson():

@@ -6,6 +6,14 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Fixed
+- **Small scattered point clouds retain their triangulated boundary.** Mesh
+  cleanup now treats the eight-triangle island threshold as a relative speck
+  filter, not a minimum surface size, so complete four- and five-point
+  triangulations return `MeshShell` geometry instead of failing with a
+  misleading `triangulated surface has no boundary` error. Truly degenerate
+  clouds still fail loudly, and bridge/component/label behaviour is unchanged.
+
 ### Added
 - **`PointSet.infer_geometry()` now returns geometry-only roles.** Regular
   points return `GridGeometry`; validated topology-bearing curvilinear points

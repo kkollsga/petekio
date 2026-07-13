@@ -136,9 +136,11 @@ def _build_tops(
     picks): ``None``/``False`` → omit; ``True`` → all the well's zone tops;
     a list of horizon names → only those (case-insensitive, well order preserved).
     Picks + zone bands are emitted top→down in the well's zone order; the pick
-    TVDs are validated **strictly increasing** (loud error on an out-of-order /
-    overturned stack). A well simply missing a formation contributes no pick for
-    it (missing-pick passthrough) rather than failing.
+    TVDs are validated non-decreasing (loud error on an out-of-order / overturned
+    stack). Distinct coincident picks retain producer order and form valid
+    zero-thickness zones; coordinates are never jittered. A well simply missing
+    a formation contributes no pick for it (missing-pick passthrough) rather than
+    failing.
     """
     if tops is None or tops is False:
         return None, None
@@ -158,12 +160,12 @@ def _build_tops(
         zones.append({"name": name, "top_tvd_m": top_tvd, "base_tvd_m": base_tvd})
 
     for a, b in zip(picks, picks[1:]):
-        if not (b["tvd_m"] > a["tvd_m"]):
+        if b["tvd_m"] < a["tvd_m"]:
             raise ValueError(
                 "well tops are not sorted top->down by TVD: "
                 f"'{a['horizon']}' @ {a['tvd_m']} m then "
-                f"'{b['horizon']}' @ {b['tvd_m']} m (a pick must lie strictly "
-                "below the one above it)"
+                f"'{b['horizon']}' @ {b['tvd_m']} m (a pick must not lie above "
+                "the one before it)"
             )
     return picks, zones
 

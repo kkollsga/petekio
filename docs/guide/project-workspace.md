@@ -34,7 +34,7 @@ paths are safe when different folders contain the same leaf name; ambiguous
 leaf-only selectors fail with guidance. Surface depth and named attributes are
 lanes of one surface item, so switching `thickness` loads that lane once.
 
-## Logs and templates are explicit
+## Correlation logs and templates
 
 ```python
 session = project.view(
@@ -43,8 +43,12 @@ session = project.view(
 )
 ```
 
-Without `logs=ViewSpec(...)`, bore items have no Wells resource and no log
-samples are gathered. Multi-bore wells use independent IDs such as
+Without `logs=ViewSpec(...)`, each bore whose metadata advertises curves gets a
+lazy Wells resource using all of its curves and tops. The resource starts hidden,
+and catalog construction calls only `mnemonics()`; no log samples are gathered
+until the bore is enabled in Wells. Passing `logs=ViewSpec(...)` explicitly
+filters curves, tops, cutoffs, and flags. A template may be passed with either
+the automatic curves or an explicit spec. Multi-bore wells use independent IDs such as
 `well:A-1/bore:ST2`; no default bore is required or mutated. Unknown assets
 remain preserved and appear disabled with a diagnostic.
 

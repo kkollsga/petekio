@@ -7,6 +7,9 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Fixed
+- **Correlation accepts coincident formation picks.** Equal-TVD picks now keep
+  their stable producer order and represent valid zero-thickness zones; only a
+  truly decreasing/overturned stack fails. Coordinates are never jittered.
 - **Structured geometry fallback now honours `edge=`.** When strict regular
   inference falls back to a topology-verified `StructuredShell`,
   `PointSet.infer_geometry(edge="occupied"|"convex_hull")` now passes that mode
@@ -26,6 +29,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
   clouds still fail loudly, and bridge/component/label behaviour is unchanged.
 
 ### Added
+- **Project correlation is discovered automatically and remains lazy.** Bore
+  catalog construction calls only `mnemonics()` and advertises a hidden Wells
+  resource when curves exist. Selecting it gathers all curves and tops by
+  default; `logs=ViewSpec(...)` remains the explicit override, and stored or
+  passed templates also apply to automatic curves.
 - **Lazy project workspaces.** `project.view()` now exposes the same generic
   workspace as `petektools.view(project)`: an ordered searchable project tree
   with canonical folder-qualified object IDs and bore-qualified well IDs.

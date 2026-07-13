@@ -197,6 +197,28 @@ def test_unsorted_tops_raise_loudly():
         build_well_log_bundle([raw], tops=True)
 
 
+def test_coincident_tops_keep_stable_identity_and_zero_thickness():
+    raw = {
+        "id": "99/x-2", "display_name": "99/x-2", "x": 431500.0, "y": 6521500.0,
+        "datum_m": 20.0, "md": [2000.0, 2001.0], "tvd": [1980.0, 1981.0],
+        "curves": [{"mnemonic": "PHIE", "canonical": "PHIE", "unit": "v/v",
+                    "core": False, "values": [0.2, 0.1]}],
+        "zones": [
+            {"name": "Upper", "top_md": 2000.0, "base_md": 2000.0,
+             "top_tvd": 1980.0, "base_tvd": 1980.0},
+            {"name": "Lower", "top_md": 2000.0, "base_md": 2001.0,
+             "top_tvd": 1980.0, "base_tvd": 1981.0},
+        ],
+    }
+
+    well = build_well_log_bundle([raw], tops=True)["wells"][0]
+    assert [(pick["horizon"], pick["tvd_m"]) for pick in well["tops"]] == [
+        ("Upper", 1980.0),
+        ("Lower", 1980.0),
+    ]
+    assert well["zones"][0]["top_tvd_m"] == well["zones"][0]["base_tvd_m"]
+
+
 # --------------------------------------------------------------------------- #
 # missing-pick passthrough (multi-well session)                               #
 # --------------------------------------------------------------------------- #

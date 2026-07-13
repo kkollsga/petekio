@@ -879,6 +879,8 @@ session = project.view(
     lod=True,
     settings=petekio.ViewSettings(serve=False),
 )
+# With no logs= override, bores advertising mnemonics receive a hidden, lazy
+# Wells resource using all curves + tops; template= also applies to this auto spec.
 session.tree(); session.diagnostics; session.url
 session.resource("surface:Interpretation/Top%20A", "map", "thickness")
 session.refresh().serve()

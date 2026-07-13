@@ -50,8 +50,14 @@ class _Assets:
 
 
 class _BoreSpy:
-    def __init__(self):
+    def __init__(self, mnemonics=("PHIE",)):
         self.log_calls = 0
+        self.mnemonic_calls = 0
+        self._mnemonics = list(mnemonics)
+
+    def mnemonics(self):
+        self.mnemonic_calls += 1
+        return list(self._mnemonics)
 
     def _view_raw(self, curves=None):
         self.log_calls += 1
@@ -167,7 +173,9 @@ def test_bore_ids_are_typed_and_log_gathering_is_never_catalog_work():
         "well:A%2F1/bore:ST%202",
     ]
     assert all("wells" in leaf["views"] for leaf in leaves)
+    assert all(leaf["visible"]["wells"] is False for leaf in leaves)
     assert all(bore.log_calls == 0 for bore in well._items.values())
+    assert all(bore.mnemonic_calls == 1 for bore in well._items.values())
 
 
 def test_explicit_template_payload_is_still_lazy_during_catalog_build():
@@ -333,7 +341,7 @@ def test_project_and_toolkit_notebook_entry_points_are_equivalent():
     assert own_ids == generic_ids == ["asset:%40asset/future/example"]
 
 
-def test_bore_logs_are_declared_only_when_explicitly_requested(tmp_path):
+def test_bore_logs_are_discovered_from_metadata_and_explicit_spec_filters(tmp_path):
     las = (
         "~Version\n VERS. 2.0 :\n WRAP. NO :\n"
         "~Well\n STRT.M 100 :\n STOP.M 102 :\n STEP.M 1 :\n NULL. -999.25 :\n"
@@ -347,7 +355,10 @@ def test_bore_logs_are_declared_only_when_explicitly_requested(tmp_path):
 
     plain = project.view(settings=petekio.ViewSettings(serve=False))
     bore = next(leaf for leaf in _walk(plain.tree()) if leaf["role"] == "bore")
-    assert "wells" not in bore["views"]
+    assert bore["views"]["wells"] == {}
+    assert bore["visible"]["wells"] is False
+    resource = plain.resource(bore["id"], "wells")
+    assert [c["mnemonic"] for c in resource["payload"]["wells_logs"]["wells"][0]["curves"]] == ["PHIE"]
 
     logs = project.view(
         logs=petekio.ViewSpec(curves=("PHIE",)),

@@ -73,8 +73,6 @@ class ProjectViewProvider:
     ) -> None:
         if logs is not None and not isinstance(logs, ViewSpec):
             raise TypeError("project.view logs= must be a ViewSpec or None")
-        if template is not None and logs is None:
-            raise ValueError("project.view template= requires logs=ViewSpec(...)")
         self.project = project
         self.selection = selection
         self.explicit_visible = visible
@@ -191,9 +189,18 @@ class ProjectViewProvider:
                 label = "Main" if not bore else str(bore)
                 views: dict[str, dict[str, Any]] = {"map": {}, "scene3d": {}}
                 visible = {"map": True, "scene3d": True}
-                if self.logs is not None:
+                try:
+                    sidetrack = well.sidetrack(bore)
+                    mnemonics = [] if sidetrack is None else list(sidetrack.mnemonics())
+                except Exception as exc:
+                    diagnostics.append(self._diag("catalog_error", "bore", well_id, exc))
+                    mnemonics = []
+                if self.logs is not None or mnemonics:
                     views["wells"] = {}
-                    visible["wells"] = True
+                    # Correlation data is deliberately opt-in even when its
+                    # metadata is discovered automatically: an initially
+                    # visible bore must never gather every log sample.
+                    visible["wells"] = False
                 entries.append(
                     Entry(
                         bore_id(well_id, bore),
@@ -443,13 +450,19 @@ class ProjectViewProvider:
         if sidetrack is None:
             raise KeyError(f"bore {well_id!r}/{bore!r} was renamed or deleted; call refresh()")
         if view == "wells":
-            curves = None if self.logs is None else self.logs.curves
+            spec = self.logs
+            if spec is None:
+                # Catalog discovery already proved this bore has logs. Resolve
+                # the current metadata again at materialization time so a
+                # refresh-free replacement cannot leave stale curve names.
+                spec = ViewSpec(curves=sidetrack.mnemonics(), tops=True)
+            curves = spec.curves
             raw = sidetrack._view_raw(curves)
             raw["id"] = entry.id
             raw["display_name"] = f"{well_id} / {entry.label}"
             from ._viewer import LogSession, _materialize_template, build_well_log_bundle
 
-            bundle = build_well_log_bundle([raw], spec=self.logs)
+            bundle = build_well_log_bundle([raw], spec=spec)
             if self.template is not None:
                 template = (
                     self.project.templates[self.template]

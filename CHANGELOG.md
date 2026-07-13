@@ -7,6 +7,15 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Surface interpretation and hole repair.** Python `Surface` now exposes
+  `smooth(radius=1)`, `dip_angle()`, `dip_azimuth()`, and
+  `extrapolate(method="nearest")` (`idw` / `min_curvature` also supported).
+  Dip is derived with NaN-aware central/one-sided differences transformed into
+  the rotated/y-flipped world frame; flat azimuth is undefined. Extrapolation
+  delegates to the shared petekTools kernels, fills only original NaNs, excludes
+  infinities from controls, and preserves every original non-NaN bit. Each
+  operation returns a detached, same-geometry, primary-only surface with
+  appended history.
 - **Typed Python `Surface` attribute assignment.** `surface.thickness = rhs`
   now delegates to `surface.set_attr("thickness", rhs)` and adds or replaces a
   copy-on-write attribute lane, readable through `surface.attr["thickness"]`.

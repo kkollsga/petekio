@@ -68,6 +68,10 @@ base = geo.surface("base_res")
 thick = petekio.Surface.thickness(top, base, clamp_zero=True)  # base − top, ≥ 0
 top.thickness = thick              # add/replace a COW attribute lane
 top.attr["thickness"]              # read the promoted lane as a Surface
+smoothed = top.smooth(radius=1)    # moving average; holes remain holes
+dip = top.dip_angle()              # degrees from horizontal
+azimuth = top.dip_azimuth()        # down-dip, clockwise from North
+filled = top.extrapolate("nearest")  # fill holes; also "idw" / "min_curvature"
 ```
 
 Surface assignment accepts only another `Surface` with exactly the same grid
@@ -75,6 +79,14 @@ geometry (including origin, increments, node counts, rotation, and y-flip).
 `set_attr("thickness", thick)` is the explicit equivalent. Attribute lanes are
 read through `surface.attr[...]`, leaving `Surface.thickness(...)` callable as
 the class-level thickness calculation.
+
+Dip uses central differences where both neighbours exist and one-sided
+differences at boundaries or beside holes. Derivatives are transformed through
+the grid spacing, rotation, and y-flip into world East/North. A flat node has
+zero dip angle and undefined (`NaN`) azimuth. Extrapolation uses only finite
+nodes as controls and changes only original `NaN` nodes; existing finite and
+infinite values remain bit-for-bit unchanged. All four methods above return a
+detached, same-geometry surface containing only its new primary lane.
 
 Scattered `(x, y, z)` data grids into a surface via `PointSet.to_surface(geom,
 method)` with `"nearest"`, `"idw"`, or `"minimum_curvature"` (Briggs biharmonic,

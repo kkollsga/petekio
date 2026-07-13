@@ -7,7 +7,83 @@
 //! this one home.
 
 use crate::foundation::{GeoError, Result};
+use ndarray::Array2;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Dip angle and down-dip azimuth for a regular lattice's value field.
+///
+/// Derivatives use central differences where both neighbours are defined and
+/// one-sided differences at boundaries or beside holes. `x_step` is the signed
+/// world distance along the lattice I axis; `y_step` is the signed distance
+/// along J (therefore includes y-flip). The local gradient is rotated into
+/// world East/North before the conventional geological outputs are calculated.
+/// Source holes and nodes lacking a derivative on either axis stay `NaN`.
+pub fn dip_fields(
+    values: &Array2<f64>,
+    x_step: f64,
+    y_step: f64,
+    rotation_deg: f64,
+) -> (Array2<f64>, Array2<f64>) {
+    let (ncol, nrow) = values.dim();
+    let mut angle = Array2::from_elem((ncol, nrow), f64::NAN);
+    let mut azimuth = Array2::from_elem((ncol, nrow), f64::NAN);
+    let (sin_theta, cos_theta) = rotation_deg.to_radians().sin_cos();
+
+    for j in 0..nrow {
+        for i in 0..ncol {
+            if values[[i, j]].is_nan() {
+                continue;
+            }
+            let Some(du) = axis_derivative(values, i, j, true, x_step) else {
+                continue;
+            };
+            let Some(dv) = axis_derivative(values, i, j, false, y_step) else {
+                continue;
+            };
+            let gx = du * cos_theta - dv * sin_theta;
+            let gy = du * sin_theta + dv * cos_theta;
+            let slope = gx.hypot(gy);
+            angle[[i, j]] = slope.atan().to_degrees();
+            if slope != 0.0 {
+                azimuth[[i, j]] = (-gx).atan2(-gy).to_degrees().rem_euclid(360.0);
+            }
+        }
+    }
+    (angle, azimuth)
+}
+
+fn axis_derivative(
+    values: &Array2<f64>,
+    i: usize,
+    j: usize,
+    along_i: bool,
+    step: f64,
+) -> Option<f64> {
+    if step == 0.0 || !step.is_finite() {
+        return None;
+    }
+    let (ncol, nrow) = values.dim();
+    let centre = values[[i, j]];
+    let minus = if along_i {
+        i.checked_sub(1).map(|ii| values[[ii, j]])
+    } else {
+        j.checked_sub(1).map(|jj| values[[i, jj]])
+    }
+    .filter(|v| !v.is_nan());
+    let plus = if along_i {
+        (i + 1 < ncol).then(|| values[[i + 1, j]])
+    } else {
+        (j + 1 < nrow).then(|| values[[i, j + 1]])
+    }
+    .filter(|v| !v.is_nan());
+
+    match (minus, plus) {
+        (Some(lo), Some(hi)) => Some((hi - lo) / (2.0 * step)),
+        (None, Some(hi)) => Some((hi - centre) / step),
+        (Some(lo), None) => Some((centre - lo) / step),
+        (None, None) => None,
+    }
+}
 
 /// Iso-levels aligned to multiples of `interval` spanning `[vmin, vmax]`.
 /// Empty when the range is empty/non-finite. Errors on a non-positive interval.
@@ -301,6 +377,32 @@ fn chain(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    #[test]
+    fn dip_kernel_recovers_world_gradient_from_rotated_flipped_lattice() {
+        let (gx, gy) = (0.2_f64, -0.1_f64);
+        let rotation_deg = 37.0_f64;
+        let (sin_theta, cos_theta) = rotation_deg.to_radians().sin_cos();
+        let du = gx * cos_theta + gy * sin_theta;
+        let dv = -gx * sin_theta + gy * cos_theta;
+        let (x_step, y_step) = (2.0, -3.0); // y-flipped J axis
+        let mut values = Array2::zeros((4, 5));
+        for j in 0..5 {
+            for i in 0..4 {
+                values[[i, j]] = du * i as f64 * x_step + dv * j as f64 * y_step;
+            }
+        }
+
+        let (angle, azimuth) = dip_fields(&values, x_step, y_step, rotation_deg);
+        let expected_angle = gx.hypot(gy).atan().to_degrees();
+        let expected_azimuth = (-gx).atan2(-gy).to_degrees().rem_euclid(360.0);
+        for &v in &angle {
+            assert_relative_eq!(v, expected_angle, epsilon = 1e-12);
+        }
+        for &v in &azimuth {
+            assert_relative_eq!(v, expected_azimuth, epsilon = 1e-12);
+        }
+    }
 
     /// A unit-square split into two triangles along (0,0)–(1,1), values = x.
     fn square() -> (Vec<[f64; 2]>, Vec<[u32; 3]>, Vec<f64>) {

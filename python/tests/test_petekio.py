@@ -26,6 +26,37 @@ WELL_DIR = str(FIXTURES / "wells" / "15_9-A1")
 # --------------------------------------------------------------------------
 
 
+def _write_irap_surface(tmp_path, name, geom, values):
+    """Write a small synthetic grid in the committed IRAP-classic convention."""
+    yinc = -geom.yinc if geom.yflip else geom.yinc
+    xmax = geom.xori + (geom.ncol - 1) * geom.xinc
+    ymax = geom.yori + (geom.nrow - 1) * geom.yinc
+    tokens = ["9999900.0" if math.isnan(v) else repr(v) for v in values]
+    path = tmp_path / f"{name}.irap"
+    path.write_text(
+        "\n".join(
+            [
+                f"-996 {geom.nrow} {geom.xinc} {yinc}",
+                f"{geom.xori} {xmax} {geom.yori} {ymax}",
+                f"{geom.ncol} {geom.rotation_deg} {geom.xori} {geom.yori}",
+                "0 0 0 0 0 0 0",
+                " ".join(tokens),
+            ]
+        )
+        + "\n"
+    )
+    return petekio.Surface.load_irap_classic(str(path))
+
+
+def _plane_surface(tmp_path, name, geom, gx, gy, intercept=100.0):
+    values = []
+    for j in range(geom.nrow):
+        for i in range(geom.ncol):
+            x, y = geom.node_xy(i, j)
+            values.append(intercept + gx * x + gy * y)
+    return _write_irap_surface(tmp_path, name, geom, values)
+
+
 def test_surface_load_and_geometry():
     s = petekio.Surface.load_irap_classic(IRAP)
     assert s.ncol == 3
@@ -166,6 +197,68 @@ def test_surface_attr_access():
     assert s.attr("seismic").stats().mean == 7.0
     with pytest.raises(KeyError):
         _ = s.attr["missing"]
+
+
+def test_surface_smooth_dip_and_extrapolate(tmp_path):
+    rotated_flip = petekio.GridGeometry(
+        100.0, 200.0, 2.0, 3.0, 4, 5, rotation_deg=37.0, yflip=True
+    )
+    gx, gy = 0.2, -0.1
+    plane = _plane_surface(tmp_path, "rotated_plane", rotated_flip, gx, gy)
+    plane.source_lane = petekio.Surface.constant(rotated_flip, 1.0)
+
+    angle = plane.dip_angle()
+    azimuth = plane.dip_azimuth()
+    expected_angle = math.degrees(math.atan(math.hypot(gx, gy)))
+    expected_azimuth = math.degrees(math.atan2(-gx, -gy)) % 360.0
+    assert math.isclose(angle.stats().min, expected_angle, abs_tol=1e-10)
+    assert math.isclose(angle.stats().max, expected_angle, abs_tol=1e-10)
+    assert math.isclose(azimuth.stats().min, expected_azimuth, abs_tol=1e-10)
+    assert math.isclose(azimuth.stats().max, expected_azimuth, abs_tol=1e-10)
+    assert angle.geometry.rotation_deg == 37.0 and angle.geometry.yflip
+    assert angle.attr_names() == [] and azimuth.attr_names() == []
+    assert "surface.dip_angle()" in angle.history()[-1]
+    assert "surface.dip_azimuth()" in azimuth.history()[-1]
+
+    cardinal = [
+        (0.0, -1.0, 0.0),
+        (-1.0, 0.0, 90.0),
+        (0.0, 1.0, 180.0),
+        (1.0, 0.0, 270.0),
+    ]
+    axis_geom = petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 3, 3)
+    for n, (east_gradient, north_gradient, expected) in enumerate(cardinal):
+        direction = _plane_surface(
+            tmp_path, f"cardinal_{n}", axis_geom, east_gradient, north_gradient
+        ).dip_azimuth()
+        assert math.isclose(direction.stats().mean, expected, abs_tol=1e-12)
+
+    flat = petekio.Surface.constant(axis_geom, 7.0)
+    assert flat.dip_angle().stats().mean == 0.0
+    assert flat.dip_azimuth().stats().count == 0
+
+    holes = [7.0] * 9
+    holes[4] = math.nan
+    with_hole = _write_irap_surface(tmp_path, "constant_hole", axis_geom, holes)
+    with_hole.overlay = petekio.Surface.constant(axis_geom, 3.0)
+    smoothed = with_hole.smooth()
+    assert smoothed.stats().count == 8
+    assert smoothed.attr_names() == []
+    assert "surface.smooth(radius=1)" in smoothed.history()[-1]
+    assert with_hole.dip_angle().stats().count < 8
+
+    for method in ("nearest", "idw", "min_curvature"):
+        filled = with_hole.extrapolate(method)
+        assert filled.stats().count == 9
+        assert math.isclose(filled.stats().mean, 7.0, abs_tol=1e-8)
+        assert filled.attr_names() == []
+        assert "surface.extrapolate" in filled.history()[-1]
+
+    all_nan = petekio.Surface.constant(axis_geom, math.nan)
+    with pytest.raises(ValueError, match="requires at least one finite source node"):
+        all_nan.extrapolate()
+    with pytest.raises(TypeError, match="unknown grid method"):
+        with_hole.extrapolate("kriging")
 
 
 def test_surface_attribute_assignment_is_typed_geometry_safe_and_replaceable():

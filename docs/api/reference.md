@@ -73,6 +73,9 @@ and percentiles (`.p10`, `.p50`, `.p90`).
 | `.sample(x, y)` | Bilinear sample at a world coordinate. |
 | `.resample(grid_geom)` | Bilinear onto another geometry → new `Surface`. |
 | `.area_below(z)` | Planimetric area below a depth. |
+| `.smooth(radius=1)` | NaN-aware moving average that preserves the original defined mask. |
+| `.dip_angle()` / `.dip_azimuth()` | World-frame dip in degrees; azimuth is down-dip clockwise from North and NaN where flat. |
+| `.extrapolate(method="nearest")` | Fill original NaNs only using `nearest`, `idw`, or `min_curvature`; finite nodes are controls. |
 | `.attr[name]` / `.set_attr(name, surface)` | Read or add/replace a named attribute lane. The assigned `Surface` must have identical complete grid geometry. |
 | `.attribute_name = surface` | Typed assignment sugar for `.set_attr("attribute_name", surface)`; mutation is copy-on-write for project views. |
 | `Surface.thickness(top, base, clamp_zero=False)` | Compute `base − top`; remains a class operation even when a `thickness` lane exists. |

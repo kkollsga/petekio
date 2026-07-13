@@ -49,7 +49,7 @@ pub enum GeometryEdge {
 
 impl GridMethod {
     /// Map onto petekTools' identically-named method enum at the kernel seam.
-    fn to_petektools(self) -> PtGridMethod {
+    pub(crate) fn to_petektools(self) -> PtGridMethod {
         match self {
             GridMethod::Nearest => PtGridMethod::Nearest,
             GridMethod::InverseDistance => PtGridMethod::InverseDistance,

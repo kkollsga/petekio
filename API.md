@@ -38,7 +38,7 @@ pub fn detect(path: impl AsRef<Path>) -> Result<FormatKind>;
 ```rust
 pub enum Unit { Feet, Metres }
 
-pub struct Point3 { pub x: f64, pub y: f64, pub z: f64 }
+pub struct Point3 { pub x: f64, pub y: f64, pub z: f64 } // z = negative-down elevation
 
 pub struct BBox { pub xmin: f64, pub ymin: f64, pub xmax: f64, pub ymax: f64 }
 
@@ -132,6 +132,9 @@ impl Surface {
 
     // filtering + outline
     pub fn smooth(&self, radius: usize) -> Surface;          // NaN-aware moving average; preserves the defined mask
+    pub fn dip_angle(&self) -> Surface;                      // degrees from horizontal; world-frame, NaN-aware differences
+    pub fn dip_azimuth(&self) -> Surface;                    // down-dip degrees clockwise from North; flat = NaN
+    pub fn extrapolate(&self, method: GridMethod) -> Result<Surface>; // fill original NaNs only; finite nodes are controls
     pub fn edge(&self) -> Option<PolygonSet>;                // convex hull of defined nodes; None if <3
 
     // shell lifts (free, lossless; ALL attribute lanes carried 1:1, node identity preserved)
@@ -714,6 +717,10 @@ thick = (base - top).clamp_min(0)        # operator overloads
 top.thickness = petekio.Surface.thickness(top, base, clamp_zero=True)
 top.attr["thickness"]                    # assignment stores/replaces an attribute lane
 trend = top.attr["seismic"].ln()
+smoothed = top.smooth(radius=1)          # original NaN mask is preserved
+dip = top.dip_angle()                    # degrees from horizontal
+azi = top.dip_azimuth()                  # down-dip, clockwise from North
+filled = top.extrapolate(method="nearest")  # also "idw" / "min_curvature"
 top.stats.p50                            # Stats fields as attributes
 top.area_below(8240)
 ongrid = top.resample(grid_geom)

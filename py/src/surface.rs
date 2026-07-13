@@ -20,7 +20,7 @@ use crate::geodata::GeoData;
 use crate::geometry::{BBox, GridGeometry};
 use crate::points::PolygonSet;
 use crate::stats::Stats;
-use crate::to_pyerr;
+use crate::{parse_grid_method, to_pyerr};
 use petekio::{GeoError, PolygonSet as RsPolygonSet, Surface as RsSurface};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -159,6 +159,33 @@ impl Surface {
     fn resample(&self, py: Python<'_>, target: &GridGeometry) -> PyResult<Surface> {
         let t = target.inner.clone();
         self.with(py, |s| py.detach(|| s.resample(&t)))?
+            .map(Surface::wrap)
+            .map_err(to_pyerr)
+    }
+
+    /// NaN-aware square-window moving average. The original NaN mask is
+    /// preserved; the returned surface is detached and primary-only.
+    #[pyo3(signature = (radius = 1))]
+    fn smooth(&self, py: Python<'_>, radius: usize) -> PyResult<Surface> {
+        self.with(py, |s| py.detach(|| Surface::wrap(s.smooth(radius))))
+    }
+
+    /// Geological dip angle in degrees, derived in the surface's world frame.
+    fn dip_angle(&self, py: Python<'_>) -> PyResult<Surface> {
+        self.with(py, |s| py.detach(|| Surface::wrap(s.dip_angle())))
+    }
+
+    /// Down-dip azimuth in degrees clockwise from North. Flat nodes are NaN.
+    fn dip_azimuth(&self, py: Python<'_>) -> PyResult<Surface> {
+        self.with(py, |s| py.detach(|| Surface::wrap(s.dip_azimuth())))
+    }
+
+    /// Fill only original NaN nodes on this geometry using a shared petekTools
+    /// gridding kernel (`nearest`, `idw`, or `min_curvature`).
+    #[pyo3(signature = (method = "nearest"))]
+    fn extrapolate(&self, py: Python<'_>, method: &str) -> PyResult<Surface> {
+        let method = parse_grid_method(method)?;
+        self.with(py, |s| py.detach(|| s.extrapolate(method)))?
             .map(Surface::wrap)
             .map_err(to_pyerr)
     }

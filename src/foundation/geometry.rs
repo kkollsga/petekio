@@ -1,8 +1,8 @@
 //! Geometry primitives: `Point3`, `BBox`, and the rotatable `GridGeometry`
 //! lattice (the IRAP/RMS model) with its forward/inverse coordinate maps.
 
-/// A point in project coordinates (x = Easting, y = Northing, z = depth,
-/// increasing **downward**).
+/// A point in project coordinates: x = Easting, y = Northing, and z =
+/// **negative-down elevation** (subsea; directly comparable with a surface).
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Point3 {
     pub x: f64,

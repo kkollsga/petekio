@@ -145,6 +145,12 @@ pub struct Surface {
   (else `GeoError::GeometryMismatch` — caller resamples first). Convenience:
   `Surface::thickness(top, base, clamp_zero: bool) -> Surface`.
 - **Statistics:** `surface.stats() -> Stats` (over defined nodes).
+- **Interpret / repair:** `smooth(radius)` is a NaN-mask-preserving moving
+  average; `dip_angle()` and `dip_azimuth()` use NaN-aware finite differences
+  transformed from lattice axes into world East/North; `extrapolate(method)`
+  fills only original NaNs from finite nodes through the shared nearest, IDW,
+  or minimum-curvature grid kernel. These return same-geometry, primary-only
+  surfaces and append operation history.
 - **Area / volume:** `surface.area_below(depth) -> f64` (areal extent of nodes
   with value ≤ depth × cell area — the GRV-style query); `area_above`,
   `volume_between(&other) -> f64`, `hypsometry()` (area-vs-depth curve).
@@ -160,6 +166,9 @@ thick = petekio.Surface.thickness(top, base, clamp_zero=True)   # or (base - top
 top.thickness = thick                    # assignment sugar for top.set_attr("thickness", thick)
 top.attr["thickness"]                    # promoted attribute Surface; exact geometry required
 trend = top.attr("seismic").ln()
+top.smooth(radius=1)                     # preserves the original NaN mask
+top.dip_angle(); top.dip_azimuth()       # degrees; azimuth clockwise from North
+top.extrapolate(method="nearest")        # fills NaNs only; idw/min_curvature too
 top.stats.p50
 top.area_below(8240)                 # ft² below the OWC
 ongrid = top.resample(grid_geom)     # bilinear onto a target geometry

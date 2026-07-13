@@ -930,7 +930,9 @@ and `to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
 `edge="occupied"|"convex_hull"|"full_rect"`; `detect_topology(nominal_cell=None)`
 returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
 `infer_geometry` preserves strict regular inference; after that fails it returns
-a `StructuredShell` when explicit `column`/`row` topology validates, otherwise
+a `StructuredShell` when explicit `column`/`row` topology validates (honouring
+explicit `occupied`/`convex_hull`; the `full_rect` default remains occupied for
+a curvilinear fallback, which has no nominal rectangle), otherwise
 the `MeshShell` from the existing `to_tri_surface(max_link=None,
 max_bridge=...)` geometry, **with a `UserWarning`**, or raises a `ValueError`
 (`fallback="error"`). `fallback="tri"` remains a deprecated compatibility

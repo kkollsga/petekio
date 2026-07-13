@@ -105,7 +105,11 @@ inferred lattice. It over-claims whenever the data does not fill its bounding
 lattice. `edge="occupied"` is the true footprint — the outline of the nodes that
 carry data, following interior holes and a non-rectangular boundary — and is the
 default for `to_structured_surface(...)`. `edge="convex_hull"` is intentionally
-broader for envelope/QC comparison.
+broader for envelope/QC comparison. `infer_geometry(...)` carries explicit
+`occupied`/`convex_hull` through when regular inference falls back to a
+topology-verified `StructuredShell`. Its `full_rect` default remains the
+compatible occupied structured boundary because a curvilinear shell has no
+nominal rectangle; only a `MeshShell` keeps its triangle-derived boundary.
 
 During `Project.import_data(...)`, an EarthVision grid is loaded canonically as
 a `StructuredMeshSurface` under `project.surfaces`; null nodes retain XY and

@@ -123,6 +123,10 @@ else:
 Regular inference is deliberately strict and geometry-only. It returns a
 `StructuredShell` when explicit `column`/`row` topology validates a curvilinear
 mesh, otherwise a fault-aware `MeshShell`; it never returns values. Use
+`edge="occupied"` or `edge="convex_hull"` to select the regular or structured
+shell boundary. The `edge="full_rect"` default becomes occupied only for a
+curvilinear structured fallback because it has no nominal regular rectangle; a
+MeshShell boundary remains triangle-derived. Use
 `to_structured_surface(...)` or `to_tri_surface(...)` explicitly to attach the
 point values.
 

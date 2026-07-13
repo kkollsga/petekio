@@ -7,6 +7,12 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Fixed
+- **Structured geometry fallback now honours `edge=`.** When strict regular
+  inference falls back to a topology-verified `StructuredShell`,
+  `PointSet.infer_geometry(edge="occupied"|"convex_hull")` now passes that mode
+  through instead of always returning the occupied boundary. Mesh fallback and
+  `fallback="error"` semantics are unchanged; the `full_rect` default retains
+  its compatible occupied boundary for curvilinear structured fallbacks.
 - **Logs-only sessions now use the generic viewer root envelope.**
   `LogSession.bundle()` remains the exact raw `WellLogBundle`, while
   `LogSession.serve()` / `.save()` nest it under top-level `wells_logs` and emit

@@ -962,6 +962,53 @@ def test_pointset_infer_geometry_falls_back_for_curvilinear_mesh_with_topology()
     assert mesh.nominal_geometry is None
 
 
+def test_pointset_structured_fallback_honors_edge_mode():
+    # Curvilinear L-shaped topology: regular inference fails, occupied follows
+    # the concavity, and convex_hull spans it. The convenience fallback must use
+    # the same requested boundary as the explicit value-bearing conversion.
+    x, y, z, col, row = [], [], [], [], []
+    for j in range(6):
+        for i in range(6):
+            if i > 2 and j > 2:
+                continue
+            x.append(1000.0 + 40.0 * i * (1.0 + 0.055 * i) + 0.8 * i * j)
+            y.append(2000.0 + 35.0 * j * (1.0 + 0.045 * j) + 0.35 * i * j)
+            z.append(100.0 + i + j)
+            col.append(i + 1)
+            row.append(j + 1)
+    points = petekio.PointSet.from_xyz(x, y, z)
+    points.column = col
+    points.row = row
+
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
+        inferred_occupied = points.infer_geometry(edge="occupied")
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
+        inferred_hull = points.infer_geometry(edge="convex_hull")
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
+        inferred_default = points.infer_geometry()
+    explicit_occupied = points.to_structured_surface(edge="occupied").shell
+    explicit_hull = points.to_structured_surface(edge="convex_hull").shell
+
+    def canonical_rings(polygon):
+        canonical = []
+        for closed in polygon.rings():
+            ring = [tuple(point) for point in closed[:-1]]
+            variants = []
+            for ordered in (ring, list(reversed(ring))):
+                variants.extend(
+                    tuple(ordered[offset:] + ordered[:offset])
+                    for offset in range(len(ordered))
+                )
+            canonical.append(min(variants))
+        return sorted(canonical)
+
+    assert inferred_occupied.edge.area() < inferred_hull.edge.area()
+    assert isinstance(inferred_default, petekio.StructuredShell)
+    assert canonical_rings(inferred_default.edge) == canonical_rings(explicit_occupied.edge)
+    assert canonical_rings(inferred_occupied.edge) == canonical_rings(explicit_occupied.edge)
+    assert canonical_rings(inferred_hull.edge) == canonical_rings(explicit_hull.edge)
+
+
 def test_pointset_infer_geometry_rejects_invalid_tolerance_before_fallback():
     p = petekio.PointSet.from_xyz(
         [0.0, 10.0, 0.0, 10.0],

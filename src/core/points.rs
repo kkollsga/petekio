@@ -1162,6 +1162,45 @@ mod tests {
     }
 
     #[test]
+    fn curvilinear_structured_edge_modes_remain_distinct() {
+        // Curvilinear L-shaped topology: strict regular inference must fail,
+        // while the exact structured representation supports both the concave
+        // occupied footprint and its broader convex envelope.
+        let mut coords = Vec::new();
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        for j in 0..6 {
+            for i in 0..6 {
+                if i > 2 && j > 2 {
+                    continue;
+                }
+                let x = 1000.0 + 40.0 * i as f64 * (1.0 + 0.055 * i as f64) + 0.8 * (i * j) as f64;
+                let y = 2000.0 + 35.0 * j as f64 * (1.0 + 0.045 * j as f64) + 0.35 * (i * j) as f64;
+                coords.push([x, y, 100.0 + (i + j) as f64]);
+                columns.push((i + 1) as f64);
+                rows.push((j + 1) as f64);
+            }
+        }
+        let mut attrs = IndexMap::new();
+        attrs.insert("column".to_string(), columns);
+        attrs.insert("row".to_string(), rows);
+        let points = PointSet::from_parts(coords, attrs);
+
+        assert!(points
+            .infer_geometry_with_edge(1e-3, GeometryEdge::ConvexHull)
+            .is_err());
+        let occupied = points
+            .to_structured_surface(1e-3, GeometryEdge::Occupied)
+            .unwrap();
+        let hull = points
+            .to_structured_surface(1e-3, GeometryEdge::ConvexHull)
+            .unwrap();
+        assert!(occupied.edge().area() < hull.edge().area());
+        approx::assert_relative_eq!(occupied.edge().area(), 33_384.96, epsilon = 1e-8);
+        approx::assert_relative_eq!(hull.edge().area(), 45_348.642_5, epsilon = 1e-8);
+    }
+
+    #[test]
     fn occupied_edge_follows_topology_cells() {
         let mut coords = Vec::new();
         let mut columns = Vec::new();

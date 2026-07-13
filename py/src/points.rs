@@ -281,8 +281,11 @@ impl PointSet {
     /// `edge` controls `geometry.edge`: `"full_rect"` (default; the four corners of
     /// the bounding lattice), `"occupied"` (the outline of the nodes that carry
     /// data — use this when the footprint is not rectangular), or `"convex_hull"`.
-    /// It applies only to a successfully inferred `GridGeometry`; fallback
-    /// shells carry their topology-derived boundary.
+    /// It applies to a successfully inferred `GridGeometry`. A topology-verified
+    /// `StructuredShell` fallback honours explicit `"occupied"` /
+    /// `"convex_hull"`; the default `"full_rect"` retains its compatible
+    /// occupied boundary because a curvilinear shell has no nominal rectangle.
+    /// A triangulated `MeshShell` carries the boundary implied by its triangles.
     ///
     /// `max_bridge` (in cells) applies **only to the fallback `MeshShell`**: it
     /// admits triangle edges the closed-lattice rules reject — the boundary fringe,
@@ -332,9 +335,16 @@ impl PointSet {
                 // become structured here: callers must first accept and attach a
                 // verified `detect_topology()` result. That keeps genuinely
                 // scattered or fault-stalled clouds on the MeshShell path.
-                let structured = p
-                    .to_structured_surface(tolerance, GeometryEdge::Occupied)
-                    .ok();
+                let structured_edge = match edge {
+                    // Compatibility: infer_geometry() has always returned the
+                    // occupied structured boundary under its FullRect default.
+                    // A curvilinear shell has no nominal regular rectangle, and
+                    // explicit to_structured_surface(edge="full_rect") remains
+                    // correctly strict rather than inventing one.
+                    GeometryEdge::FullRect => GeometryEdge::Occupied,
+                    requested => requested,
+                };
+                let structured = p.to_structured_surface(tolerance, structured_edge).ok();
                 if let Some(surface) = structured {
                     crate::user_warning(
                         py,

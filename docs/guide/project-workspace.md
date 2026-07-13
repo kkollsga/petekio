@@ -1,0 +1,65 @@
+# Project workspace
+
+`Project.view()` opens a searchable folder-aware Map / 3-D / Wells workspace.
+It is the petekIO-native form of `petektools.view(project)`.
+
+```python
+import petekio
+
+project = petekio.Project.load("field.pproj")
+session = project.view()
+```
+
+The first selected surface and all bore geometries are initially visible.
+Points, polygons, other surfaces, well tops, templates, and opaque assets stay
+in the tree but start off. Opening reads metadata only: no surface value layer,
+trajectory, or log is gathered until its item is enabled.
+
+## Select folders and attributes
+
+```python
+session = project.view(
+    selection={
+        "surfaces": ["Interpretation/Reservoir/"],
+        "points": ["QC/Picks"],
+        "wells": True,
+    },
+    visible={"map": ["surface:Interpretation/Reservoir/Top%20A"]},
+    property={"surface:Interpretation/Reservoir/Top%20A": "thickness"},
+)
+```
+
+Folder selectors end in `/` and expand in collection order. Full canonical
+paths are safe when different folders contain the same leaf name; ambiguous
+leaf-only selectors fail with guidance. Surface depth and named attributes are
+lanes of one surface item, so switching `thickness` loads that lane once.
+
+## Logs and templates are explicit
+
+```python
+session = project.view(
+    logs=petekio.ViewSpec(curves=("PHIE", "SW"), tops=True),
+    template="qc/reservoir",
+)
+```
+
+Without `logs=ViewSpec(...)`, bore items have no Wells resource and no log
+samples are gathered. Multi-bore wells use independent IDs such as
+`well:A-1/bore:ST2`; no default bore is required or mutated. Unknown assets
+remain preserved and appear disabled with a diagnostic.
+
+## Inspect, refresh, and save
+
+```python
+session = project.view(settings=petekio.ViewSettings(serve=False))
+session.tree()                 # no petekTools import required
+session.diagnostics
+session.refresh()              # rebuild after rename/delete/add
+session.serve()
+session.save("visible.html")
+session.save("complete.html", include="selected")
+```
+
+`include="visible"` embeds only initially visible resources and their active
+lanes. `include="selected"` materializes every selected item and declared lane
+for offline toggling, so it can be much larger.

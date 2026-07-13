@@ -649,6 +649,19 @@ impl Sidetrack {
         self.resolve(py, |s| Ok(s.logs().map(|l| l.mnemonic.clone()).collect()))
     }
 
+    /// Private producer hook used by the lazy project workspace. It gathers
+    /// this exact bore without changing the parent well's default bore.
+    #[pyo3(signature = (curves = None))]
+    fn _view_raw(&self, py: Python<'_>, curves: Option<Vec<String>>) -> PyResult<Py<PyDict>> {
+        let (id, head, kb) = {
+            let well = self.well.borrow(py);
+            well.with_well(py, |raw| Ok((raw.id.clone(), raw.head, raw.kb)))?
+        };
+        self.resolve(py, |bore| {
+            crate::viewer::raw_log_bore(py, &id, head, kb, bore, curves.as_deref())
+        })
+    }
+
     /// TVD at measured depth `md` on this bore, or `None`.
     fn tvd(&self, py: Python<'_>, md: f64) -> PyResult<Option<f64>> {
         self.resolve(py, |s| Ok(s.tvd(md)))

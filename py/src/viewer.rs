@@ -63,7 +63,20 @@ pub(crate) fn raw_log_well(
     filter: Option<&[String]>,
 ) -> PyResult<Py<PyDict>> {
     let st = resolve_bore(w)?;
-    let kb = w.kb;
+    raw_log_bore(py, &w.id, w.head, w.kb, st, filter)
+}
+
+/// Gather one explicitly selected bore for the project-workspace provider.
+/// Unlike [`raw_log_well`], this never consults or mutates the well's default
+/// bore, so multi-bore resources remain independently addressable.
+pub(crate) fn raw_log_bore(
+    py: Python<'_>,
+    id: &str,
+    head: (f64, f64),
+    kb: f64,
+    st: &Sidetrack,
+    filter: Option<&[String]>,
+) -> PyResult<Py<PyDict>> {
     // The master-grid resample is pure Rust — gather off the GIL, then marshal.
     let raw = py.detach(|| petekio::analysis::well_tables::gather_raw_logs(st, kb, filter));
 
@@ -89,10 +102,10 @@ pub(crate) fn raw_log_well(
         zones.append(zd)?;
     }
 
-    let (x, y) = w.head;
+    let (x, y) = head;
     let d = PyDict::new(py);
-    d.set_item("id", &w.id)?;
-    d.set_item("display_name", &w.id)?;
+    d.set_item("id", id)?;
+    d.set_item("display_name", id)?;
     d.set_item("x", x)?;
     d.set_item("y", y)?;
     d.set_item("datum_m", kb)?;

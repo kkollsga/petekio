@@ -399,6 +399,17 @@ does not interpret provider semantics, and unknown asset types/fields survive
 open/save byte-for-byte. Correlation templates use `@asset/templates/<name>`;
 Python exposes them as immutable, folder-aware `project.templates` snapshots
 whose petekTools materialization remains lazy and optional.
+
+`Project` implements petekTools' generic workspace provider duck:
+`view_catalog()` returns an ordered metadata-only snapshot and
+`view_resource(item_id, view, lane)` materializes exactly one requested role.
+`project.view()` adds petekIO-native role/folder selection, surface-property
+defaults, optional per-bore `ViewSpec` logs, and stored-template resolution.
+Stable IDs use canonical full paths with every segment percent-encoded; wells
+add an explicit bore segment. Surface primary/attribute values stay lanes of
+one item. Catalog building never calls `value_layer`, trajectory sampling, top
+positioning, or log gathering. Unknown provider assets remain byte-preserved
+and appear as disabled diagnostic leaves.
 ```python
 geo = petekio.GeoData(unit="ft")
 geo.load_surface("top.irap"); geo.load_well("wells/A1/", wellhead=(x,y), kb=82)

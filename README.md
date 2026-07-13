@@ -79,6 +79,10 @@ project.surfaces.structure.top_dome
 project.save("field.pproj")
 project = petekio.Project.load("field.pproj")
 
+# Lazy project workspace (optional: pip install petekio[toolkit]).
+workspace = project.view()
+# Equivalent generic provider entry point: petektools.view(project)
+
 # Persist a petekTools correlation layout as a project-owned snapshot.
 project.templates.add(template)
 project.wells.view(template=project.templates.reservoir, serve=False)
@@ -129,7 +133,7 @@ column.
 | **Surfaces** | IRAP-classic load, sample/resample, typed attribute lanes, arithmetic, smoothing, dip angle/azimuth, NaN-hole extrapolation, edge polygons, stats/volumetrics, and gridding from scattered points |
 | **Wells** | Positioned `.wellpath` trajectories (MD preserved; minimum-curvature interpolation), multi-bore (sidetracks), imported logs stored as MD/value pairs with mnemonic aliasing, Petrel well-tops, per-zone stats, field-wide lithostratigraphic ordering |
 | **Points / polygons** | IRAP / GeoJSON / CSV load, strict regular-grid geometry inference, clip, point-to-surface gridding |
-| **Project** | `GeoData` substrate — import raw data once, broadcast across the collection; views are read-only filtered subsets; compact `.pproj` load/save |
+| **Project** | `GeoData` substrate — import once, folder-aware lazy Map/3-D/Wells workspace, read-only filtered views, compact `.pproj` load/save |
 
 ## Built in gates
 

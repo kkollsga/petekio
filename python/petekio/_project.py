@@ -851,6 +851,57 @@ class Project:
             raise ValueError(f"Project.save: expected a .pproj path, got '{dst}'")
         self._geo.save(str(dst))
 
+    def view(
+        self,
+        selection: Any = None,
+        *,
+        visible: Any = None,
+        property: str | Mapping[str, str] | None = None,
+        logs: Any = None,
+        template: Any = None,
+        tab: str = "auto",
+        lod: bool | tuple[int, ...] = True,
+        settings: Any = None,
+    ) -> Any:
+        """Open a lazy, folder-aware multi-view workspace for this project.
+
+        Catalog construction reads metadata only. Surface values, trajectories,
+        well tops, and explicitly requested logs are materialized on first
+        enable and cached by the optional petekTools workspace.
+        """
+
+        from ._project_view import project_view
+
+        return project_view(
+            self,
+            selection,
+            visible=visible,
+            property=property,
+            logs=logs,
+            template=template,
+            tab=tab,
+            lod=lod,
+            settings=settings,
+        )
+
+    def view_catalog(self) -> list[dict[str, Any]]:
+        """The generic petekTools workspace-provider catalog (metadata only)."""
+
+        from ._project_view import ProjectViewProvider
+
+        return ProjectViewProvider(self).view_catalog()
+
+    def view_resource(
+        self, *, item_id: str, view: str, lane: str | None = None
+    ) -> dict[str, Any]:
+        """Materialize one default workspace resource for ``pto.view(project)``."""
+
+        from ._project_view import ProjectViewProvider
+
+        return ProjectViewProvider(self).view_resource(
+            item_id=item_id, view=view, lane=lane
+        )
+
     @property
     def geodata(self) -> GeoData:
         """The underlying `GeoData` substrate."""

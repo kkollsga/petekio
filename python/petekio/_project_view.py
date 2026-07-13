@@ -1,0 +1,597 @@
+"""Lazy project-workspace producer for :class:`petekio.Project`.
+
+petekIO owns project traversal and domain adaptation; petekTools owns the
+generic workspace renderer.  Catalog construction is metadata-only.  The
+optional renderer is imported only when a resource is materialized, served, or
+saved.
+"""
+
+from __future__ import annotations
+
+import copy
+from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from ._project_view_catalog import (
+    ROLE_ALIASES,
+    ROOTS,
+    VIEWS,
+    Entry,
+    Folder,
+    bore_id,
+    label as catalog_label,
+    typed_id,
+)
+from ._specs import ViewSettings, ViewSpec
+
+if TYPE_CHECKING:
+    from ._project import Project
+
+
+def _viewer():
+    try:
+        from petektools import viewer
+    except (ImportError, AttributeError) as exc:
+        raise ImportError(
+            "project.view() renders through the optional petekTools workspace. "
+            "Install it with `pip install 'petekio[toolkit]'`. Catalog inspection "
+            "remains available with ViewSettings(serve=False)."
+        ) from exc
+    if not callable(getattr(viewer, "view", None)):
+        raise ImportError(
+            "the installed petekTools predates workspace views; install a build "
+            "providing petektools.viewer.view and workspace schema v1"
+        )
+    return viewer
+
+
+class _NamedPoints:
+    kind = "point_set"
+
+    def __init__(self, name: str, rows: Iterable[Sequence[float]]) -> None:
+        self.name = name
+        self._rows = [tuple(float(v) for v in row[:3]) for row in rows]
+
+    def xyz(self) -> list[tuple[float, float, float]]:
+        return list(self._rows)
+
+
+class ProjectViewProvider:
+    """Metadata snapshot plus lazy resource materializers for one project view."""
+
+    def __init__(
+        self,
+        project: "Project",
+        *,
+        selection: Any = None,
+        visible: Any = None,
+        property: str | Mapping[str, str] | None = None,
+        logs: ViewSpec | None = None,
+        template: Any = None,
+        lod: bool | tuple[int, ...] = True,
+    ) -> None:
+        if logs is not None and not isinstance(logs, ViewSpec):
+            raise TypeError("project.view logs= must be a ViewSpec or None")
+        if template is not None and logs is None:
+            raise ValueError("project.view template= requires logs=ViewSpec(...)")
+        self.project = project
+        self.selection = selection
+        self.explicit_visible = visible
+        self.property = property
+        self.logs = logs
+        self.template = self._template(template)
+        self.lod = lod
+        self._entries: dict[str, Entry] = {}
+        self._catalog: list[dict[str, Any]] = []
+        self._diagnostics: list[dict[str, Any]] = []
+        self._snapshot(strict=True)
+
+    @property
+    def diagnostics(self) -> tuple[dict[str, Any], ...]:
+        return tuple(copy.deepcopy(self._diagnostics))
+
+    def _template(self, value: Any) -> Any:
+        if isinstance(value, str):
+            if value not in self.project.templates.all_names():
+                raise KeyError(f"project.view template {value!r} was not found")
+        return value
+
+    def refresh(self) -> None:
+        self._snapshot(strict=False)
+
+    def view_catalog(self) -> list[dict[str, Any]]:
+        return copy.deepcopy(self._catalog)
+
+    def _snapshot(self, *, strict: bool) -> None:
+        diagnostics: list[dict[str, Any]] = []
+        entries = self._discover(diagnostics)
+        selected = self._select(entries, self.selection, strict=strict, diagnostics=diagnostics)
+        self._set_properties(selected, strict=strict, diagnostics=diagnostics)
+        self._set_visibility(selected, self.explicit_visible, strict=strict, diagnostics=diagnostics)
+        self._entries = {entry.id: entry for entry in selected}
+        roots: list[dict[str, Any]] = []
+        for role, root_label in ROOTS:
+            members = [entry for entry in selected if entry.role == role]
+            if not members:
+                continue
+            root = Folder("group:" + role, root_label)
+            for entry in members:
+                root.insert(entry)
+            roots.append(root.to_dict())
+        self._catalog = roots
+        self._diagnostics = diagnostics
+
+    def _discover(self, diagnostics: list[dict[str, Any]]) -> list[Entry]:
+        entries: list[Entry] = []
+        first_surface = True
+        for name in self.project.surfaces.all_names():
+            try:
+                surface = self.project.surface(name)
+                if surface is None:
+                    raise KeyError(name)
+                attrs = list(surface.attr_names())
+                lane_attrs: dict[str, str | None] = {"depth": None}
+                lanes = [{"id": "depth", "label": "Depth"}]
+                for attr in attrs:
+                    lane_id = (
+                        attr if attr not in {"depth", "values"} else f"attribute:{attr}"
+                    )
+                    lane_attrs[lane_id] = attr
+                    lanes.append({"id": lane_id, "label": catalog_label(attr)})
+                views = {
+                    view: {"lanes": copy.deepcopy(lanes), "active_lane": "depth"}
+                    for view in ("map", "scene3d")
+                }
+                entries.append(
+                    Entry(
+                        typed_id("surface", name.split("/")),
+                        name.rsplit("/", 1)[-1],
+                        "surface",
+                        tuple(name.split("/")),
+                        (name,),
+                        views,
+                        {"map": first_surface, "scene3d": first_surface},
+                        lane_attrs=lane_attrs,
+                    )
+                )
+                first_surface = False
+            except Exception as exc:
+                entries.append(self._disabled("surface", name, exc))
+                diagnostics.append(self._diag("catalog_error", "surface", name, exc))
+
+        for role, names in (
+            ("point", self.project.points.all_names()),
+            ("polygon", self.project.polygons.all_names()),
+        ):
+            for name in names:
+                entries.append(
+                    Entry(
+                        typed_id(role, name.split("/")),
+                        name.rsplit("/", 1)[-1],
+                        role,
+                        tuple(name.split("/")),
+                        (name,),
+                        {"map": {}, "scene3d": {}},
+                        {"map": False, "scene3d": False},
+                    )
+                )
+
+        for well_id in self.project.wells.names():
+            well = self.project.well(well_id)
+            if well is None:
+                diagnostics.append(self._diag("missing_well", "bore", well_id, KeyError(well_id)))
+                continue
+            try:
+                bores = list(well.bores()) or [""]
+            except Exception as exc:
+                diagnostics.append(self._diag("catalog_error", "bore", well_id, exc))
+                continue
+            for bore in bores:
+                label = "Main" if not bore else str(bore)
+                views: dict[str, dict[str, Any]] = {"map": {}, "scene3d": {}}
+                visible = {"map": True, "scene3d": True}
+                if self.logs is not None:
+                    views["wells"] = {}
+                    visible["wells"] = True
+                entries.append(
+                    Entry(
+                        bore_id(well_id, bore),
+                        label,
+                        "bore",
+                        (well_id, label),
+                        (well_id, bore),
+                        views,
+                        visible,
+                    )
+                )
+
+        for name in self.project.well_tops.all_names():
+            entries.append(
+                Entry(
+                    typed_id("well_top", name.split("/")),
+                    name.rsplit("/", 1)[-1],
+                    "well_top",
+                    tuple(name.split("/")),
+                    (name,),
+                    {"map": {}, "scene3d": {}},
+                    {"map": False, "scene3d": False},
+                )
+            )
+
+        for name in self.project.tops.all_names():
+            reason = "Imported top tables are source metadata; use project.well_tops for persisted picks."
+            entries.append(self._disabled("source_top", name, reason))
+        template_physical = {"@asset/templates/" + name for name in self.project.templates.all_names()}
+        for name in self.project.templates.all_names():
+            reason = "Correlation templates are presentation assets; select one with template= and logs=."
+            entries.append(self._disabled("template", name, reason))
+        for name in self.project.geodata.asset_names():
+            if name in template_physical:
+                continue
+            reason = "No installed viewer provider declares a compatible view for this opaque asset."
+            entry = self._disabled("asset", name, reason)
+            entries.append(entry)
+            diagnostics.append(
+                {
+                    "code": "unsupported_asset",
+                    "severity": "warning",
+                    "item_id": entry.id,
+                    "message": reason,
+                }
+            )
+        return entries
+
+    def _disabled(self, role: str, name: str, reason: Any) -> Entry:
+        message = str(reason)
+        path = tuple(name.split("/"))
+        diagnostic = {"code": "disabled", "severity": "info", "message": message}
+        return Entry(
+            typed_id(role, path),
+            path[-1],
+            role,
+            path,
+            (name,),
+            {},
+            {},
+            disabled=True,
+            reason=message,
+            diagnostic=diagnostic,
+        )
+
+    @staticmethod
+    def _diag(code: str, role: str, name: str, exc: Exception) -> dict[str, Any]:
+        return {
+            "code": code,
+            "severity": "error",
+            "role": role,
+            "path": name,
+            "error": type(exc).__name__,
+            "message": str(exc),
+        }
+
+    def _select(
+        self,
+        entries: list[Entry],
+        value: Any,
+        *,
+        strict: bool,
+        diagnostics: list[dict[str, Any]],
+    ) -> list[Entry]:
+        if value is None:
+            return entries
+        selected: set[str] = set()
+        if isinstance(value, Mapping):
+            for raw_role, selectors in value.items():
+                roles = ROLE_ALIASES.get(str(raw_role).lower())
+                if roles is None:
+                    raise ValueError(f"unknown project view role {raw_role!r}")
+                scoped = [entry for entry in entries if entry.role in roles]
+                if selectors is True:
+                    selected.update(entry.id for entry in scoped)
+                elif selectors not in (False, None):
+                    selected.update(
+                        self._resolve(scoped, selectors, strict=strict, diagnostics=diagnostics)
+                    )
+        else:
+            selected.update(self._resolve(entries, value, strict=strict, diagnostics=diagnostics))
+        return [entry for entry in entries if entry.id in selected]
+
+    def _resolve(
+        self,
+        entries: list[Entry],
+        selectors: Any,
+        *,
+        strict: bool,
+        diagnostics: list[dict[str, Any]],
+    ) -> set[str]:
+        if selectors is True:
+            return {entry.id for entry in entries}
+        if selectors in (False, None):
+            return set()
+        values = [selectors] if isinstance(selectors, (str, bytes)) else list(selectors)
+        out: set[str] = set()
+        for raw in values:
+            key = str(raw)
+            exact = [entry for entry in entries if entry.id == key]
+            if exact:
+                out.add(exact[0].id)
+                continue
+            folder = key.endswith("/")
+            plain = key[:-1] if folder else key
+            matches = [
+                entry
+                for entry in entries
+                if ("/".join(entry.path).startswith(plain + "/") if folder else "/".join(entry.path) == plain)
+            ]
+            if not matches and "/" not in plain and ":" not in plain:
+                matches = [entry for entry in entries if entry.label == plain]
+            if len(matches) == 1 or (folder and matches):
+                out.update(entry.id for entry in matches)
+                continue
+            if len(matches) > 1:
+                raise ValueError(
+                    f"ambiguous project view selector {key!r}; use a canonical full path or typed ID"
+                )
+            message = f"project view selector {key!r} no longer matches a catalog item"
+            if strict:
+                raise KeyError(message)
+            diagnostics.append({"code": "selection_missing", "severity": "warning", "message": message})
+        return out
+
+    def _set_properties(
+        self, entries: list[Entry], *, strict: bool, diagnostics: list[dict[str, Any]]
+    ) -> None:
+        surfaces = [entry for entry in entries if entry.role == "surface" and not entry.disabled]
+        if self.property is None:
+            return
+        assignments: list[tuple[Entry, str]] = []
+        if isinstance(self.property, str):
+            assignments = [(entry, self.property) for entry in surfaces]
+        elif isinstance(self.property, Mapping):
+            for selector, lane in self.property.items():
+                ids = self._resolve(surfaces, selector, strict=strict, diagnostics=diagnostics)
+                assignments.extend((entry, str(lane)) for entry in surfaces if entry.id in ids)
+        else:
+            raise TypeError("project.view property= must be a lane name, mapping, or None")
+        for entry, requested in assignments:
+            lane = "depth" if requested in {"depth", "values"} else requested
+            if lane not in entry.lane_attrs:
+                message = f"surface {entry.id!r} has no property lane {requested!r}"
+                if strict:
+                    raise KeyError(message)
+                diagnostics.append({"code": "property_missing", "severity": "warning", "item_id": entry.id, "message": message})
+                continue
+            for options in entry.views.values():
+                options["active_lane"] = lane
+
+    def _set_visibility(
+        self,
+        entries: list[Entry],
+        value: Any,
+        *,
+        strict: bool,
+        diagnostics: list[dict[str, Any]],
+    ) -> None:
+        if value is None:
+            return
+        if isinstance(value, Mapping) and set(map(str, value)).issubset(VIEWS):
+            for entry in entries:
+                for view in entry.visible:
+                    entry.visible[view] = False
+            for view, selectors in value.items():
+                ids = self._resolve(entries, selectors, strict=strict, diagnostics=diagnostics)
+                for entry in entries:
+                    if entry.id in ids and view in entry.visible:
+                        entry.visible[str(view)] = True
+            return
+        ids = self._resolve(entries, value, strict=strict, diagnostics=diagnostics)
+        for entry in entries:
+            for view in entry.visible:
+                entry.visible[view] = entry.id in ids
+
+    def view_resource(self, *, item_id: str, view: str, lane: str | None = None) -> dict[str, Any]:
+        entry = self._entries.get(item_id)
+        if entry is None:
+            raise KeyError(f"unknown project workspace item {item_id!r}; call refresh()")
+        if entry.disabled:
+            raise ValueError(entry.reason or f"workspace item {item_id!r} is disabled")
+        if view not in entry.views:
+            raise KeyError(f"workspace item {item_id!r} has no {view!r} resource")
+        if entry.role == "surface":
+            return self._surface(entry, view, lane)
+        if entry.role in {"point", "polygon"}:
+            return self._spatial(entry, view)
+        if entry.role == "bore":
+            return self._bore(entry, view)
+        if entry.role == "well_top":
+            return self._well_top(entry, view)
+        raise ValueError(entry.reason or f"no materializer for {entry.role!r}")
+
+    def _surface(self, entry: Entry, view: str, lane: str | None) -> dict[str, Any]:
+        obj = self.project.surface(entry.source[0])
+        if obj is None:
+            raise KeyError(f"surface {entry.source[0]!r} was renamed or deleted; call refresh()")
+        lane = lane or entry.views[view].get("active_lane", "depth")
+        if lane not in entry.lane_attrs:
+            raise KeyError(f"surface {entry.id!r} has no declared lane {lane!r}")
+        attr = entry.lane_attrs[lane]
+        fill: bool | str = True if attr is None else attr
+        item = {"object": obj, "id": entry.id, "name": entry.label, "fill": fill}
+        viewer = _viewer()
+        if view == "map":
+            return viewer.view2d_payload([item], title=entry.label, lod=self.lod)
+        return viewer.view3d_payload([item], title=entry.label)
+
+    def _spatial(self, entry: Entry, view: str) -> dict[str, Any]:
+        getter = self.project.point_set if entry.role == "point" else self.project.polygon_set
+        obj = getter(entry.source[0])
+        if obj is None:
+            raise KeyError(f"{entry.role} {entry.source[0]!r} was renamed or deleted; call refresh()")
+        item = {"object": obj, "id": entry.id, "name": entry.label}
+        viewer = _viewer()
+        return (
+            viewer.view2d_payload([item], title=entry.label, lod=self.lod)
+            if view == "map"
+            else viewer.view3d_payload([item], title=entry.label)
+        )
+
+    def _bore(self, entry: Entry, view: str) -> dict[str, Any]:
+        well_id, bore = entry.source
+        well = self.project.well(well_id)
+        sidetrack = None if well is None else well.sidetrack(bore)
+        if sidetrack is None:
+            raise KeyError(f"bore {well_id!r}/{bore!r} was renamed or deleted; call refresh()")
+        if view == "wells":
+            curves = None if self.logs is None else self.logs.curves
+            raw = sidetrack._view_raw(curves)
+            raw["id"] = entry.id
+            raw["display_name"] = f"{well_id} / {entry.label}"
+            from ._viewer import LogSession, _materialize_template, build_well_log_bundle
+
+            bundle = build_well_log_bundle([raw], spec=self.logs)
+            if self.template is not None:
+                template = (
+                    self.project.templates[self.template]
+                    if isinstance(self.template, str)
+                    else self.template
+                )
+                bundle = _materialize_template(template).apply(bundle)
+            return LogSession(bundle)._viewer_payload()
+        rows = self._trajectory(sidetrack)
+        head = well.head
+        wire = {
+            "id": entry.id,
+            "display_name": f"{well_id} / {entry.label}",
+            "x": head[0],
+            "y": head[1],
+            "trajectory": rows,
+        }
+        viewer = _viewer()
+        payload = (
+            viewer.view2d_payload([], title=entry.label, wells=[wire], well_labels="auto")
+            if view == "map"
+            else viewer.view3d_payload([], title=entry.label, wells=[wire], well_labels="auto")
+        )
+        for rendered in payload.get("wells", []):
+            rendered["item_id"] = entry.id
+        for rendered in (payload.get("scene3d") or {}).get("wells", []):
+            rendered["item_id"] = entry.id
+        return payload
+
+    @staticmethod
+    def _trajectory(sidetrack: Any) -> list[list[float]]:
+        span = sidetrack.md_range()
+        if span is None:
+            return []
+        lo, hi = map(float, span)
+        if hi == lo:
+            point = sidetrack.xyz(lo)
+            return [] if point is None else [list(point)]
+        rows = []
+        for index in range(128):
+            point = sidetrack.xyz(lo + (hi - lo) * index / 127)
+            if point is not None:
+                rows.append(list(point))
+        return rows
+
+    def _well_top(self, entry: Entry, view: str) -> dict[str, Any]:
+        try:
+            top_set = self.project.well_tops[entry.source[0]]
+        except KeyError as exc:
+            raise KeyError(f"well top {entry.source[0]!r} was renamed or deleted; call refresh()") from exc
+        points = _NamedPoints(entry.label, (row["xyz"] for row in top_set.rows))
+        item = {"object": points, "id": entry.id, "name": entry.label}
+        viewer = _viewer()
+        return (
+            viewer.view2d_payload([item], title=entry.label, lod=self.lod)
+            if view == "map"
+            else viewer.view3d_payload([item], title=entry.label)
+        )
+
+
+class ProjectViewSession:
+    """Inspectable lazy workspace returned by :meth:`Project.view`."""
+
+    def __init__(self, provider: ProjectViewProvider, *, tab: str = "auto") -> None:
+        self._provider = provider
+        self._tab = tab
+        self._workspace: Any = None
+
+    @property
+    def url(self) -> str | None:
+        return None if self._workspace is None else self._workspace.url
+
+    @property
+    def diagnostics(self) -> tuple[dict[str, Any], ...]:
+        values = list(self._provider.diagnostics)
+        if self._workspace is not None:
+            values.extend(self._workspace.diagnostics)
+        return tuple(copy.deepcopy(values))
+
+    def tree(self) -> list[dict[str, Any]]:
+        return self._provider.view_catalog()
+
+    def _session(self):
+        if self._workspace is None:
+            self._workspace = _viewer().view(
+                self._provider, title="Project workspace", tab=self._tab, serve=False
+            )
+        return self._workspace
+
+    def resource(self, item_id: str, view: str, lane: str | None = None) -> dict[str, Any]:
+        return self._session().resource(item_id, view, lane)
+
+    def manifest(self) -> dict[str, Any]:
+        return self._session().manifest()
+
+    def serve(self, **kwargs: Any) -> "ProjectViewSession":
+        self._session().serve(**kwargs)
+        return self
+
+    def save(self, path: str | Path, *, include: str = "visible") -> "ProjectViewSession":
+        self._session().save(path, include=include)
+        return self
+
+    def refresh(self) -> "ProjectViewSession":
+        self._provider.refresh()
+        if self._workspace is not None:
+            self._workspace.refresh()
+        return self
+
+
+def project_view(
+    project: "Project",
+    selection: Any = None,
+    *,
+    visible: Any = None,
+    property: str | Mapping[str, str] | None = None,
+    logs: ViewSpec | None = None,
+    template: Any = None,
+    tab: str = "auto",
+    lod: bool | tuple[int, ...] = True,
+    settings: ViewSettings | None = None,
+) -> ProjectViewSession:
+    if settings is not None and not isinstance(settings, ViewSettings):
+        raise TypeError("project.view settings= must be ViewSettings or None")
+    if tab != "auto" and tab not in VIEWS:
+        raise ValueError(f"unknown project view tab {tab!r}")
+    provider = ProjectViewProvider(
+        project,
+        selection=selection,
+        visible=visible,
+        property=property,
+        logs=logs,
+        template=template,
+        lod=lod,
+    )
+    session = ProjectViewSession(provider, tab=tab)
+    delivery = settings or ViewSettings()
+    if delivery.save is not None:
+        return session.save(delivery.save)
+    if delivery.serve:
+        return session.serve()
+    return session
+
+
+__all__ = ["ProjectViewProvider", "ProjectViewSession", "project_view"]

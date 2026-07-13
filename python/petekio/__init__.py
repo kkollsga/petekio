@@ -46,6 +46,7 @@ from ._viewer import (
     encode_lane,
 )
 from ._project import BoundTemplate, ImportSettings, Project, WellTopSet
+from ._project_view import ProjectViewSession
 from ._logs import Logs, LogChannel, LogPredicate
 
 # The pure-Python view spec value-objects (WHAT / HOW for well.view()). The
@@ -76,6 +77,7 @@ __all__ = [
     "PolygonColumn",
     "PolygonSet",
     "Project",
+    "ProjectViewSession",
     "Sidetrack",
     "Stats",
     "StructuredMeshSurface",

@@ -26,6 +26,14 @@ All notable changes to petekIO are recorded here. The format loosely follows
   clouds still fail loudly, and bridge/component/label behaviour is unchanged.
 
 ### Added
+- **Lazy project workspaces.** `project.view()` now exposes the same generic
+  workspace as `petektools.view(project)`: an ordered searchable project tree
+  with canonical folder-qualified object IDs and bore-qualified well IDs.
+  Startup is metadata-only; surface depth/attribute lanes, points, polygons,
+  trajectories, explicitly requested bore logs, and templates materialize once
+  on demand. `ProjectViewSession` adds diagnostics, refresh, live serving, and
+  self-contained `include="visible"|"selected"` snapshots while petekTools
+  remains an optional lazy dependency.
 - **Persistent project correlation templates.** `.pproj` now retains generic,
   typed/versioned provider assets in collision-safe `@asset/...` sections with
   exact envelope/payload preservation, including unknown asset fields and

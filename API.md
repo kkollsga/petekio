@@ -867,6 +867,27 @@ project.well_tops["Reservoir/Top"].rows      # WellTopSet: well/bore/md/xyz
 del project.well_tops["Reservoir/Top"]
 # project.tops remains the compatible imported source-table inventory.
 
+# Lazy whole-project workspace (petekTools stays optional):
+session = project.view()
+session = project.view(
+    selection={"surfaces": ["Interpretation/"], "wells": True},
+    visible={"map": ["surface:Interpretation/Top%20A"]},
+    property={"surface:Interpretation/Top%20A": "thickness"},
+    logs=petekio.ViewSpec(curves=("PHIE", "SW"), tops=True),
+    template="qc/reservoir",
+    tab="map",
+    lod=True,
+    settings=petekio.ViewSettings(serve=False),
+)
+session.tree(); session.diagnostics; session.url
+session.resource("surface:Interpretation/Top%20A", "map", "thickness")
+session.refresh().serve()
+session.save("project.html", include="visible")   # or include="selected"
+
+# Exact generic equivalent through the provider duck:
+from petektools import view as pto_view
+pto_view(project)
+
 # Standalone trajectory from a directional survey (no project needed):
 traj = petekio.Trajectory.from_stations(      # [(md, inc_deg, azi_deg), ...]
     [(0, 0, 145), (1200, 0, 145), (1900, 57, 145)], head=(1000, 2000), kb=27.3)
@@ -955,6 +976,15 @@ lattice (pass an explicit `GridGeometry` or use `to_tri_surface()`); passing
 an `infer_geometry` shell as `geom` is a `TypeError` pointing at the explicit
 value-bearing `to_structured_surface()` / `to_tri_surface()` conversion;
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
+`Project.view(selection=None, *, visible=None, property=None, logs=None,
+template=None, tab="auto", lod=True, settings=None) -> ProjectViewSession`
+uses canonical role/folder/path selectors. `selection=None` catalogs the whole
+project without materializing heavy values. Defaults show the first selected
+surface in Map/3-D plus every selected bore; logs are absent unless `logs` is an
+explicit `ViewSpec`. `ProjectViewSession` exposes `tree()`, `resource(...)`,
+`manifest()`, `diagnostics`, `url`, `refresh()`, `serve()`, and
+`save(path, include="visible"|"selected")`. `Project.view_catalog()` /
+`Project.view_resource(...)` are the generic provider seam used by petekTools.
 **Dataset names (duck-typed viewer seam):** every project-accessor hand-back
 (`project.points[...]`, `project.surfaces[...]`, `project.polygons[...]`,
 `geo.points(name)`, `geo.surface(name)`, `geo.polygons(name)`, and the

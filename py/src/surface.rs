@@ -467,6 +467,127 @@ impl Surface {
         crate::shell::value_layer_dict(py, layer)
     }
 
+    /// Private workspace-v2 shared transport for every declared regular-grid
+    /// lane in one node pass. Attribute selectors are local viewer state, so
+    /// this method is called once per `(item, map, detail)` resource rather
+    /// than once per geometry/paint combination.
+    #[pyo3(signature = (attrs, stride = 1))]
+    fn _view_shared_regular_grid(
+        &self,
+        py: Python<'_>,
+        attrs: Vec<Option<String>>,
+        stride: usize,
+    ) -> PyResult<Py<PyDict>> {
+        if stride == 0 {
+            return Err(PyValueError::new_err(
+                "Surface._view_shared_regular_grid: stride must be at least 1",
+            ));
+        }
+        if attrs.is_empty() {
+            return Err(PyValueError::new_err(
+                "Surface._view_shared_regular_grid: at least one lane is required",
+            ));
+        }
+        let transport = self.with(py, |surface| {
+            let lanes = attrs
+                .iter()
+                .map(|attr| match attr {
+                    Some(name) => surface.attr(name).ok_or_else(|| {
+                        PyValueError::new_err(format!("no attribute layer '{name}'"))
+                    }),
+                    None => Ok(surface.values()),
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            let geom = &surface.geom;
+            if geom.ncol < 2 || geom.nrow < 2 {
+                return Err(PyValueError::new_err(
+                    "Surface._view_shared_regular_grid: affine shared transport requires at least 2x2 nodes",
+                ));
+            }
+            let effective_stride = stride
+                .min(geom.ncol.saturating_sub(1).max(1))
+                .min(geom.nrow.saturating_sub(1).max(1));
+            let ncol = geom.ncol.saturating_sub(1).div_ceil(effective_stride) + 1;
+            let nrow = geom.nrow.saturating_sub(1).div_ceil(effective_stride) + 1;
+            let mut values = (0..lanes.len())
+                .map(|_| Vec::with_capacity(ncol * nrow * 4))
+                .collect::<Vec<_>>();
+            let mut ranges: Vec<Option<(f64, f64)>> = vec![None; lanes.len()];
+            let mut sampled_i = vec![false; geom.ncol];
+            let mut sampled_j = vec![false; geom.nrow];
+            for oi in 0..ncol {
+                sampled_i[(oi * (geom.ncol - 1) + (ncol - 1) / 2) / (ncol - 1)] = true;
+            }
+            for oj in 0..nrow {
+                sampled_j[(oj * (geom.nrow - 1) + (nrow - 1) / 2) / (nrow - 1)] = true;
+            }
+            for j in 0..geom.nrow {
+                for i in 0..geom.ncol {
+                    for (index, lane) in lanes.iter().enumerate() {
+                        let value = lane[[i, j]];
+                        if value.is_finite() {
+                            ranges[index] = Some(match ranges[index] {
+                                None => (value, value),
+                                Some((lo, hi)) => (lo.min(value), hi.max(value)),
+                            });
+                        }
+                        if sampled_i[i] && sampled_j[j] {
+                            let encoded = if value.is_finite() {
+                                value as f32
+                            } else {
+                                f32::from_bits(0x7fc0_0000)
+                            };
+                            values[index].extend_from_slice(&encoded.to_le_bytes());
+                        }
+                    }
+                }
+            }
+            let origin = geom.node_xy(0, 0);
+            let end_i = geom.node_xy(geom.ncol - 1, 0);
+            let end_j = geom.node_xy(0, geom.nrow - 1);
+            Ok::<_, PyErr>((
+                ncol,
+                nrow,
+                origin,
+                [
+                    (end_i.0 - origin.0) / (ncol - 1) as f64,
+                    (end_i.1 - origin.1) / (ncol - 1) as f64,
+                ],
+                [
+                    (end_j.0 - origin.0) / (nrow - 1) as f64,
+                    (end_j.1 - origin.1) / (nrow - 1) as f64,
+                ],
+                values,
+                ranges,
+                vec![1u8; ncol * nrow],
+                2 * ncol.saturating_sub(1) * nrow.saturating_sub(1),
+                effective_stride,
+            ))
+        })??;
+        let (ncol, nrow, origin, step_i, step_j, values, ranges, mask, triangles, stride) =
+            transport;
+        let lane_records = values
+            .into_iter()
+            .zip(ranges)
+            .map(|(values, range)| {
+                let record = PyDict::new(py);
+                record.set_item("values", PyBytes::new(py, &values))?;
+                record.set_item("range", range.map(|(minimum, maximum)| [minimum, maximum]))?;
+                Ok(record.unbind())
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let out = PyDict::new(py);
+        out.set_item("dimensions", [ncol, nrow])?;
+        out.set_item("origin", [origin.0, origin.1])?;
+        out.set_item("step_i", step_i)?;
+        out.set_item("step_j", step_j)?;
+        out.set_item("lanes", lane_records)?;
+        out.set_item("mask", PyBytes::new(py, &mask))?;
+        out.set_item("triangle_count", triangles)?;
+        out.set_item("stride", stride)?;
+        Ok(out.unbind())
+    }
+
     /// Private project-view transport for an affine regular surface. It copies
     /// only compact row-major f32 lanes and u8 masks; unlike `value_layer`, it
     /// never constructs node or triangle arrays. `stride` is display-only and

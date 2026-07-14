@@ -21,10 +21,15 @@ All notable changes to petekIO are recorded here. The format loosely follows
   during downward resampling, while continuous lanes retain the requested method.
   Project workspace catalogs now emit the persisted project identity and ordered
   metadata-rich attribute descriptors through petekTools workspace v2. The
-  Phase-5 transitional resource path retains `lane=` compatibility, accepts equal
-  geometry/paint selectors, and rejects multi-attribute selected export before
-  any attribute×colour Cartesian materialization; shared transport and true
-  dual-axis resources remain deferred. New viewer/project metadata authoring now
+  Phase-5 transitional resource path remains as the structured/triangular and
+  unsupported-shape fallback. Supported affine regular surfaces now use one
+  selector-free shared Map resource for exact 2-D/3-D modes: one envelope block
+  table carries the mask and every ordered continuous/categorical attribute
+  once, while geometry and colour-by selection remain local client state.
+  Preview/full detail is the only fetch axis, so selected export is O(N) blocks
+  rather than N² selector envelopes. Surface well overlays now carry every
+  finite MD-ordered crossing with cardinality status and greatest-MD singular
+  compatibility echo. New viewer/project metadata authoring now
   rejects padded IDs, labels, units, code labels, display names, and CRS strings
   at the source boundary. Existing v2 presentation text is trimmed on load and
   re-save for compatibility, while persisted semantic attribute IDs are never

@@ -47,6 +47,83 @@ class SurfaceViewResources:
             "data": base64.b64encode(raw).decode("ascii"),
         }
 
+    def shared_regular(
+        self,
+        entry: Entry,
+        grid: Mapping[str, Any],
+        descriptors: list[dict[str, Any]],
+        detail: str | None,
+    ) -> dict[str, Any]:
+        ncol, nrow = map(int, grid["dimensions"])
+        blocks: dict[str, dict[str, Any]] = {}
+
+        def add_block(raw: bytes, dtype: str) -> dict[str, str]:
+            digest = hashlib.sha256(raw).hexdigest()
+            descriptor = self._block(raw, dtype, [ncol * nrow])
+            existing = blocks.get(digest)
+            if existing is not None and existing != descriptor:
+                raise ValueError("shared surface block digest has conflicting types")
+            blocks[digest] = descriptor
+            return {"__block__": digest}
+
+        mask = add_block(bytes(grid["mask"]), "u8")
+        lanes = list(grid["lanes"])
+        if len(lanes) != len(descriptors):
+            raise ValueError("shared surface transport omitted a declared attribute")
+        attributes = []
+        for descriptor, lane in zip(descriptors, lanes):
+            record = copy.deepcopy(descriptor)
+            record["values"] = add_block(bytes(lane["values"]), "f32")
+            record["range"] = (
+                None
+                if record.get("kind") == "categorical"
+                else copy.deepcopy(lane.get("range"))
+            )
+            attributes.append(record)
+
+        step_i = tuple(map(float, grid["step_i"]))
+        step_j = tuple(map(float, grid["step_j"]))
+        spacing_x = math.hypot(*step_i)
+        spacing_y = math.hypot(*step_j)
+        rotation = math.degrees(math.atan2(step_i[1], step_i[0]))
+        yflip = step_i[0] * step_j[1] - step_i[1] * step_j[0] < 0.0
+        frame = {
+            "origin_x": float(grid["origin"][0]),
+            "origin_y": float(grid["origin"][1]),
+            "spacing_x": spacing_x,
+            "spacing_y": spacing_y,
+            "ncol": ncol,
+            "nrow": nrow,
+            "rotation_deg": rotation,
+            "yflip": yflip,
+            "crs": getattr(self.project, "crs", None),
+            "units": getattr(self.project, "unit", None),
+        }
+        resource: dict[str, Any] = {
+            "schema_version": 2,
+            "kind": "workspace_resource",
+            "item_id": entry.id,
+            "view": "map",
+            "blocks": blocks,
+            "payload": {
+                "schema_version": 4,
+                "map": {
+                    "surface_grid": {
+                        "schema_version": 1,
+                        "item_id": entry.id,
+                        "frame": frame,
+                        "positive": "up",
+                        "mask": mask,
+                        "attributes": attributes,
+                        "triangle_count": int(grid["triangle_count"]),
+                    }
+                },
+            },
+        }
+        if detail is not None:
+            resource["detail"] = detail
+        return resource
+
     def regular_map(self, entry: Entry, grid: Mapping[str, Any]) -> dict[str, Any]:
         payload = self.viewer().view2d_payload([], title=entry.label, lod=False)
         ncol, nrow = map(int, grid["dimensions"])
@@ -170,6 +247,7 @@ class SurfaceViewResources:
             "well_item_id": bore_entry.id,
             "trajectory": full_path,
             "intersection": None,
+            "intersections": [],
             "status": "no_hit",
         }
         if sidetrack is None:
@@ -194,22 +272,36 @@ class SurfaceViewResources:
                 }
             )
             return overlay
-        if not hits:
+        records = []
+        for hit in hits:
+            try:
+                md = float(hit.md)
+                xyz = [float(value) for value in hit.xyz]
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if len(xyz) != 3 or not math.isfinite(md) or not all(
+                math.isfinite(value) for value in xyz
+            ):
+                continue
+            records.append({"md": md, "xyz": xyz})
+        records.sort(key=lambda record: record["md"])
+        if not records:
             return overlay
-        hit = min(hits, key=lambda value: float(value.md))
-        md = float(hit.md)
-        xyz = [float(value) for value in hit.xyz]
+        selected = records[-1]
+        md = selected["md"]
+        xyz = selected["xyz"]
         clipped = [point for sample_md, point in base if sample_md < md]
         if not clipped or clipped[-1] != xyz:
             clipped.append(xyz)
         overlay.update(
-            status="hit",
+            status="hit" if len(records) == 1 else "ambiguous",
             trajectory=clipped,
-            intersection={"md": md, "xyz": xyz},
+            intersection=copy.deepcopy(selected),
+            intersections=records,
         )
-        if len(hits) > 1:
+        if len(records) > 1:
             overlay["message"] = (
-                f"{len(hits)} crossings; display path ends at the first MD-ordered hit"
+                f"{len(records)} crossings; display path ends at the greatest-MD hit"
             )
         return overlay
 

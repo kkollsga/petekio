@@ -431,18 +431,22 @@ named attributes in durable insertion order; every descriptor is the canonical
 `{id,label,kind,units,codes}` shape with independent `active_attribute` and
 `active_color_by` selectors. Missing CRS/units/code labels remain null, and only
 an ordinary primary/depth descriptor may inherit the project unit.
-`view_resource(item_id, view, attribute, color_by, detail)` materializes exactly
-one transitional non-shared v2 role. Phase 5 accepts equal geometry/paint
-selectors and retains direct `lane=` as their v1 compatibility spelling;
-independent dual-axis materialization and shared multi-attribute transport are
-reserved for Phase 6. Consequently multi-attribute `include="selected"`
-exports fail before materialization instead of enumerating a Cartesian product;
-visible exports freeze only the active pair. Regular surfaces use a private
-native row-major transport and emit
-block-backed affine `regular_grid` Map fills plus preview/full
-`regular_surface` 3-D resources without constructing a `ValueLayer`, nodes, or
-triangles. Preview sampling preserves the complete world footprint. General
-structured and triangular surfaces retain the value-layer fallback.
+For affine regular surfaces of at least 2×2 nodes,
+`view_resource(item_id, "map", detail)` materializes one explicit workspace-v2
+shared resource keyed only by item/Map/detail. The catalog declares exact
+`transport="shared"`, `modes=["2d","3d"]`, ordered descriptors, and local
+active geometry/paint defaults. Its single envelope block table carries one
+shell mask and every declared row-major f32 attribute exactly once under
+`payload.map.surface_grid`; there is no selector echo, nested block table,
+duplicate regular surface, or sibling scene3d payload. Geometry, colour-by, and
+camera mode changes are local viewer state; preview/full detail is the only
+resource multiplication axis. Selected export is therefore O(N) blocks for N
+attributes, never N² selector envelopes. Frame CRS/unit fields use only authored
+project facts; `positive="up"` declares petekIO's negative-down elevation
+storage without transforming values. Categorical lanes retain integral values plus durable code
+tables. Structured, triangular, degenerate, and other unsupported fallback
+shapes retain the Phase-5 separate Map/scene3d and direct `lane=` compatibility
+path. Preview sampling preserves the complete world footprint.
 `project.view()` adds petekIO-native role/folder selection, surface-property
 defaults, automatic metadata-only per-bore correlation discovery, optional
 per-bore `ViewSpec` overrides, and stored-template resolution. Correlation

@@ -190,22 +190,45 @@ class ProjectViewProvider:
                 active = next(
                     selector for selector, attr in lane_attrs.items() if attr is None
                 )
-                views = {
-                    view: {
-                        "attributes": copy.deepcopy(descriptors),
-                        "active_attribute": active,
-                        "active_color_by": active,
+                shared = (
+                    callable(getattr(surface, "_view_shared_regular_grid", None))
+                    and int(getattr(surface, "ncol", 0)) >= 2
+                    and int(getattr(surface, "nrow", 0)) >= 2
+                )
+                if shared:
+                    views = {
+                        "map": {
+                            "attributes": copy.deepcopy(descriptors),
+                            "active_attribute": active,
+                            "active_color_by": active,
+                            "transport": "shared",
+                            "modes": ["2d", "3d"],
+                            "tiers": [
+                                {"id": "preview", "label": "Preview"},
+                                {"id": "full", "label": "Full detail"},
+                            ],
+                            "active_detail": "preview",
+                        }
                     }
-                    for view in ("map", "scene3d")
-                }
-                if callable(getattr(surface, "_view_regular_grid", None)):
-                    views["scene3d"].update(
-                        tiers=[
-                            {"id": "preview", "label": "Preview"},
-                            {"id": "full", "label": "Full detail"},
-                        ],
-                        active_detail="preview",
-                    )
+                    visible = {"map": first_surface}
+                else:
+                    views = {
+                        view: {
+                            "attributes": copy.deepcopy(descriptors),
+                            "active_attribute": active,
+                            "active_color_by": active,
+                        }
+                        for view in ("map", "scene3d")
+                    }
+                    if callable(getattr(surface, "_view_regular_grid", None)):
+                        views["scene3d"].update(
+                            tiers=[
+                                {"id": "preview", "label": "Preview"},
+                                {"id": "full", "label": "Full detail"},
+                            ],
+                            active_detail="preview",
+                        )
+                    visible = {"map": first_surface, "scene3d": first_surface}
                 entries.append(
                     Entry(
                         typed_id("surface", name.split("/")),
@@ -214,7 +237,7 @@ class ProjectViewProvider:
                         tuple(name.split("/")),
                         (name,),
                         views,
-                        {"map": first_surface, "scene3d": first_surface},
+                        visible,
                         lane_attrs=lane_attrs,
                     )
                 )
@@ -505,9 +528,13 @@ class ProjectViewProvider:
             raise ValueError(entry.reason or f"workspace item {item_id!r} is disabled")
         if view not in entry.views:
             raise KeyError(f"workspace item {item_id!r} has no {view!r} resource")
-        if detail is not None and view != "scene3d":
+        if detail is not None and not entry.views[view].get("tiers"):
             raise KeyError(f"workspace item {item_id!r} has no {view!r} detail tiers")
         if entry.role == "surface":
+            if entry.views[view].get("transport") == "shared":
+                if lane is not None or attribute is not None or color_by is not None:
+                    raise ValueError("shared surface resources do not accept selectors")
+                return self._shared_surface(entry, detail)
             if lane is not None and (attribute is not None or color_by is not None):
                 raise ValueError("surface resource cannot mix lane with attribute/color_by")
             if (attribute is None) != (color_by is None):
@@ -527,6 +554,28 @@ class ProjectViewProvider:
         if entry.role == "well_top":
             return self._well_top(entry, view)
         raise ValueError(entry.reason or f"no materializer for {entry.role!r}")
+
+    def _shared_surface(
+        self, entry: Entry, detail: str | None
+    ) -> dict[str, Any]:
+        obj = self.project.surface(entry.source[0])
+        if obj is None:
+            raise KeyError(f"surface {entry.source[0]!r} was renamed or deleted; call refresh()")
+        transport = getattr(obj, "_view_shared_regular_grid", None)
+        if not callable(transport):
+            raise ValueError(f"surface {entry.id!r} no longer supports shared transport")
+        stride = self._surface_resources.preview_stride(obj) if detail == "preview" else 1
+        grid = transport(attrs=list(entry.lane_attrs.values()), stride=stride)
+        payload = self._surface_resources.shared_regular(
+            entry,
+            grid,
+            copy.deepcopy(entry.views["map"]["attributes"]),
+            detail,
+        )
+        self._surface_resources.attach_well_overlays(
+            entry, obj, payload["payload"]
+        )
+        return payload
 
     def _surface(
         self, entry: Entry, view: str, lane: str | None, detail: str | None

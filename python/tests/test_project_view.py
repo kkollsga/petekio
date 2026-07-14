@@ -102,6 +102,8 @@ class _OverlayBore(_BoreSpy):
 
     def intersections(self, surface):
         self.intersection_calls += 1
+        if len(self.hits) == 1 and isinstance(self.hits[0], Exception):
+            raise self.hits[0]
         return list(self.hits)
 
 
@@ -143,6 +145,20 @@ class _NativeSurfaceSpy(_SurfaceSpy):
         super().__init__(name, attrs=())
         self.native_calls = []
 
+    def _view_shared_regular_grid(self, attrs, stride=1):
+        self.native_calls.append((tuple(attrs), stride))
+        values = struct.pack("<4f", 1.0, 2.0, 3.0, 4.0)
+        return {
+            "dimensions": [2, 2],
+            "origin": [0.0, 0.0],
+            "step_i": [1.0, 0.0],
+            "step_j": [0.0, 1.0],
+            "lanes": [{"values": values, "range": [1.0, 4.0]}],
+            "mask": bytes((1, 1, 1, 1)),
+            "triangle_count": 2,
+            "stride": stride,
+        }
+
     def _view_regular_grid(self, attr=None, stride=1):
         self.native_calls.append((attr, stride))
         values = struct.pack("<4f", 1.0, 2.0, 3.0, 4.0)
@@ -165,6 +181,68 @@ class _NativeSurfaceSpy(_SurfaceSpy):
 
     def value_layer(self, attr=None, stride=None):
         raise AssertionError("native compact resources must not call value_layer()")
+
+
+class _SharedMultiSurfaceSpy(_SurfaceSpy):
+    ncol = 2
+    nrow = 2
+
+    def __init__(self, *, fractional_category=False, missing_lane=False, all_nan=False):
+        super().__init__("Shared", attrs=("porosity", "facies"))
+        self.shared_calls = []
+        self.fractional_category = fractional_category
+        self.missing_lane = missing_lane
+        self.all_nan = all_nan
+
+    def attr_metadata(self, name):
+        if name == "facies":
+            return {
+                "id": "facies",
+                "label": "Facies",
+                "kind": "categorical",
+                "units": None,
+                "codes": {"1": {"label": "Sand", "color": "#EDA100"}},
+            }
+        return {
+            "id": "porosity",
+            "label": "Porosity",
+            "kind": "continuous",
+            "units": "v/v",
+            "codes": None,
+        }
+
+    def _view_shared_regular_grid(self, attrs, stride=1):
+        self.shared_calls.append((tuple(attrs), stride))
+        rows = []
+        for attr in attrs:
+            if attr is None:
+                values = (10.0, 11.0, 12.0, 13.0)
+            elif attr == "porosity":
+                values = (float("nan"),) * 4 if self.all_nan else (0.1, 0.2, 0.3, 0.4)
+            else:
+                values = (1.5, 1.0, 1.0, 1.0) if self.fractional_category else (1.0, 1.0, 1.0, 1.0)
+            finite = [value for value in values if value == value]
+            rows.append(
+                {
+                    "values": struct.pack("<4f", *values),
+                    "range": [min(finite), max(finite)] if finite else None,
+                }
+            )
+        if self.missing_lane:
+            rows.pop()
+        return {
+            "dimensions": [2, 2],
+            "origin": [0.0, 0.0],
+            "step_i": [1.0, 0.0],
+            "step_j": [0.0, 1.0],
+            "lanes": rows,
+            "mask": bytes((1, 1, 1, 1)),
+            "triangle_count": 2,
+            "stride": stride,
+        }
+
+    def value_layer(self, attr=None, stride=None):
+        raise AssertionError("shared resources must not materialize legacy meshes")
 
 
 class _FakeProject:
@@ -308,7 +386,8 @@ def test_v2_catalog_uses_persisted_project_and_attribute_metadata(tmp_path):
     ]
     assert leaf["views"]["map"]["active_attribute"] == "depth"
     assert leaf["views"]["map"]["active_color_by"] == "depth"
-    assert "transport" not in leaf["views"]["map"]
+    assert leaf["views"]["map"]["transport"] == "shared"
+    assert leaf["views"]["map"]["modes"] == ["2d", "3d"]
     assert "lanes" not in leaf["views"]["map"]
 
     session = reopened.view(settings=petekio.ViewSettings(serve=False))
@@ -317,22 +396,27 @@ def test_v2_catalog_uses_persisted_project_and_attribute_metadata(tmp_path):
     assert workspace["title"] == "Field model"
     assert workspace["project"] == catalog["project"]
     normalized_leaf = next(_walk(workspace["tree"]))
-    assert normalized_leaf["views"] == ["map", "scene3d"]
-    assert set(normalized_leaf["resources"]) == {"map", "scene3d"}
+    assert normalized_leaf["views"] == ["map"]
+    assert set(normalized_leaf["resources"]) == {"map"}
     assert session.diagnostics == ()
-    resource = session.resource(leaf["id"], "map", lane="facies")
+    resource = session.resource(leaf["id"], "map", detail="full")
     assert resource["schema_version"] == 2
-    assert resource["attribute"] == resource["color_by"] == "facies"
-    assert resource["payload"]["map"]["fills"][0]["name"] == "facies"
+    assert not {"lane", "attribute", "color_by"} & set(resource)
+    assert "scene3d" not in resource["payload"]
+    shared = resource["payload"]["map"]["surface_grid"]
+    assert [attribute["id"] for attribute in shared["attributes"]] == [
+        "depth",
+        "facies",
+    ]
+    assert shared["attributes"][1]["codes"] == metadata["codes"]
 
     direct = provider.view_resource(
         item_id=leaf["id"],
         view="map",
-        attribute="facies",
-        color_by="facies",
+        detail="full",
     )
-    assert direct["map"]["fills"][0]["name"] == "facies"
-    with pytest.raises(ValueError, match="reserved for the shared Phase 6"):
+    assert direct["kind"] == "workspace_resource"
+    with pytest.raises(ValueError, match="do not accept selectors"):
         provider.view_resource(
             item_id=leaf["id"],
             view="map",
@@ -434,16 +518,31 @@ def test_regular_structured_and_tri_surface_resources_share_the_lane_seam(tmp_pa
         name = f"Variant/{index}"
         provider = ProjectViewProvider(_FakeProject({name: surface}), lod=False)
         item_id = f"surface:Variant/{index}"
-        payload = provider.view_resource(item_id=item_id, view="map", lane="depth")
-        assert payload["map"]["fills"][0]["name"] == "values"
-        fill = payload["map"]["fills"][0]
         if index == 0:
-            assert "regular_grid" in fill
-            assert "nodes" not in fill and "triangles" not in fill
+            payload = provider.view_resource(
+                item_id=item_id, view="map", detail="full"
+            )
+            shared = payload["payload"]["map"]["surface_grid"]
+            assert shared["attributes"][0]["id"] == "depth"
+            assert "scene3d" not in payload["payload"]
         else:
+            payload = provider.view_resource(item_id=item_id, view="map", lane="depth")
+            assert payload["map"]["fills"][0]["name"] == "values"
             # These types retain the general petekTools value_layer fallback;
             # the renderer may itself compact an affine shell afterwards.
             assert not hasattr(surface, "_view_regular_grid")
+
+
+def test_degenerate_regular_surface_keeps_legacy_catalog_fallback():
+    surface = petekio.Surface.constant(
+        petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 1, 1), 10.0
+    )
+    leaf = next(
+        _walk(_provider_tree(ProjectViewProvider(_FakeProject({"One": surface}))))
+    )
+    assert set(leaf["views"]) == {"map", "scene3d"}
+    assert "transport" not in leaf["views"]["map"]
+    assert leaf["visible"] == {"map": True, "scene3d": True}
 
 
 def _block_values(payload, marker, code):
@@ -457,28 +556,31 @@ def _direct_block_values(block, code):
     return struct.unpack(f"<{len(raw) // struct.calcsize(code)}{code}", raw)
 
 
+def _shared_block_values(resource, marker, code):
+    return _direct_block_values(resource["blocks"][marker["__block__"]], code)
+
+
 def test_regular_surface_map_is_native_affine_row_major_and_nan_exact():
     surface = petekio.Surface.load_irap_classic("tests/fixtures/simple.irap")
     surface.thickness = petekio.Surface.constant(surface.geometry, 7.0)
     provider = ProjectViewProvider(_FakeProject({"Rotated/Top": surface}))
     item_id = "surface:Rotated/Top"
 
-    depth = provider.view_resource(item_id=item_id, view="map", lane="depth")
-    fill = depth["map"]["fills"][0]
-    grid = fill["regular_grid"]
-    assert grid["dimensions"] == [3, 4]
-    assert grid["origin"] == pytest.approx([1000.0, 2000.0])
-    assert grid["step_i"] == pytest.approx([43.3012701892, 25.0])
-    assert grid["step_j"] == pytest.approx([-12.5, 21.6506350946])
-    values = _block_values(depth, grid["values"], "f")
+    depth = provider.view_resource(item_id=item_id, view="map", detail="full")
+    grid = depth["payload"]["map"]["surface_grid"]
+    assert (grid["frame"]["ncol"], grid["frame"]["nrow"]) == (3, 4)
+    assert grid["frame"]["origin_x"] == pytest.approx(1000.0)
+    assert grid["frame"]["origin_y"] == pytest.approx(2000.0)
+    assert grid["frame"]["spacing_x"] == pytest.approx(50.0)
+    assert grid["frame"]["spacing_y"] == pytest.approx(25.0)
+    assert grid["frame"]["rotation_deg"] == pytest.approx(30.0)
+    assert grid["frame"]["crs"] is None and grid["frame"]["units"] == "m"
+    assert grid["positive"] == "up"
+    values = _shared_block_values(depth, grid["attributes"][0]["values"], "f")
     assert values[:5] == pytest.approx((1000.0, 1010.0, 1020.0, 1005.0, 1015.0))
     assert values[5] != values[5]
-    assert _block_values(depth, grid["mask"], "B")[5] == 0
-    assert "nodes" not in fill and "triangles" not in fill
-
-    thickness = provider.view_resource(item_id=item_id, view="map", lane="thickness")
-    attr_grid = thickness["map"]["fills"][0]["regular_grid"]
-    assert set(_block_values(thickness, attr_grid["values"], "f")) == {7.0}
+    assert set(_shared_block_values(depth, grid["mask"], "B")) == {1}
+    assert set(_shared_block_values(depth, grid["attributes"][1]["values"], "f")) == {7.0}
 
 
 def test_regular_surface_scene_has_progressive_compact_detail():
@@ -488,54 +590,43 @@ def test_regular_surface_scene_has_progressive_compact_detail():
     surface = petekio.Surface.constant(geom, -2500.0)
     provider = ProjectViewProvider(_FakeProject({"Large": surface}))
     leaf = next(_walk(_provider_tree(provider)))
-    assert leaf["views"]["scene3d"]["tiers"] == [
+    assert leaf["views"]["map"]["tiers"] == [
         {"id": "preview", "label": "Preview"},
         {"id": "full", "label": "Full detail"},
     ]
 
     started = time.perf_counter()
     preview = provider.view_resource(
-        item_id="surface:Large", view="scene3d", lane="depth", detail="preview"
+        item_id="surface:Large", view="map", detail="preview"
     )
     preview_seconds = time.perf_counter() - started
-    mesh = preview["scene3d"]["meshes"][0]
-    assert "regular_surface" in mesh
-    assert "nodes" not in mesh and "triangles" not in mesh
-    assert preview["scene3d"]["detail"] == "preview"
-    assert preview["scene3d"]["preview_stride"] > 1
+    preview_grid = preview["payload"]["map"]["surface_grid"]
+    assert preview["detail"] == "preview"
+    assert preview_grid["frame"]["ncol"] < 750
     assert preview_seconds < 0.25
 
     started = time.perf_counter()
     full = provider.view_resource(
-        item_id="surface:Large", view="scene3d", lane="depth", detail="full"
+        item_id="surface:Large", view="map", detail="full"
     )
     full_seconds = time.perf_counter() - started
-    full_grid = full["scene3d"]["meshes"][0]["regular_surface"]
-    preview_grid = mesh["regular_surface"]
-    assert full_grid["dimensions"] == [750, 750]
+    full_grid = full["payload"]["map"]["surface_grid"]
+    assert [full_grid["frame"]["ncol"], full_grid["frame"]["nrow"]] == [750, 750]
+    assert preview_grid["attributes"][0]["range"] == full_grid["attributes"][0]["range"]
     # The coarse preview spans the exact full footprint even though 749 is not
     # divisible by its stride; swapping detail must not change camera framing.
-    for axis in (0, 1):
-        preview_end = (
-            preview_grid["origin"][axis]
-            + (preview_grid["dimensions"][0] - 1) * preview_grid["step_i"][axis]
-            + (preview_grid["dimensions"][1] - 1) * preview_grid["step_j"][axis]
-        )
-        full_end = (
-            full_grid["origin"][axis]
-            + 749 * full_grid["step_i"][axis]
-            + 749 * full_grid["step_j"][axis]
-        )
-        assert preview_end == pytest.approx(full_end)
+    assert preview_grid["frame"]["spacing_x"] * (preview_grid["frame"]["ncol"] - 1) == pytest.approx(
+        full_grid["frame"]["spacing_x"] * 749
+    )
+    assert preview_grid["frame"]["spacing_y"] * (preview_grid["frame"]["nrow"] - 1) == pytest.approx(
+        full_grid["frame"]["spacing_y"] * 749
+    )
     assert full_seconds < 0.5
 
     started = time.perf_counter()
-    map_payload = provider.view_resource(
-        item_id="surface:Large", view="map", lane="depth"
-    )
+    map_payload = provider.view_resource(item_id="surface:Large", view="map")
     map_seconds = time.perf_counter() - started
-    assert "regular_grid" in map_payload["map"]["fills"][0]
-    assert map_payload["map"]["fills"][0]["regular_grid"]["step_j"][1] < 0
+    assert map_payload["payload"]["map"]["surface_grid"]["frame"]["yflip"] is True
     assert map_seconds < 0.5
 
 
@@ -543,11 +634,121 @@ def test_native_regular_resources_never_call_full_mesh_duck():
     surface = _NativeSurfaceSpy("Native")
     provider = ProjectViewProvider(_FakeProject({"Native": surface}))
 
-    provider.view_resource(item_id="surface:Native", view="map", lane="depth")
-    provider.view_resource(
-        item_id="surface:Native", view="scene3d", lane="depth", detail="preview"
+    provider.view_resource(item_id="surface:Native", view="map", detail="preview")
+    assert surface.native_calls == [((None,), 1)]
+
+
+def test_shared_surface_fetch_is_selector_free_linear_and_static_once(tmp_path):
+    surface = _SharedMultiSurfaceSpy()
+    provider = ProjectViewProvider(_FakeProject({"Shared": surface}))
+    session = viewer.view(provider, serve=False)
+    spec = next(_walk(session.manifest()["workspace"]["tree"]))["resources"]["map"]
+    assert spec["transport"] == "shared" and spec["modes"] == ["2d", "3d"]
+    assert [descriptor["id"] for descriptor in spec["attributes"]] == [
+        "depth",
+        "porosity",
+        "facies",
+    ]
+
+    full = session.resource("surface:Shared", "map", detail="full")
+    assert session.resource("surface:Shared", "map", detail="full") == full
+    assert surface.shared_calls == [((None, "porosity", "facies"), 1)]
+    grid = full["payload"]["map"]["surface_grid"]
+    assert len(grid["attributes"]) == 3
+    assert len(full["blocks"]) == 4  # one shell mask + one value block per lane
+    assert grid["attributes"][1]["range"] == pytest.approx([0.1, 0.4])
+    assert grid["attributes"][2]["range"] is None
+    assert grid["attributes"][2]["kind"] == "categorical"
+    with pytest.raises(ValueError, match="do not accept selectors"):
+        session.resource(
+            "surface:Shared",
+            "map",
+            detail="full",
+            attribute="porosity",
+            color_by="facies",
+        )
+    assert len(surface.shared_calls) == 1
+
+    promoted_surface = _SharedMultiSurfaceSpy()
+    promoted_provider = ProjectViewProvider(
+        _FakeProject({"Shared": promoted_surface}), property="facies"
     )
-    assert surface.native_calls == [(None, 1), (None, 1)]
+    promoted_spec = next(_walk(promoted_provider.view_catalog()["tree"]))["views"][
+        "map"
+    ]
+    assert promoted_spec["active_attribute"] == "facies"
+    assert promoted_spec["active_color_by"] == "facies"
+    promoted_provider.view_resource(
+        item_id="surface:Shared", view="map", detail="full"
+    )
+    assert promoted_surface.shared_calls == [((None, "porosity", "facies"), 1)]
+
+    static_surface = _SharedMultiSurfaceSpy()
+    viewer.view(
+        ProjectViewProvider(_FakeProject({"Shared": static_surface})), serve=False
+    ).save(tmp_path / "shared-selected.html", include="selected")
+    assert static_surface.shared_calls == [((None, "porosity", "facies"), 1)]
+
+
+def test_promoted_categorical_primary_is_shared_geometry():
+    geometry = petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 2, 2)
+    source = petekio.Surface.constant(geometry, 100.0)
+    metadata = {
+        "id": "facies",
+        "label": "Facies",
+        "kind": "categorical",
+        "units": None,
+        "codes": {"1": {"label": "Sand", "color": "#EDA100"}},
+    }
+    source.set_attr(
+        "facies", petekio.Surface.constant(geometry, 1.0), metadata=metadata
+    )
+    promoted = source.attr["facies"]
+    provider = ProjectViewProvider(_FakeProject({"Facies": promoted}))
+    spec = next(_walk(provider.view_catalog()["tree"]))["views"]["map"]
+    assert spec["attributes"] == [metadata]
+    assert spec["active_attribute"] == spec["active_color_by"] == "facies"
+    resource = viewer.view(provider, serve=False).resource(
+        "surface:Facies", "map", detail="full"
+    )
+    attribute = resource["payload"]["map"]["surface_grid"]["attributes"][0]
+    assert attribute["kind"] == "categorical" and attribute["range"] is None
+
+
+def test_shared_surface_detail_missing_and_malformed_data_are_local():
+    detailed = _SharedMultiSurfaceSpy()
+    session = viewer.view(
+        ProjectViewProvider(_FakeProject({"Shared": detailed})), serve=False
+    )
+    session.resource("surface:Shared", "map", detail="preview")
+    session.resource("surface:Shared", "map", detail="full")
+    session.resource("surface:Shared", "map", detail="preview")
+    assert len(detailed.shared_calls) == 2
+
+    missing = ProjectViewProvider(
+        _FakeProject({"Shared": _SharedMultiSurfaceSpy(missing_lane=True)})
+    )
+    with pytest.raises(ValueError, match="omitted a declared attribute"):
+        missing.view_resource(item_id="surface:Shared", view="map", detail="full")
+
+    malformed = viewer.view(
+        ProjectViewProvider(
+            _FakeProject(
+                {"Shared": _SharedMultiSurfaceSpy(fractional_category=True)}
+            )
+        ),
+        serve=False,
+    )
+    with pytest.raises(ValueError, match="values must be integral"):
+        malformed.resource("surface:Shared", "map", detail="full")
+
+    all_nan = viewer.view(
+        ProjectViewProvider(
+            _FakeProject({"Shared": _SharedMultiSurfaceSpy(all_nan=True)})
+        ),
+        serve=False,
+    ).resource("surface:Shared", "map", detail="full")
+    assert all_nan["payload"]["map"]["surface_grid"]["attributes"][1]["range"] is None
 
 
 def test_scene_attribute_nulls_do_not_cut_finite_depth_geometry():
@@ -556,19 +757,16 @@ def test_scene_attribute_nulls_do_not_cut_finite_depth_geometry():
     primary.thickness = attribute
     provider = ProjectViewProvider(_FakeProject({"Top": primary}))
 
-    payload = provider.view_resource(
-        item_id="surface:Top", view="scene3d", lane="thickness", detail="full"
-    )
-    regular = payload["scene3d"]["meshes"][0]["regular_surface"]
-    mask = _direct_block_values(regular["mask"], "B")
-    values = _direct_block_values(regular["values"], "f")
-    elevations = _direct_block_values(regular["elevations"], "f")
-    assert mask[5] == 1
-    assert values[5] != values[5]
+    payload = provider.view_resource(item_id="surface:Top", view="map", detail="full")
+    regular = payload["payload"]["map"]["surface_grid"]
+    mask = _shared_block_values(payload, regular["mask"], "B")
+    elevations = _shared_block_values(payload, regular["attributes"][0]["values"], "f")
+    values = _shared_block_values(payload, regular["attributes"][1]["values"], "f")
+    assert mask[5] == 1 and values[5] != values[5]
     assert elevations[5] == -2500.0
 
 
-def test_surface_map_overlay_ends_at_first_exact_md_hit_and_is_cached():
+def test_surface_map_overlay_emits_all_md_ordered_hits_and_is_cached():
     first = _Hit(40.25, (1040.25, 2000.0, -40.25))
     second = _Hit(80.5, (1080.5, 2000.0, -80.5))
     well = _OverlayWell((second, first))
@@ -581,16 +779,50 @@ def test_surface_map_overlay_ends_at_first_exact_md_hit_and_is_cached():
     overlay = depth["map"]["well_overlays"][0]
     assert overlay["context_item_id"] == "surface:Top"
     assert overlay["well_item_id"] == "well:A/bore:%00"
-    assert overlay["status"] == "hit"
+    assert overlay["status"] == "ambiguous"
     assert overlay["intersection"] == {
-        "md": 40.25,
-        "xyz": [1040.25, 2000.0, -40.25],
+        "md": 80.5,
+        "xyz": [1080.5, 2000.0, -80.5],
     }
-    assert overlay["trajectory"][-1] == [1040.25, 2000.0, -40.25]
-    assert "first MD-ordered hit" in overlay["message"]
+    assert overlay["intersections"] == [
+        {"md": 40.25, "xyz": [1040.25, 2000.0, -40.25]},
+        {"md": 80.5, "xyz": [1080.5, 2000.0, -80.5]},
+    ]
+    assert overlay["trajectory"][-1] == [1080.5, 2000.0, -80.5]
+    assert "greatest-MD hit" in overlay["message"]
 
     provider.view_resource(item_id="surface:Top", view="map", lane="thickness")
     assert well._items[""].intersection_calls == 1
+    validated = viewer.view(provider, serve=False).resource(
+        "surface:Top", "map", attribute="depth", color_by="depth"
+    )
+    assert validated["payload"]["map"]["well_overlays"][0]["status"] == "ambiguous"
+
+
+@pytest.mark.parametrize(
+    "hits,status,count",
+    [
+        ([], "no_hit", 0),
+        ([_Hit(20.0, (1020.0, 2000.0, -20.0))], "hit", 1),
+        ([RuntimeError("boom")], "error", 0),
+    ],
+)
+def test_surface_map_overlay_status_matches_intersection_cardinality(
+    hits, status, count
+):
+    well = _OverlayWell(hits)
+    provider = ProjectViewProvider(
+        _FakeProject({"Top": _SurfaceSpy("Top")}, wells={"A": well}), lod=False
+    )
+    payload = provider.view_resource(item_id="surface:Top", view="map", lane="depth")
+    overlay = payload["map"]["well_overlays"][0]
+    assert overlay["status"] == status
+    assert len(overlay["intersections"]) == count
+    assert (overlay["intersection"] is not None) is (count == 1)
+    validated = viewer.view(provider, serve=False).resource(
+        "surface:Top", "map", attribute="depth", color_by="depth"
+    )
+    assert validated["payload"]["map"]["well_overlays"][0]["status"] == status
 
 
 def test_selection_folders_properties_visibility_and_duplicate_leaf_guidance():
@@ -722,10 +954,10 @@ def test_generic_project_provider_forwards_progressive_detail(tmp_path):
     item_id = next(_walk(project.view_catalog()["tree"]))["id"]
 
     resource = project.view_resource(
-        item_id=item_id, view="scene3d", lane="depth", detail="preview"
+        item_id=item_id, view="map", detail="preview"
     )
-    assert resource["scene3d"]["detail"] == "preview"
-    assert "regular_surface" in resource["scene3d"]["meshes"][0]
+    assert resource["detail"] == "preview"
+    assert "surface_grid" in resource["payload"]["map"]
 
 
 def test_bore_logs_are_discovered_from_metadata_and_explicit_spec_filters(tmp_path):

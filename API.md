@@ -936,13 +936,15 @@ session = project.view(
 # With no logs= override, bores advertising mnemonics receive a hidden, lazy
 # Wells resource using all curves + tops; template= also applies to this auto spec.
 session.tree(); session.diagnostics; session.url
-session.resource("surface:Interpretation/Top%20A", "map", lane="thickness") # v1 spelling retained
-session.resource("surface:Interpretation/Top%20A", "map",
-                 attribute="thickness", color_by="thickness")              # transitional v2
+session.resource("surface:Interpretation/Top%20A", "map", detail="full")
+# One shared regular-surface fetch carries depth + every attribute. Geometry,
+# colour-by, 2-D/3-D mode, and selector changes are local viewer state and do
+# not issue selector-driven resource requests.
 session.refresh().serve()
 session.save("project.html", include="visible")
-# Until Phase 6 shared transport, selected export of a multi-attribute surface
-# fails loudly rather than enumerating attribute×color_by resources.
+# Shared selected export embeds one envelope with N value blocks, never N²
+# attribute×color_by envelopes. Structured/triangular/degenerate fallbacks keep
+# their established separate resources and direct lane compatibility.
 
 # Exact generic equivalent through the provider duck:
 from petektools import view as pto_view
@@ -1040,7 +1042,8 @@ value-bearing `to_structured_surface()` / `to_tri_surface()` conversion;
 template=None, tab="auto", lod=True, settings=None) -> ProjectViewSession`
 uses canonical role/folder/path selectors. `selection=None` catalogs the whole
 project without materializing heavy values. Defaults show the first selected
-surface in Map/3-D plus every selected bore. Bores with mnemonic metadata gain
+surface in the Map resource (2-D/3-D camera modes for supported regular grids)
+plus every selected bore. Bores with mnemonic metadata gain
 a hidden lazy Wells resource using a deterministic maximum-six selection plus
 tops; `logs=ViewSpec(...)` overrides that selection exactly, while inspectable
 template tracks restrict automatic gathering. `ProjectViewSession` exposes `tree()`, `resource(...)`,
@@ -1050,17 +1053,17 @@ template tracks restrict automatic gathering. `ProjectViewSession` exposes `tree
 The provider catalog is workspace v2: an authored persisted project title emits
 `project={title,crs,unit}` (an absent title is never path-guessed), and each
 surface view declares ordered canonical attribute descriptors plus independent
-`active_attribute` / `active_color_by`. Phase 5 uses the non-shared transition:
-resources accept equal selector pairs, while `lane=` remains a direct
-compatibility spelling. Unequal geometry/paint selectors and shared all-lane
-transport remain Phase 6; multi-attribute selected export is rejected before
-materialization, never expanded as a Cartesian product.
-Surface `scene3d` resources advertise `preview` / `full` details; an omitted
-detail remains compatible and materializes full resolution. Regular Map/3-D
-resources use compact affine typed blocks, while structured/triangular
-fallbacks retain their established payloads. Map resources carry exact
-surface-context well display overlays ending at the first MD-ordered crossing;
-this does not alter the public multi-hit error of `intersection()`.
+`active_attribute` / `active_color_by`. Supported affine regular surfaces use
+one selector-free shared Map resource with exact `modes=["2d","3d"]`; one
+envelope-level block table carries the shell mask and every ordered attribute
+once. Preview/full detail is the only fetch-multiplication axis. Geometry and
+paint selectors remain independent local state, and selected export embeds one
+resource instead of a Cartesian product. Structured, triangular, and
+degenerate/non-affine fallbacks retain separate Map/scene3d resources and direct
+`lane=` compatibility. Map resources carry every finite MD-ordered
+surface-context well intersection, status/cardinality, and a greatest-MD
+singular compatibility echo; this does not alter the public multi-hit error of
+`intersection()`.
 **Dataset names (duck-typed viewer seam):** every project-accessor hand-back
 (`project.points[...]`, `project.surfaces[...]`, `project.polygons[...]`,
 `geo.points(name)`, `geo.surface(name)`, `geo.polygons(name)`, and the

@@ -5,13 +5,15 @@ data. `make_field(out_dir)` returns the paths a notebook (or a test) then loads
 through petekIO. The field is deliberately shaped to exercise the interesting
 features:
 
-- a **multi-bore** well (`25/1-A` bores A/B) plus single-bore wells,
+- a **multi-bore** well (`25/1-1` bores A/B) plus single-bore wells,
 - a lithostratigraphic column with a **pinch-out** (`Mid Sand` is developed in
   some wells, zero-thickness in another) so the cross-well order merge has work
   to do — and two stacked lobes (`Lower Sand A`/`B`) coincident *everywhere*, so
   a manual `strat_hint` is needed to order them,
 - `PHIE` logs with believable zone trends, with two bores sampled at **different
-  rates** so thickness-weighting visibly matters.
+  rates** so thickness-weighting visibly matters,
+- a viewer-design variant with a **rotated** regular surface, two continuous
+  attribute lanes, and a categorical facies lane with an explicit code table.
 
 Designed to expand: drop new `write_*` helpers + `make_*` builders here as
 surfaces / points / polygons land (see the TODO at the bottom).
@@ -23,6 +25,8 @@ import math
 import random
 from pathlib import Path
 
+_WellPathStation = tuple[float, float, float, float, float, float]
+
 # --- format writers ---------------------------------------------------------
 
 
@@ -33,10 +37,11 @@ def _write(path: Path, body: str) -> Path:
 
 
 def write_wellpath(path: Path, head: tuple[float, float], kb: float, crs: str,
-                   stations: list[tuple[float, float, float, float]]) -> Path:
-    """A positioned `.wellpath` (vertical here): rows are MD X Y Z TVD ..."""
+                   stations: list[_WellPathStation]) -> Path:
+    """Write positioned stations as ``(MD, X, Y, TVD, inclination, azimuth)``."""
     rows = "".join(
-        f"{md} {x} {y} {z} {md} 0 0 0 0 0 0\n" for (md, x, y, z) in stations
+        f"{md} {x} {y} {kb - tvd} {tvd} 0 0 {azi} {inc} 0 {azi}\n"
+        for (md, x, y, tvd, inc, azi) in stations
     )
     return _write(path, (
         "# WELL TRACE FROM PETREL\n"
@@ -116,15 +121,15 @@ def _log(path: Path, top_md: float, td: float, step: float,
 def make_field(out_dir: str | Path) -> dict[str, Path]:
     """Generate the synthetic field under `out_dir`. Returns key paths.
 
-    Wells: ``25/1-A`` (bores A, B — A sampled fine, B coarse), ``25/1-B``,
-    ``25/1-C`` (where ``Mid Sand`` pinches out). Tops include ``Coal``,
-    coincident with ``Lower Sand`` everywhere (needs a ``strat_hint``).
+    Wells: ``25/1-1`` (bores A, B — A sampled fine, B coarse), ``25/1-2``,
+    ``25/1-3`` (where ``Mid Sand`` pinches out). ``Lower Sand A`` and
+    ``Lower Sand B`` are coincident everywhere (needs a ``strat_hint``).
     """
     out = Path(out_dir)
     crs = "ED50 / UTM zone 31N"
 
     # Per-well/bore tops (name, md). Each shifted in depth; Mid Sand pinches out
-    # in 25/1-C (== Lower Sand md); Coal is coincident with Lower Sand in all.
+    # in 25/1-3 (== Lower Sand md); the two Lower Sand lanes are coincident.
     def column(base: float, pinch_mid: bool) -> list[tuple[str, float]]:
         ls = base + 120
         return [
@@ -162,11 +167,23 @@ def make_field(out_dir: str | Path) -> dict[str, Path]:
         wdir = out / "wells" / wid.replace("/", "_")
         suffix = f"_{bore}" if bore else ""
         well_col = f"{wid} {bore}" if bore else wid
-        if bore:  # multi-bore needs a .wellpath per bore (shared-prefix labels)
-            wp = wdir / f"{wid.replace('/', '_')}{suffix}.wellpath"
-            stations = [(base - 50, head[0], head[1], -(base - 50)),
-                        (td, head[0], head[1], -td)]
-            write_wellpath(wp, head, 25.0, crs, stations)
+        # Every synthetic well carries a positioned path, so downstream views
+        # exercise the declared wellhead instead of a (0, 0) loader fallback.
+        wp = wdir / f"{wid.replace('/', '_')}{suffix}.wellpath"
+        if bore == "A":
+            # A genuinely deviated positioned bore: the endpoint has a
+            # falsifiable horizontal departure from the header wellhead.
+            stations = [
+                (base - 50, head[0], head[1], base - 50, 0.0, 40.0),
+                (base + 60, head[0] + 25, head[1] + 20, base + 55, 22.0, 40.0),
+                (td, head[0] + 140, head[1] + 110, td - 35, 38.0, 40.0),
+            ]
+        else:
+            stations = [
+                (base - 50, head[0], head[1], base - 50, 0.0, 0.0),
+                (td, head[0], head[1], td, 0.0, 0.0),
+            ]
+        write_wellpath(wp, head, 25.0, crs, stations)
         _log(wdir / f"{wid.replace('/', '_')}{suffix}_PHIE.las",
              base - 40, td, step, tops, seed=seed, bias=bias)
         for name, md in tops:
@@ -188,7 +205,8 @@ def make_field(out_dir: str | Path) -> dict[str, Path]:
 
 
 def write_irap_surface(path: Path, xori: float, yori: float, xinc: float,
-                       yinc: float, ncol: int, nrow: int, fn) -> Path:
+                       yinc: float, ncol: int, nrow: int, fn, *,
+                       rotation_deg: float = 0.0, yflip: bool = False) -> Path:
     """An IRAP-classic ASCII surface. `fn(i, j)` -> value (return NaN for undef).
 
     Matches `io::irap::save_irap_classic`: header lines then values column-major,
@@ -196,10 +214,11 @@ def write_irap_surface(path: Path, xori: float, yori: float, xinc: float,
     """
     undef = 9999900.0
     xmax, ymax = xori + (ncol - 1) * xinc, yori + (nrow - 1) * yinc
+    signed_yinc = -yinc if yflip else yinc
     lines = [
-        f"-996 {nrow} {xinc} {yinc}",
+        f"-996 {nrow} {xinc} {signed_yinc}",
         f"{xori} {xmax} {yori} {ymax}",
-        f"{ncol} 0 {xori} {yori}",
+        f"{ncol} {rotation_deg} {xori} {yori}",
         "0  0  0  0  0  0  0",
     ]
     toks = []
@@ -210,6 +229,70 @@ def write_irap_surface(path: Path, xori: float, yori: float, xinc: float,
     for k in range(0, len(toks), 6):
         lines.append(" ".join(toks[k:k + 6]))
     return _write(path, "\n".join(lines) + "\n")
+
+
+def make_viewer_design_field(out_dir: str | Path) -> dict:
+    """Build a small, falsifiable fixture for the project-view redesign.
+
+    The attribute lanes are separate IRAP files with identical geometry. This
+    keeps the fixture reusable before lane metadata is persisted by petekIO;
+    callers can attach them with the existing ``Surface.set_attr`` operation.
+    ``attributes`` supplies the intended durable unit/kind/code-table metadata
+    without changing the current viewer transport schema.
+    """
+    paths = make_field(out_dir)
+    out = Path(out_dir)
+    surface_dir = out / "surfaces" / "viewer_design"
+    geometry = {
+        "xori": 850.0,
+        "yori": 4850.0,
+        "xinc": 75.0,
+        "yinc": 60.0,
+        "ncol": 7,
+        "nrow": 6,
+        "rotation_deg": 27.0,
+        "yflip": False,
+    }
+
+    def lane(name: str, fn) -> Path:
+        return write_irap_surface(
+            surface_dir / f"{name}.irap",
+            geometry["xori"],
+            geometry["yori"],
+            geometry["xinc"],
+            geometry["yinc"],
+            geometry["ncol"],
+            geometry["nrow"],
+            fn,
+            rotation_deg=geometry["rotation_deg"],
+            yflip=geometry["yflip"],
+        )
+
+    primary = lane("reservoir_top", lambda i, j: 1980.0 + 8.0 * i + 5.0 * j)
+    attributes = {
+        "gross_thickness": {
+            "path": lane("gross_thickness", lambda i, j: 18.0 + 1.5 * i + 0.5 * j),
+            "kind": "continuous",
+            "unit": "m",
+        },
+        "porosity": {
+            "path": lane("porosity", lambda i, j: 0.16 + 0.01 * ((i + j) % 6)),
+            "kind": "continuous",
+            "unit": "fraction",
+        },
+        "facies": {
+            "path": lane("facies", lambda i, j: float(1 + ((i // 2 + j) % 3))),
+            "kind": "categorical",
+            "unit": None,
+            "codes": {1: "Shale", 2: "Sand", 3: "Silt"},
+        },
+    }
+    return {
+        **paths,
+        "surface": primary,
+        "surface_geometry": geometry,
+        "attributes": attributes,
+    }
 
 
 def write_points_csv(path: Path, coords: list[tuple[float, float, float, float]]) -> Path:

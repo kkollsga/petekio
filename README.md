@@ -88,6 +88,12 @@ project.templates.add(template)
 project.wells.view(template=project.templates.reservoir, serve=False)
 project.templates.reservoir(wells=["A-1", "A-2"], save="correlation.html")
 
+# Compute exact MD/XYZ surface crossings for every bore, then persist the
+# complete result as a project horizon (outside/no-hit bores are reported).
+surface = project.surfaces.structure.top_dome
+result = project.wells.intersection(surface)
+project.well_tops["Reservoir/Top"] = result
+
 # Or build the same substrate manually:
 geo = petekio.GeoData(unit="m")
 
@@ -131,9 +137,9 @@ column.
 | Domain | What you get |
 | --- | --- |
 | **Surfaces** | IRAP-classic load, sample/resample, typed attribute lanes, arithmetic, smoothing, dip angle/azimuth, NaN-hole extrapolation, edge polygons, stats/volumetrics, and gridding from scattered points |
-| **Wells** | Positioned `.wellpath` trajectories (MD preserved; minimum-curvature interpolation), multi-bore (sidetracks), imported logs stored as MD/value pairs with mnemonic aliasing, Petrel well-tops, per-zone stats, field-wide lithostratigraphic ordering |
-| **Points / polygons** | IRAP / GeoJSON / CSV load, strict regular-grid geometry inference, clip, point-to-surface gridding |
-| **Project** | `GeoData` substrate — import once, folder-aware lazy Map/3-D/Wells workspace, read-only filtered views, compact `.pproj` load/save |
+| **Wells** | Positioned `.wellpath` trajectories (MD preserved; minimum-curvature interpolation), multi-bore logs/tops, exact regular/structured/triangulated surface intersections, persistent computed horizons, per-zone stats, and field-wide lithostratigraphic ordering |
+| **Points / polygons** | IRAP / GeoJSON / CSV load, geometry-only regular/structured/mesh inference, topology-preserving EarthVision promotion, clipping, and point-to-surface gridding |
+| **Project** | `GeoData` substrate — import once, canonical EarthVision surfaces, folder-aware lazy Map/3-D/Wells workspace, persistent correlation templates, compact transport, read-only filtered views, and `.pproj` load/save |
 
 ## Built in gates
 

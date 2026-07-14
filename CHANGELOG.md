@@ -6,6 +6,8 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-07-14
+
 ### Fixed
 - **Correlation accepts coincident formation picks.** Equal-TVD picks now keep
   their stable producer order and represent valid zero-thickness zones; only a

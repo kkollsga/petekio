@@ -36,6 +36,12 @@ All notable changes to petekIO are recorded here. The format loosely follows
   or shell, so valid `1×1`, `1×N`, and `N×1` surfaces can be replaced and
   persisted. Regular↔structured replacement compares logical node coordinates;
   transitions involving triangular surfaces retain topology signatures.
+- **Surface replacement now guards authoritative shell boundaries.** Structured
+  edges and triangular edges/wireframes are part of the exact geometry/topology
+  comparison, so equal nodes cannot silently replace occupied boundaries with
+  full rectangles (or alter a mesh wireframe). Structured→tri conversion now
+  carries the explicit modelling boundary; nominal regular geometry remains
+  metadata and is deliberately excluded from identity.
 
 ## [0.3.14] - 2026-07-14
 

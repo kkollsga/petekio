@@ -752,6 +752,45 @@ def test_degenerate_surface_replacement_and_persistence(tmp_path, ncol, nrow):
     reopened.replace_surface("top", persisted)
 
 
+def test_surface_replacement_preserves_structured_boundary(tmp_path):
+    geometry = petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 4, 4)
+    irap = tmp_path / "boundary.irap"
+    petekio.Surface.constant(geometry, 100.0).save_irap_classic(str(irap))
+    geo = petekio.GeoData(unit="m")
+    geo.load_surface("top", str(irap))
+    imported = tmp_path / "boundary-imported.pproj"
+    geo.save(str(imported))
+    project = petekio.Project.load(imported)
+
+    x, y, z, column, row = [], [], [], [], []
+    for j in range(4):
+        for i in range(4):
+            x.append(float(i))
+            y.append(float(j))
+            z.append(math.nan if i > 1 and j > 1 else 100.0 + i + j)
+            column.append(i + 1)
+            row.append(j + 1)
+    points = petekio.PointSet.from_xyz(x, y, z)
+    points.column = column
+    points.row = row
+    occupied = points.to_structured_surface(edge="occupied")
+    full_rect = points.to_structured_surface(edge="full_rect")
+    assert occupied.edge.area() < full_rect.edge.area()
+
+    with pytest.raises(ValueError, match="geometry/topology differs"):
+        project.replace_surface("top", occupied)
+    project.replace_surface("top", full_rect)
+    with pytest.raises(ValueError, match="geometry/topology differs"):
+        project.replace_surface("top", occupied)
+
+    project.replace_surface("top", full_rect.to_tri_surface())
+    persisted_path = tmp_path / "boundary-persisted.pproj"
+    project.save(persisted_path)
+    persisted = petekio.Project.load(persisted_path).surface("top")
+    assert persisted.kind == "tri_surface"
+    assert math.isclose(persisted.edge.area(), full_rect.edge.area())
+
+
 def test_project_folder_navigation_and_object_management(tmp_path):
     root = tmp_path / "Data"
     _write(root / "Surfaces" / "Top reservoir.irap", _irap())

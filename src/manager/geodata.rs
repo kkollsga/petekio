@@ -82,6 +82,8 @@ enum ProjectSurfaceRef<'a> {
 struct SurfaceGeometrySignature {
     nodes: Vec<[f64; 2]>,
     triangles: Vec<[u32; 3]>,
+    wireframe: Vec<[u32; 2]>,
+    edge_rings: Vec<Vec<[f64; 3]>>,
     labels: Vec<Option<crate::WalkLabel>>,
 }
 
@@ -102,6 +104,8 @@ impl ProjectSurfaceRef<'_> {
         Ok(SurfaceGeometrySignature {
             nodes: tri.shell().nodes().to_vec(),
             triangles: tri.shell().triangles().to_vec(),
+            wireframe: tri.shell().wireframe_edges(None),
+            edge_rings: tri.shell().edge().rings(),
             labels: tri.shell().labels().to_vec(),
         })
     }
@@ -115,7 +119,8 @@ impl ProjectSurfaceRef<'_> {
                 Ok(left.ncol() == right.ncol()
                     && left.nrow() == right.nrow()
                     && left.x() == right.x()
-                    && left.y() == right.y())
+                    && left.y() == right.y()
+                    && left.edge().rings() == right.edge().rings())
             }
             (ProjectSurfaceRef::Regular(regular), ProjectSurfaceRef::Structured(structured))
             | (ProjectSurfaceRef::Structured(structured), ProjectSurfaceRef::Regular(regular)) => {
@@ -123,12 +128,14 @@ impl ProjectSurfaceRef<'_> {
                 {
                     return Ok(false);
                 }
-                Ok((0..regular.geom.nrow).all(|j| {
+                let same_nodes = (0..regular.geom.nrow).all(|j| {
                     (0..regular.geom.ncol).all(|i| {
                         let (x, y) = regular.geom.node_xy(i, j);
                         structured.x()[[i, j]] == x && structured.y()[[i, j]] == y
                     })
-                }))
+                });
+                let regular_edge = crate::PolygonSet::from_grid_geometry(&regular.geom);
+                Ok(same_nodes && regular_edge.rings() == structured.edge().rings())
             }
             _ => Ok(self.geometry_signature()? == other.geometry_signature()?),
         }
@@ -601,7 +608,7 @@ fn rename_element_tags(tags: &mut IndexMap<String, Vec<String>>, old: &str, new:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::GridGeometry;
+    use crate::{GeometryEdge, GridGeometry, MeshShell};
     use approx::assert_relative_eq;
     use ndarray::Array2;
 
@@ -736,6 +743,90 @@ mod tests {
             std::fs::remove_file(irap).ok();
             std::fs::remove_file(project).ok();
         }
+    }
+
+    #[test]
+    fn replacement_rejects_structured_boundaries_and_tri_shell_details() {
+        let mut coords = Vec::new();
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        for j in 0..4 {
+            for i in 0..4 {
+                let z = if i > 1 && j > 1 {
+                    f64::NAN
+                } else {
+                    100.0 + i as f64 + j as f64
+                };
+                coords.push([i as f64, j as f64, z]);
+                columns.push((i + 1) as f64);
+                rows.push((j + 1) as f64);
+            }
+        }
+        let mut attrs = IndexMap::new();
+        attrs.insert("column".to_string(), columns);
+        attrs.insert("row".to_string(), rows);
+        let points = PointSet::from_parts(coords, attrs);
+        let occupied = points
+            .to_structured_surface(1e-6, GeometryEdge::Occupied)
+            .unwrap();
+        let full_rect = points
+            .to_structured_surface(1e-6, GeometryEdge::FullRect)
+            .unwrap();
+        assert_eq!(occupied.x(), full_rect.x());
+        assert_eq!(occupied.y(), full_rect.y());
+        assert_ne!(occupied.edge().rings(), full_rect.edge().rings());
+
+        let mut geo = GeoData::new(Unit::Metres);
+        geo.structured_surfaces
+            .insert("top".into(), occupied.clone());
+        geo.surface_order.push("top".into());
+        assert!(matches!(
+            geo.replace_structured_surface("top", full_rect.clone()),
+            Err(GeoError::GeometryMismatch(_))
+        ));
+
+        let canonical_tri = occupied.to_tri_surface().unwrap();
+        geo.replace_tri_surface("top", canonical_tri).unwrap();
+        let current = geo.tri_surface("top").unwrap();
+
+        let altered_edge_shell = MeshShell::new(
+            current.shell().nodes().to_vec(),
+            current.shell().triangles().to_vec(),
+            current.shell().wireframe_edges(None),
+            full_rect.edge().clone(),
+            current.shell().labels().to_vec(),
+        )
+        .unwrap();
+        let altered_edge = TriSurface::from_shell(
+            std::sync::Arc::new(altered_edge_shell),
+            current.values().to_vec(),
+        )
+        .unwrap();
+        assert!(matches!(
+            geo.replace_tri_surface("top", altered_edge),
+            Err(GeoError::GeometryMismatch(_))
+        ));
+
+        let current = geo.tri_surface("top").unwrap();
+        let mut altered_wireframe = current.shell().wireframe_edges(None);
+        altered_wireframe.pop();
+        let altered_wireframe_shell = MeshShell::new(
+            current.shell().nodes().to_vec(),
+            current.shell().triangles().to_vec(),
+            altered_wireframe,
+            current.edge().clone(),
+            current.shell().labels().to_vec(),
+        )
+        .unwrap();
+        let altered_wireframe = TriSurface::from_shell(
+            std::sync::Arc::new(altered_wireframe_shell),
+            current.values().to_vec(),
+        )
+        .unwrap();
+        assert!(matches!(
+            geo.replace_tri_surface("top", altered_wireframe),
+            Err(GeoError::GeometryMismatch(_))
+        ));
     }
 
     #[test]

@@ -34,3 +34,5 @@ pub use trajectory::{Station, Trajectory, TrajectoryInput};
 pub use tri_surface::{TriSurface, DEFAULT_MAX_LINK};
 pub use value_layer::ValueLayer;
 pub use well::{Sidetrack, Well};
+pub mod attribute;
+pub use attribute::{AttributeKind, AttributeMetadata, CodeRecord};

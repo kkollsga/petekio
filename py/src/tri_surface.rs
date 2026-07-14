@@ -1,6 +1,7 @@
 //! `TriSurface` bindings — the triangulated fallback for fault-cut surfaces:
 //! a shared `MeshShell` (geometry) + primary z values + attribute lanes.
 
+use crate::attribute::{metadata_from_dict, metadata_to_dict};
 use crate::geometry::{BBox, GridGeometry};
 use crate::points::{PointSet, PolygonSet};
 use crate::shell::{iso_lines_py, value_layer_dict, MeshShell, PyIsoLines};
@@ -170,11 +171,39 @@ impl TriSurface {
             .collect()
     }
 
+    /// Canonical durable metadata for attribute `name`.
+    fn attr_metadata(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyDict>> {
+        let metadata = self.inner.attr_metadata(name).ok_or_else(|| {
+            pyo3::exceptions::PyKeyError::new_err(format!("no attribute layer '{name}'"))
+        })?;
+        Ok(metadata_to_dict(py, metadata)?.unbind())
+    }
+
+    /// Metadata of the promoted primary lane, if this surface is an attribute.
+    #[getter]
+    fn primary_metadata(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+        self.inner
+            .primary_metadata()
+            .map(|metadata| metadata_to_dict(py, metadata).map(Bound::unbind))
+            .transpose()
+    }
+
     /// Set (or replace) attribute `name` (one value per node) — returns a
     /// **new** `TriSurface` (surfaces are immutable; the shell is shared).
-    fn set_attr(&self, name: &str, values: Vec<f64>) -> PyResult<TriSurface> {
+    #[pyo3(signature = (name, values, metadata = None))]
+    fn set_attr(
+        &self,
+        name: &str,
+        values: Vec<f64>,
+        metadata: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<TriSurface> {
         let mut out = (*self.inner).clone();
-        out.set_attr(name, values).map_err(to_pyerr)?;
+        match metadata {
+            Some(metadata) => out
+                .set_attr_with_metadata(name, values, metadata_from_dict(name, metadata)?)
+                .map_err(to_pyerr)?,
+            None => out.set_attr(name, values).map_err(to_pyerr)?,
+        }
         Ok(TriSurface::wrap(out).named(self.name.clone()))
     }
 

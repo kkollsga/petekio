@@ -4,6 +4,7 @@
 //! This module covers construction, IO, and access. Math/sampling/statistics
 //! land in later phases.
 
+use crate::core::attribute::{check_metadata_name, AttributeLane, AttributeMetadata};
 use crate::foundation::{GeoError, GridGeometry, HasHistory, OperationHistory, Result};
 use crate::io::SurfaceData;
 use indexmap::IndexMap;
@@ -18,7 +19,9 @@ pub struct Surface {
     /// The areal lattice. Public; `values`/`attributes` are private.
     pub geom: GridGeometry,
     values: Array2<f64>,
-    attributes: IndexMap<String, Array2<f64>>,
+    #[serde(default)]
+    primary_metadata: Option<AttributeMetadata>,
+    attributes: IndexMap<String, AttributeLane<Array2<f64>>>,
     #[serde(default)]
     history: OperationHistory,
 }
@@ -31,6 +34,7 @@ impl Surface {
         Ok(Surface {
             geom,
             values,
+            primary_metadata: None,
             attributes: IndexMap::new(),
             history: OperationHistory::from_entry("surface.new"),
         })
@@ -38,12 +42,20 @@ impl Surface {
 
     pub(crate) fn from_surface_data(data: SurfaceData) -> Surface {
         let (geom, values, attributes) = data.into_parts();
-        Surface {
+        let mut out = Surface {
             geom,
             values,
-            attributes,
+            primary_metadata: None,
+            attributes: IndexMap::new(),
             history: OperationHistory::from_entry("surface.import"),
+        };
+        for (name, values) in attributes {
+            // Reader-produced lanes predate durable metadata and therefore use
+            // the same honest legacy defaults as public values-only authoring.
+            out.set_attr(&name, values)
+                .expect("SurfaceData validated every attribute shape");
         }
+        out
     }
 
     /// Build a surface from a geometry + values without shape validation, for
@@ -53,6 +65,7 @@ impl Surface {
         Surface {
             geom,
             values,
+            primary_metadata: None,
             attributes: IndexMap::new(),
             history: OperationHistory::new(),
         }
@@ -64,6 +77,7 @@ impl Surface {
         Surface {
             geom,
             values,
+            primary_metadata: None,
             attributes: IndexMap::new(),
             history: OperationHistory::from_entry(format!("surface.constant(value={value})")),
         }
@@ -105,15 +119,62 @@ impl Surface {
 
     /// A named attribute grid, if present.
     pub fn attr(&self, name: &str) -> Option<&Array2<f64>> {
-        self.attributes.get(name)
+        self.attributes.get(name).map(|lane| &lane.values)
+    }
+
+    /// Durable metadata for a named attribute lane.
+    pub fn attr_metadata(&self, name: &str) -> Option<&AttributeMetadata> {
+        self.attributes.get(name).map(|lane| &lane.metadata)
+    }
+
+    /// Metadata carried by the primary lane after attribute promotion.
+    pub fn primary_metadata(&self) -> Option<&AttributeMetadata> {
+        self.primary_metadata.as_ref()
+    }
+
+    pub(crate) fn set_primary_metadata(&mut self, metadata: Option<AttributeMetadata>) {
+        self.primary_metadata = metadata;
     }
 
     /// Set (or replace) a named attribute grid. Must match the surface
     /// geometry or `GeometryMismatch` is returned.
     pub fn set_attr(&mut self, name: &str, values: Array2<f64>) -> Result<()> {
         check_shape(&self.geom, &values, "Surface::set_attr")?;
-        self.attributes.insert(name.to_string(), values);
+        if let Some(existing) = self.attributes.get_mut(name) {
+            existing.values = values;
+        } else {
+            let metadata = AttributeMetadata::continuous(name)?;
+            self.attributes
+                .insert(name.to_string(), AttributeLane::new(metadata, values)?);
+        }
         self.record_history(format!("surface.set_attr(name={name})"));
+        Ok(())
+    }
+
+    /// Set (or replace) values and explicitly override their durable metadata.
+    pub fn set_attr_with_metadata(
+        &mut self,
+        name: &str,
+        values: Array2<f64>,
+        metadata: AttributeMetadata,
+    ) -> Result<()> {
+        check_shape(&self.geom, &values, "Surface::set_attr_with_metadata")?;
+        check_metadata_name(name, &metadata)?;
+        self.attributes
+            .insert(name.to_string(), AttributeLane::new(metadata, values)?);
+        self.record_history(format!("surface.set_attr_with_metadata(name={name})"));
+        Ok(())
+    }
+
+    /// Explicitly replace metadata for an existing attribute without touching values.
+    pub fn set_attr_metadata(&mut self, name: &str, metadata: AttributeMetadata) -> Result<()> {
+        check_metadata_name(name, &metadata)?;
+        let lane = self
+            .attributes
+            .get_mut(name)
+            .ok_or_else(|| GeoError::NotFound(format!("no attribute layer '{name}'")))?;
+        lane.metadata = metadata;
+        self.record_history(format!("surface.set_attr_metadata(name={name})"));
         Ok(())
     }
 
@@ -125,9 +186,10 @@ impl Surface {
     /// Promote an attribute layer to a standalone `Surface` (its primary
     /// values), so surface operations can run on it.
     pub fn as_attr_surface(&self, name: &str) -> Option<Surface> {
-        self.attributes.get(name).map(|a| Surface {
+        self.attributes.get(name).map(|lane| Surface {
             geom: self.geom.clone(),
-            values: a.clone(),
+            values: lane.values.clone(),
+            primary_metadata: Some(lane.metadata.clone()),
             attributes: IndexMap::new(),
             history: self.history_with(format!("surface.as_attr_surface(name={name})")),
         })
@@ -200,15 +262,20 @@ impl Surface {
                 self.geom.rotation_deg, target.rotation_deg
             )));
         }
+        let method = match self.primary_metadata.as_ref().map(|meta| meta.kind) {
+            Some(crate::AttributeKind::Categorical) => petektools::ResampleMethod::Nearest,
+            _ => petektools::ResampleMethod::Bilinear,
+        };
         let values = petektools::resample(
             &self.values,
             &self.geom.to_lattice(),
             &target.to_lattice(),
-            petektools::ResampleMethod::Bilinear,
+            method,
         )?;
         let mut out = Surface {
             geom: target.clone(),
             values,
+            primary_metadata: self.primary_metadata.clone(),
             attributes: IndexMap::new(),
             history: OperationHistory::new(),
         };
@@ -217,6 +284,37 @@ impl Surface {
             target.ncol, target.nrow
         )));
         Ok(out)
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SurfaceV1 {
+    geom: GridGeometry,
+    values: Array2<f64>,
+    attributes: IndexMap<String, Array2<f64>>,
+    #[serde(default)]
+    history: OperationHistory,
+}
+
+impl Surface {
+    pub(crate) fn from_v1_payload(bytes: &[u8]) -> Result<Self> {
+        let old: SurfaceV1 = crate::io::serial::from_bytes(bytes)?;
+        let mut out = Surface::new(old.geom, old.values)?;
+        for (name, values) in old.attributes {
+            out.set_attr(&name, values)?;
+        }
+        out.history = old.history;
+        Ok(out)
+    }
+
+    pub(crate) fn validate_metadata(&self) -> Result<()> {
+        if let Some(metadata) = &self.primary_metadata {
+            metadata.validate()?;
+        }
+        for (name, lane) in &self.attributes {
+            check_metadata_name(name, &lane.metadata)?;
+        }
+        Ok(())
     }
 }
 
@@ -411,5 +509,85 @@ mod tests {
         assert_eq!(promoted.values()[[1, 1]], 5.0);
         // wrong-shape attr rejected
         assert!(s.set_attr("bad", Array2::from_elem((1, 1), 0.0)).is_err());
+    }
+
+    #[test]
+    fn metadata_survives_replacement_promotion_and_v2_round_trip() {
+        let mut s = Surface::constant(geom(), 1.0);
+        let metadata = AttributeMetadata::new(
+            "porosity",
+            "Porosity",
+            crate::AttributeKind::Continuous,
+            Some("v/v".into()),
+            None,
+        )
+        .unwrap();
+        s.set_attr_with_metadata("porosity", Array2::from_elem((2, 2), 0.2), metadata.clone())
+            .unwrap();
+        s.set_attr("porosity", Array2::from_elem((2, 2), 0.25))
+            .unwrap();
+        assert_eq!(s.attr_metadata("porosity"), Some(&metadata));
+        assert_eq!(
+            s.as_attr_surface("porosity").unwrap().primary_metadata(),
+            Some(&metadata)
+        );
+
+        let bytes = crate::io::serial::to_bytes(&s).unwrap();
+        let back: Surface = crate::io::serial::from_bytes(&bytes).unwrap();
+        assert_eq!(back.attr_metadata("porosity"), Some(&metadata));
+    }
+
+    #[test]
+    fn positional_v1_payload_migrates_with_honest_defaults() {
+        let mut attributes = IndexMap::new();
+        attributes.insert("legacy".into(), Array2::from_elem((2, 2), 3.0));
+        let old = SurfaceV1 {
+            geom: geom(),
+            values: Array2::from_elem((2, 2), 1.0),
+            attributes,
+            history: OperationHistory::from_entry("v1.fixture"),
+        };
+        let bytes = crate::io::serial::to_bytes(&old).unwrap();
+        let migrated = Surface::from_v1_payload(&bytes).unwrap();
+        assert_eq!(
+            migrated.attr_metadata("legacy"),
+            Some(&AttributeMetadata::continuous("legacy").unwrap())
+        );
+        assert_eq!(migrated.history(), &["v1.fixture"]);
+    }
+
+    #[test]
+    fn promoted_categorical_primary_resamples_with_nearest() {
+        let mut s = Surface::constant(geom(), 0.0);
+        s.set_attr_with_metadata(
+            "facies",
+            ndarray::array![[1.0, 1.0], [2.0, 2.0]],
+            AttributeMetadata::new(
+                "facies",
+                "Facies",
+                crate::AttributeKind::Categorical,
+                None,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let promoted = s.as_attr_surface("facies").unwrap();
+        let target = GridGeometry {
+            xori: 5.0,
+            yori: 0.0,
+            xinc: 10.0,
+            yinc: 10.0,
+            ncol: 1,
+            nrow: 2,
+            rotation_deg: 0.0,
+            yflip: false,
+        };
+        let down = promoted.resample(&target).unwrap();
+        assert!(down.values().iter().all(|value| value.fract() == 0.0));
+        assert_eq!(
+            down.primary_metadata().unwrap().kind,
+            crate::AttributeKind::Categorical
+        );
     }
 }

@@ -10,6 +10,7 @@ use crate::points::{PointSet, PolygonSet};
 use crate::stats::Stats;
 use crate::structured_surface::StructuredMeshSurface;
 use crate::surface::Surface;
+use crate::tri_surface::TriSurface;
 use crate::well::Well;
 use crate::{parse_unit, to_pyerr, unit_label};
 use petekio::GeoData as RsGeoData;
@@ -111,6 +112,7 @@ impl GeoData {
         let geo = slf.borrow();
         let regular = geo.inner.surface(name).is_some();
         let structured = geo.inner.structured_surface(name).is_some();
+        let tri = geo.inner.tri_surface(name).cloned();
         drop(geo);
         if regular {
             return Ok(Some(
@@ -128,7 +130,56 @@ impl GeoData {
                     .unbind(),
             ));
         }
+        if let Some(tri) = tri {
+            return Ok(Some(
+                TriSurface::wrap(tri)
+                    .named(Some(crate::leaf_name(name)))
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            ));
+        }
         Ok(None)
+    }
+
+    /// Deliberately write a detached regular/structured/triangulated surface
+    /// back under an existing project name. Geometry/topology must be unchanged.
+    fn replace_surface(
+        slf: Bound<'_, Self>,
+        py: Python<'_>,
+        name: &str,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        if let Ok(surface) = value.extract::<PyRef<'_, Surface>>() {
+            let detached = surface.with(py, Clone::clone)?;
+            return slf
+                .borrow_mut()
+                .inner
+                .replace_surface(name, detached)
+                .map(drop)
+                .map_err(to_pyerr);
+        }
+        if let Ok(surface) = value.extract::<PyRef<'_, StructuredMeshSurface>>() {
+            let detached = surface.with(py, Clone::clone)?;
+            return slf
+                .borrow_mut()
+                .inner
+                .replace_structured_surface(name, detached)
+                .map(drop)
+                .map_err(to_pyerr);
+        }
+        if let Ok(surface) = value.extract::<PyRef<'_, TriSurface>>() {
+            let detached = surface.with(Clone::clone);
+            return slf
+                .borrow_mut()
+                .inner
+                .replace_tri_surface(name, detached)
+                .map(drop)
+                .map_err(to_pyerr);
+        }
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "replace_surface value must be Surface, StructuredMeshSurface, or TriSurface",
+        ))
     }
 
     /// Rename a stored surface.
@@ -377,8 +428,13 @@ impl GeoData {
             .structured_surfaces_named()
             .map(|(name, _)| name.to_string())
             .collect();
+        let tri: Vec<(String, petekio::TriSurface)> = geo
+            .inner
+            .tri_surfaces_named()
+            .map(|(name, surface)| (name.to_string(), surface.clone()))
+            .collect();
         drop(geo);
-        let mut out = Vec::with_capacity(regular.len() + structured.len());
+        let mut out = Vec::with_capacity(regular.len() + structured.len() + tri.len());
         for name in regular {
             out.push(
                 Surface::view(slf.clone().unbind(), name)
@@ -390,6 +446,15 @@ impl GeoData {
         for name in structured {
             out.push(
                 StructuredMeshSurface::view(slf.clone().unbind(), name)
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            );
+        }
+        for (name, surface) in tri {
+            out.push(
+                TriSurface::wrap(surface)
+                    .named(Some(crate::leaf_name(&name)))
                     .into_pyobject(py)?
                     .into_any()
                     .unbind(),
@@ -433,6 +498,8 @@ impl GeoData {
         let info = py.detach(|| RsGeoData::inspect(path)).map_err(to_pyerr)?;
         let d = PyDict::new(py);
         d.set_item("owner", info.owner)?;
+        d.set_item("display_name", info.display_name)?;
+        d.set_item("crs", info.crs)?;
         d.set_item("tags", info.tags)?;
         d.set_item("created", info.created)?;
         d.set_item("modified", info.modified)?;
@@ -467,6 +534,26 @@ impl GeoData {
     #[getter]
     fn owner(&self) -> Option<String> {
         self.inner.owner().map(String::from)
+    }
+
+    /// Optional authored project title (never inferred from a path).
+    #[getter]
+    fn display_name(&self) -> Option<String> {
+        self.inner.display_name().map(String::from)
+    }
+    #[setter]
+    fn set_display_name(&mut self, value: Option<String>) -> PyResult<()> {
+        self.inner.set_display_name(value).map_err(to_pyerr)
+    }
+
+    /// Optional free-text coordinate reference system declaration.
+    #[getter]
+    fn crs(&self) -> Option<String> {
+        self.inner.crs().map(String::from)
+    }
+    #[setter]
+    fn set_crs(&mut self, value: Option<String>) -> PyResult<()> {
+        self.inner.set_crs(value).map_err(to_pyerr)
     }
     fn set_owner(&mut self, owner: &str) {
         self.inner.set_owner(owner);

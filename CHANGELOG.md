@@ -6,6 +6,26 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Durable viewer-ready surface and project metadata.** Regular, structured,
+  and triangular surface attributes now persist canonical
+  `{id,label,kind,units,codes}` descriptors through replacement, promotion,
+  conversion, copy-on-write, and `.pproj` save/load. Values-only authoring keeps
+  compatible honest defaults, while explicit Python/Rust APIs can author
+  continuous or categorical metadata. `.pproj` element schema v2 includes exact
+  positional v1 migration, and project manifests now retain an optional authored
+  display name and free-text CRS beside the existing unit. Explicit
+  `Project.replace_surface(...)`/`GeoData` replacement APIs persist detached
+  copy-on-write edits across regular, structured, and triangular surface levels
+  without weakening project view isolation. Categorical lanes always use nearest
+  during downward resampling, while continuous lanes retain the requested method.
+  Project workspace catalogs now emit the persisted project identity and ordered
+  metadata-rich attribute descriptors through petekTools workspace v2. The
+  Phase-5 transitional resource path retains `lane=` compatibility, accepts equal
+  geometry/paint selectors, and rejects multi-attribute selected export before
+  any attribute×colour Cartesian materialization; shared transport and true
+  dual-axis resources remain deferred.
+
 ## [0.3.14] - 2026-07-14
 
 ### Fixed

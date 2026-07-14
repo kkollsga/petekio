@@ -1,4 +1,4 @@
-"""Lazy project workspace provider and exact petekTools schema-v1 seam."""
+"""Lazy project workspace provider and petekTools workspace-v2 seam."""
 
 from __future__ import annotations
 
@@ -168,9 +168,22 @@ class _NativeSurfaceSpy(_SurfaceSpy):
 
 
 class _FakeProject:
-    def __init__(self, surfaces, *, assets=(), wells=None, templates=None):
+    def __init__(
+        self,
+        surfaces,
+        *,
+        assets=(),
+        wells=None,
+        templates=None,
+        display_name=None,
+        crs=None,
+        unit="m",
+    ):
         self._surfaces = dict(surfaces)
         self._wells = dict(wells or {})
+        self.display_name = display_name
+        self.crs = crs
+        self.unit = unit
         self.surfaces = _Names(self._surfaces)
         self.points = _Names()
         self.polygons = _Names()
@@ -201,29 +214,127 @@ def _walk(nodes):
             yield node
 
 
+def _provider_tree(provider):
+    return provider.view_catalog()["tree"]
+
+
 def test_catalog_is_metadata_only_and_ids_use_full_encoded_paths():
     a = _SurfaceSpy("Interpretation/A/Top A")
     b = _SurfaceSpy("Interpretation/B/Top A")
     project = _FakeProject({"Interpretation/A/Top A": a, "Interpretation/B/Top A": b})
 
     provider = ProjectViewProvider(project, lod=False)
-    leaves = list(_walk(provider.view_catalog()))
+    assert provider.view_catalog()["schema_version"] == 2
+    assert "project" not in provider.view_catalog()
+    leaves = list(_walk(_provider_tree(provider)))
 
     assert [leaf["id"] for leaf in leaves] == [
         "surface:Interpretation/A/Top%20A",
         "surface:Interpretation/B/Top%20A",
     ]
     assert leaves[0]["views"]["map"] == {
-        "lanes": [
-            {"id": "depth", "label": "Depth"},
-            {"id": "thickness", "label": "Thickness"},
+        "attributes": [
+            {
+                "id": "depth",
+                "label": "Depth",
+                "kind": "continuous",
+                "units": "m",
+                "codes": None,
+            },
+            {
+                "id": "thickness",
+                "label": "Thickness",
+                "kind": "continuous",
+                "units": None,
+                "codes": None,
+            },
         ],
-        "active_lane": "depth",
+        "active_attribute": "depth",
+        "active_color_by": "depth",
     }
     assert "tiers" not in leaves[0]["views"]["scene3d"]
     assert leaves[0]["visible"] == {"map": True, "scene3d": True}
     assert leaves[1]["visible"] == {"map": False, "scene3d": False}
     assert a.calls == b.calls == []
+
+
+def test_v2_catalog_uses_persisted_project_and_attribute_metadata(tmp_path):
+    root = tmp_path / "Data"
+    root.mkdir()
+    (root / "Top.irap").write_text(
+        "-996 2 10 10\n0 10 0 10\n2 0 0 0\n0 0 0 0 0 0 0\n1 2 3 4\n"
+    )
+    project = petekio.Project.import_data(
+        root,
+        display_name="Field model",
+        settings=petekio.ImportSettings(crs="Local rotated grid", unit="m"),
+    )
+    surface = project.surface("Top")
+    facies = surface * 0.0 + 1.0
+    metadata = {
+        "id": "facies",
+        "label": "Depositional facies",
+        "kind": "categorical",
+        "units": None,
+        "codes": {
+            "1": {"label": "Sand", "color": "#EDA100"},
+            "2": {"label": None, "color": None},
+        },
+    }
+    surface.set_attr("facies", facies, metadata=metadata)
+    project.replace_surface("Top", surface)
+    path = tmp_path / "field.pproj"
+    project.save(path)
+    reopened = petekio.Project.load(path)
+
+    provider = ProjectViewProvider(reopened, lod=False)
+    catalog = provider.view_catalog()
+    assert catalog["project"] == {
+        "title": "Field model",
+        "crs": "Local rotated grid",
+        "unit": "m",
+    }
+    leaf = next(_walk(catalog["tree"]))
+    descriptors = leaf["views"]["map"]["attributes"]
+    assert descriptors == [
+        {
+            "id": "depth",
+            "label": "Depth",
+            "kind": "continuous",
+            "units": "m",
+            "codes": None,
+        },
+        metadata,
+    ]
+    assert leaf["views"]["map"]["active_attribute"] == "depth"
+    assert leaf["views"]["map"]["active_color_by"] == "depth"
+    assert "transport" not in leaf["views"]["map"]
+    assert "lanes" not in leaf["views"]["map"]
+
+    session = reopened.view(settings=petekio.ViewSettings(serve=False))
+    workspace = session.manifest()["workspace"]
+    assert workspace["schema_version"] == 2
+    assert workspace["title"] == "Field model"
+    assert workspace["project"] == catalog["project"]
+    resource = session.resource(leaf["id"], "map", lane="facies")
+    assert resource["schema_version"] == 2
+    assert resource["attribute"] == resource["color_by"] == "facies"
+    assert resource["payload"]["map"]["fills"][0]["name"] == "facies"
+
+    direct = provider.view_resource(
+        item_id=leaf["id"],
+        view="map",
+        attribute="facies",
+        color_by="facies",
+    )
+    assert direct["map"]["fills"][0]["name"] == "facies"
+    with pytest.raises(ValueError, match="reserved for the shared Phase 6"):
+        provider.view_resource(
+            item_id=leaf["id"],
+            view="map",
+            attribute="depth",
+            color_by="facies",
+        )
 
 
 def test_bore_ids_are_typed_and_log_gathering_is_never_catalog_work():
@@ -232,7 +343,7 @@ def test_bore_ids_are_typed_and_log_gathering_is_never_catalog_work():
         _FakeProject({}, wells={"A/1": well}),
         logs=petekio.ViewSpec(curves=("PHIE",)),
     )
-    leaves = list(_walk(provider.view_catalog()))
+    leaves = list(_walk(_provider_tree(provider)))
 
     assert [leaf["id"] for leaf in leaves] == [
         "well:A%2F1/bore:%00",
@@ -277,7 +388,7 @@ def test_explicit_template_payload_is_still_lazy_during_catalog_build():
         template="qc/reservoir",
     )
 
-    assert list(_walk(provider.view_catalog()))
+    assert list(_walk(_provider_tree(provider)))
     assert templates.loads == 0
 
 
@@ -289,13 +400,20 @@ def test_workspace_cache_materializes_only_requested_surface_lane():
     session = viewer.view(provider, serve=False)
     item_id = "surface:Top%20A"
 
-    primary = session.resource(item_id, "map", "depth")
-    assert primary["lane"] == "depth"
+    primary = session.resource(
+        item_id, "map", attribute="depth", color_by="depth"
+    )
+    assert primary["attribute"] == primary["color_by"] == "depth"
     assert surface.calls == [(None, None)]
-    assert session.resource(item_id, "map", "depth") == primary
+    assert (
+        session.resource(item_id, "map", attribute="depth", color_by="depth")
+        == primary
+    )
     assert surface.calls == [(None, None)]
 
-    thickness = session.resource(item_id, "map", "thickness")
+    thickness = session.resource(
+        item_id, "map", attribute="thickness", color_by="thickness"
+    )
     assert thickness["payload"]["map"]["fills"][0]["name"] == "thickness"
     assert surface.calls == [(None, None), ("thickness", None)]
 
@@ -365,7 +483,7 @@ def test_regular_surface_scene_has_progressive_compact_detail():
     )
     surface = petekio.Surface.constant(geom, -2500.0)
     provider = ProjectViewProvider(_FakeProject({"Large": surface}))
-    leaf = next(_walk(provider.view_catalog()))
+    leaf = next(_walk(_provider_tree(provider)))
     assert leaf["views"]["scene3d"]["tiers"] == [
         {"id": "preview", "label": "Preview"},
         {"id": "full", "label": "Full detail"},
@@ -484,10 +602,14 @@ def test_selection_folders_properties_visibility_and_duplicate_leaf_guidance():
         property="thickness",
         lod=False,
     )
-    leaves = list(_walk(provider.view_catalog()))
+    leaves = list(_walk(_provider_tree(provider)))
     assert [leaf["id"] for leaf in leaves] == ["surface:A/Top", "surface:A/Base"]
     assert [leaf["visible"]["map"] for leaf in leaves] == [False, True]
-    assert all(leaf["views"]["map"]["active_lane"] == "thickness" for leaf in leaves)
+    assert all(
+        leaf["views"]["map"]["active_attribute"] == "thickness"
+        and leaf["views"]["map"]["active_color_by"] == "thickness"
+        for leaf in leaves
+    )
 
     with pytest.raises(ValueError, match="ambiguous.*canonical full path"):
         ProjectViewProvider(
@@ -500,7 +622,9 @@ def test_unknown_assets_are_disabled_and_preserved_in_catalog():
         {"Top": _SurfaceSpy("Top")}, assets=["@asset/future/example"]
     )
     provider = ProjectViewProvider(project)
-    unknown = next(leaf for leaf in _walk(provider.view_catalog()) if leaf["role"] == "asset")
+    unknown = next(
+        leaf for leaf in _walk(_provider_tree(provider)) if leaf["role"] == "asset"
+    )
 
     assert unknown["id"] == "asset:%40asset/future/example"
     assert unknown["views"] == {}
@@ -524,7 +648,9 @@ def test_refresh_reports_deleted_explicit_selection_and_updates_default_catalog(
     with pytest.raises(KeyError, match="renamed or deleted"):
         provider.view_resource(item_id="surface:A/Top", view="map", lane="depth")
     provider.refresh()
-    assert [leaf["id"] for leaf in _walk(provider.view_catalog())] == ["surface:B/Base"]
+    assert [leaf["id"] for leaf in _walk(_provider_tree(provider))] == [
+        "surface:B/Base"
+    ]
     assert any(d["code"] == "selection_missing" for d in provider.diagnostics)
 
 
@@ -545,7 +671,7 @@ def test_project_view_inspection_needs_no_optional_viewer_import(monkeypatch):
         session.manifest()
 
 
-def test_static_visible_embeds_active_lane_selected_embeds_all(tmp_path):
+def test_static_visible_embeds_active_selector_and_selected_never_cartesian(tmp_path):
     visible_spy = _SurfaceSpy("Top")
     visible_provider = ProjectViewProvider(
         _FakeProject({"Top": visible_spy}), property="thickness", lod=False
@@ -557,15 +683,11 @@ def test_static_visible_embeds_active_lane_selected_embeds_all(tmp_path):
     selected_provider = ProjectViewProvider(
         _FakeProject({"Top": selected_spy}), lod=False
     )
-    viewer.view(selected_provider, serve=False).save(
-        tmp_path / "selected.html", include="selected"
-    )
-    assert selected_spy.calls == [
-        (None, None),
-        ("thickness", None),
-        (None, None),
-        ("thickness", None),
-    ]
+    with pytest.raises(ValueError, match="cannot enumerate.*non-shared"):
+        viewer.view(selected_provider, serve=False).save(
+            tmp_path / "selected.html", include="selected"
+        )
+    assert selected_spy.calls == []
 
 
 def test_project_and_toolkit_notebook_entry_points_are_equivalent():
@@ -593,7 +715,7 @@ def test_generic_project_provider_forwards_progressive_detail(tmp_path):
         "-996 2 10 10\n0 10 0 10\n2 0 0 0\n0 0 0 0 0 0 0\n1 2 3 4\n"
     )
     project = petekio.Project.import_data(tmp_path)
-    item_id = next(_walk(project.view_catalog()))["id"]
+    item_id = next(_walk(project.view_catalog()["tree"]))["id"]
 
     resource = project.view_resource(
         item_id=item_id, view="scene3d", lane="depth", detail="preview"

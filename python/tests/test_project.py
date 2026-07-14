@@ -17,6 +17,39 @@ def _correlation_template_dict(name: str = "reservoir", **extra):
     }
 
 
+def test_project_display_metadata_round_trips(tmp_path):
+    project = petekio.Project(
+        petekio.GeoData(unit="m"),
+        display_name="Synthetic appraisal",
+        crs="EPSG:23031 / local datum note",
+    )
+    path = tmp_path / "metadata.pproj"
+    project.save(path)
+
+    info = petekio.GeoData.inspect(str(path))
+    assert info["display_name"] == "Synthetic appraisal"
+    assert info["crs"] == "EPSG:23031 / local datum note"
+    assert info["unit"] == "Metres"
+
+    reopened = petekio.Project.load(path)
+    assert reopened.display_name == "Synthetic appraisal"
+    assert reopened.crs == "EPSG:23031 / local datum note"
+    assert reopened.unit == "m"
+    assert reopened.inventory()["crs"] == "EPSG:23031 / local datum note"
+
+
+def test_project_display_metadata_rejects_whitespace_only():
+    project = petekio.Project(petekio.GeoData(unit="m"))
+    with pytest.raises(ValueError, match="non-empty after trimming"):
+        project.display_name = " \t"
+    with pytest.raises(ValueError, match="non-empty after trimming"):
+        project.crs = "\n"
+    project.display_name = " Authored title "
+    project.crs = " Local CRS "
+    assert project.display_name == " Authored title "
+    assert project.crs == " Local CRS "
+
+
 def test_project_template_library_snapshots_and_mutates_explicitly(tmp_path, monkeypatch):
     project = petekio.Project(petekio.GeoData(unit="m"))
     source = _correlation_template_dict("qc/default", note={"threshold": 0.2})
@@ -640,6 +673,50 @@ def test_project_save_writes_compact_project(tmp_path):
 
     with pytest.raises(ValueError, match=".pproj"):
         project.save(tmp_path / "field")
+
+
+def test_project_replace_surface_is_explicit_cow_and_persists_all_levels(tmp_path):
+    root = tmp_path / "Data"
+    _write(root / "Surfaces" / "Top reservoir.irap", _irap())
+    _write(root / "Surfaces" / "ZZ Base reservoir.irap", _irap())
+    project = petekio.Project.import_data(root)
+    original_order = project.inventory()["surfaces"]
+    surface = project.surface("Top reservoir")
+    values = surface * 0.0 + 1.0
+    metadata = {
+        "id": "facies",
+        "label": "Facies",
+        "kind": "categorical",
+        "units": None,
+        "codes": {"1": {"label": "Sand", "color": "#EDA100"}},
+    }
+    surface.set_attr("facies", values, metadata=metadata)
+    assert project.surface("Top reservoir").attr_names() == []
+
+    project.replace_surface("Top reservoir", surface)
+    assert project.surface("Top reservoir").attr_metadata("facies") == metadata
+
+    structured = project.surface("Top reservoir").to_structured_mesh()
+    project.replace_surface("Top reservoir", structured)
+    assert project.surface("Top reservoir").kind == "structured_mesh"
+
+    tri = project.surface("Top reservoir").to_tri_surface()
+    project.replace_surface("Top reservoir", tri)
+    assert project.surface("Top reservoir").kind == "tri_surface"
+
+    wrong = petekio.Surface.constant(
+        petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 2, 2), 1.0
+    )
+    with pytest.raises(ValueError, match="geometry/topology differs"):
+        project.replace_surface("Top reservoir", wrong)
+
+    pproj = tmp_path / "replaced.pproj"
+    project.save(pproj)
+    reopened = petekio.Project.load(pproj)
+    assert reopened.inventory()["surfaces"] == original_order
+    persisted = reopened.surface("Top reservoir")
+    assert persisted.kind == "tri_surface"
+    assert persisted.attr_metadata("facies") == metadata
 
 
 def test_project_folder_navigation_and_object_management(tmp_path):

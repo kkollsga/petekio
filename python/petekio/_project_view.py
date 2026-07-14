@@ -43,7 +43,7 @@ def _viewer():
     if not callable(getattr(viewer, "view", None)):
         raise ImportError(
             "the installed petekTools predates workspace views; install a build "
-            "providing petektools.viewer.view and workspace schema v1"
+            "providing petektools.viewer.view and workspace schema v2"
         )
     return viewer
 
@@ -102,8 +102,61 @@ class ProjectViewProvider:
     def refresh(self) -> None:
         self._snapshot(strict=False)
 
-    def view_catalog(self) -> list[dict[str, Any]]:
+    def view_catalog(self) -> dict[str, Any]:
+        catalog: dict[str, Any] = {
+            "schema_version": 2,
+            "tree": copy.deepcopy(self._catalog),
+        }
+        title = getattr(self.project, "display_name", None)
+        if title is not None:
+            catalog["project"] = {
+                "title": title,
+                "crs": getattr(self.project, "crs", None),
+                "unit": getattr(self.project, "unit", None),
+            }
+        return catalog
+
+    def catalog_tree(self) -> list[dict[str, Any]]:
         return copy.deepcopy(self._catalog)
+
+    def _surface_descriptors(
+        self, surface: Any
+    ) -> tuple[list[dict[str, Any]], dict[str, str | None]]:
+        primary = getattr(surface, "primary_metadata", None)
+        if primary is None:
+            primary = {
+                "id": "depth",
+                "label": "Depth",
+                "kind": "continuous",
+                "units": getattr(self.project, "unit", None),
+                "codes": None,
+            }
+        else:
+            primary = dict(primary)
+        descriptors = [primary]
+        lane_attrs: dict[str, str | None] = {str(primary["id"]): None}
+        metadata_getter = getattr(surface, "attr_metadata", None)
+        for attr in surface.attr_names():
+            metadata = (
+                dict(metadata_getter(attr))
+                if callable(metadata_getter)
+                else {
+                    "id": attr,
+                    "label": catalog_label(attr),
+                    "kind": "continuous",
+                    "units": None,
+                    "codes": None,
+                }
+            )
+            selector = str(metadata["id"])
+            if selector in lane_attrs:
+                # A named legacy lane can collide with the reserved ordinary
+                # primary selector. Keep it addressable without reordering it.
+                selector = f"attribute:{selector}"
+                metadata["id"] = selector
+            descriptors.append(metadata)
+            lane_attrs[selector] = attr
+        return descriptors, lane_attrs
 
     def _snapshot(self, *, strict: bool) -> None:
         diagnostics: list[dict[str, Any]] = []
@@ -133,17 +186,16 @@ class ProjectViewProvider:
                 surface = self.project.surface(name)
                 if surface is None:
                     raise KeyError(name)
-                attrs = list(surface.attr_names())
-                lane_attrs: dict[str, str | None] = {"depth": None}
-                lanes = [{"id": "depth", "label": "Depth"}]
-                for attr in attrs:
-                    lane_id = (
-                        attr if attr not in {"depth", "values"} else f"attribute:{attr}"
-                    )
-                    lane_attrs[lane_id] = attr
-                    lanes.append({"id": lane_id, "label": catalog_label(attr)})
+                descriptors, lane_attrs = self._surface_descriptors(surface)
+                active = next(
+                    selector for selector, attr in lane_attrs.items() if attr is None
+                )
                 views = {
-                    view: {"lanes": copy.deepcopy(lanes), "active_lane": "depth"}
+                    view: {
+                        "attributes": copy.deepcopy(descriptors),
+                        "active_attribute": active,
+                        "active_color_by": active,
+                    }
                     for view in ("map", "scene3d")
                 }
                 if callable(getattr(surface, "_view_regular_grid", None)):
@@ -384,7 +436,23 @@ class ProjectViewProvider:
         else:
             raise TypeError("project.view property= must be a lane name, mapping, or None")
         for entry, requested in assignments:
-            lane = "depth" if requested in {"depth", "values"} else requested
+            if requested in {"depth", "values"}:
+                lane = next(
+                    selector
+                    for selector, attr in entry.lane_attrs.items()
+                    if attr is None
+                )
+            elif requested in entry.lane_attrs:
+                lane = requested
+            else:
+                lane = next(
+                    (
+                        selector
+                        for selector, attr in entry.lane_attrs.items()
+                        if attr == requested
+                    ),
+                    requested,
+                )
             if lane not in entry.lane_attrs:
                 message = f"surface {entry.id!r} has no property lane {requested!r}"
                 if strict:
@@ -392,7 +460,8 @@ class ProjectViewProvider:
                 diagnostics.append({"code": "property_missing", "severity": "warning", "item_id": entry.id, "message": message})
                 continue
             for options in entry.views.values():
-                options["active_lane"] = lane
+                options["active_attribute"] = lane
+                options["active_color_by"] = lane
 
     def _set_visibility(
         self,
@@ -426,6 +495,8 @@ class ProjectViewProvider:
         view: str,
         lane: str | None = None,
         detail: str | None = None,
+        attribute: str | None = None,
+        color_by: str | None = None,
     ) -> dict[str, Any]:
         entry = self._entries.get(item_id)
         if entry is None:
@@ -437,6 +508,17 @@ class ProjectViewProvider:
         if detail is not None and view != "scene3d":
             raise KeyError(f"workspace item {item_id!r} has no {view!r} detail tiers")
         if entry.role == "surface":
+            if lane is not None and (attribute is not None or color_by is not None):
+                raise ValueError("surface resource cannot mix lane with attribute/color_by")
+            if (attribute is None) != (color_by is None):
+                raise ValueError("surface resource requires both attribute and color_by")
+            if attribute is not None:
+                if attribute != color_by:
+                    raise ValueError(
+                        "independent surface attribute/color_by materialization is "
+                        "reserved for the shared Phase 6 transport"
+                    )
+                lane = attribute
             return self._surface(entry, view, lane, detail)
         if entry.role in {"point", "polygon"}:
             return self._spatial(entry, view)
@@ -452,7 +534,7 @@ class ProjectViewProvider:
         obj = self.project.surface(entry.source[0])
         if obj is None:
             raise KeyError(f"surface {entry.source[0]!r} was renamed or deleted; call refresh()")
-        lane = lane or entry.views[view].get("active_lane", "depth")
+        lane = lane or entry.views[view]["active_attribute"]
         if lane not in entry.lane_attrs:
             raise KeyError(f"surface {entry.id!r} has no declared lane {lane!r}")
         attr = entry.lane_attrs[lane]
@@ -594,12 +676,16 @@ class ProjectViewSession:
         return tuple(copy.deepcopy(values))
 
     def tree(self) -> list[dict[str, Any]]:
-        return self._provider.view_catalog()
+        return self._provider.catalog_tree()
 
     def _session(self):
         if self._workspace is None:
             self._workspace = _viewer().view(
-                self._provider, title="Project workspace", tab=self._tab, serve=False
+                self._provider,
+                title=getattr(self._provider.project, "display_name", None)
+                or "Project workspace",
+                tab=self._tab,
+                serve=False,
             )
         return self._workspace
 
@@ -609,8 +695,23 @@ class ProjectViewSession:
         view: str,
         lane: str | None = None,
         detail: str | None = None,
+        *,
+        attribute: str | None = None,
+        color_by: str | None = None,
     ) -> dict[str, Any]:
-        return self._session().resource(item_id, view, lane, detail)
+        if lane is not None:
+            if attribute is not None or color_by is not None:
+                raise ValueError("surface resource cannot mix lane with attribute/color_by")
+            attribute = color_by = lane
+            lane = None
+        return self._session().resource(
+            item_id,
+            view,
+            lane,
+            detail,
+            attribute=attribute,
+            color_by=color_by,
+        )
 
     def manifest(self) -> dict[str, Any]:
         return self._session().manifest()

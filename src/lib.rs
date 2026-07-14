@@ -31,10 +31,11 @@ pub use analysis::{
     SummaryInputs, WellCurveInput,
 };
 pub use core::{
-    CornerTable, FluidContact, GeometryEdge, GridMethod, IntersectableSurface, Interval, Log,
-    LogKind, LogView, MeshShell, PointSet, PolygonSet, Sidetrack, Station, StructuredMeshSurface,
-    StructuredShell, Surface, SurfaceIntersection, Top, TopologyReport, Trajectory,
-    TrajectoryInput, TriSurface, ValueLayer, WalkLabel, Well, DEFAULT_MAX_LINK, NO_CORNER,
+    AttributeKind, AttributeMetadata, CodeRecord, CornerTable, FluidContact, GeometryEdge,
+    GridMethod, IntersectableSurface, Interval, Log, LogKind, LogView, MeshShell, PointSet,
+    PolygonSet, Sidetrack, Station, StructuredMeshSurface, StructuredShell, Surface,
+    SurfaceIntersection, Top, TopologyReport, Trajectory, TrajectoryInput, TriSurface, ValueLayer,
+    WalkLabel, Well, DEFAULT_MAX_LINK, NO_CORNER,
 };
 pub use foundation::{
     BBox, Distribution, GeoError, GridGeometry, HasHistory, OperationHistory, Point3, Provenance,

@@ -140,6 +140,31 @@ def test_set_attr_returns_a_new_object():
     assert sm2.attr("copy").values() == rows
 
 
+def test_attribute_metadata_carries_across_all_surface_levels():
+    metadata = {
+        "id": "facies",
+        "label": "Facies",
+        "kind": "categorical",
+        "units": None,
+        "codes": {
+            "1": {"label": "Sand", "color": "#EDA100"},
+            "2": {"label": "Shale", "color": None},
+        },
+    }
+    regular = plane_surface()
+    regular.set_attr("facies", regular * 0.0 + 1.0, metadata=metadata)
+    structured = regular.to_structured_mesh()
+    tri = regular.to_tri_surface()
+    for surface in (regular, structured, tri):
+        assert surface.attr_metadata("facies") == metadata
+        assert surface.attr("facies").primary_metadata == metadata
+
+    replaced = structured.set_attr("facies", structured.values())
+    assert replaced.attr_metadata("facies") == metadata
+    replaced_tri = tri.set_attr("facies", [2.0] * tri.n_points)
+    assert replaced_tri.attr_metadata("facies") == metadata
+
+
 # ---- shells ------------------------------------------------------------------
 
 

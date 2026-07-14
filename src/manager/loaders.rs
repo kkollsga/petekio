@@ -42,7 +42,7 @@ impl GeoData {
     /// detector returns `Unknown`: IRAP classic (FIRST) ASCII grid or CPS-3
     /// regular grid. Returns a borrow of the stored surface.
     pub fn load_surface(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&Surface> {
-        if self.structured_surfaces.contains_key(name) {
+        if self.structured_surfaces.contains_key(name) || self.tri_surfaces.contains_key(name) {
             return Err(GeoError::Parse(format!(
                 "load_surface: surface name '{name}' already belongs to a structured mesh surface"
             )));
@@ -68,8 +68,11 @@ impl GeoData {
                 )))
             }
         };
-        let entry = self.surfaces.entry(name.to_string());
-        Ok(entry.or_insert(surface))
+        if !self.surfaces.contains_key(name) {
+            self.surfaces.insert(name.to_string(), surface);
+            self.surface_order.push(name.to_string());
+        }
+        Ok(self.surfaces.get(name).expect("just inserted or existed"))
     }
 
     /// Load an EarthVision explicit-node grid and store it under the shared
@@ -79,7 +82,7 @@ impl GeoData {
         name: &str,
         path: impl AsRef<Path>,
     ) -> Result<&StructuredMeshSurface> {
-        if self.surfaces.contains_key(name) {
+        if self.surfaces.contains_key(name) || self.tri_surfaces.contains_key(name) {
             return Err(GeoError::Parse(format!(
                 "load_structured_surface: surface name '{name}' already belongs to a regular surface"
             )));
@@ -96,10 +99,14 @@ impl GeoData {
             }
         }
         let surface = StructuredMeshSurface::load_earthvision_grid(path)?;
+        if !self.structured_surfaces.contains_key(name) {
+            self.structured_surfaces.insert(name.to_string(), surface);
+            self.surface_order.push(name.to_string());
+        }
         Ok(self
             .structured_surfaces
-            .entry(name.to_string())
-            .or_insert(surface))
+            .get(name)
+            .expect("just inserted or existed"))
     }
 
     /// Load a well from `files` and store it under `id`, returning a borrow.

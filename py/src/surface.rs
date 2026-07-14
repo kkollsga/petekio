@@ -16,6 +16,7 @@
 //! so a handed-back surface never writes back into the project — the same
 //! observable semantics as the former eager deep copy, minus the copy on read.
 
+use crate::attribute::{metadata_from_dict, metadata_to_dict};
 use crate::geodata::GeoData;
 use crate::geometry::{BBox, GridGeometry};
 use crate::points::PolygonSet;
@@ -341,10 +342,36 @@ impl Surface {
         })
     }
 
+    /// Canonical durable metadata for attribute `name`.
+    fn attr_metadata(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyDict>> {
+        let metadata = self
+            .with(py, |s| s.attr_metadata(name).cloned())?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyKeyError::new_err(format!("no attribute layer '{name}'"))
+            })?;
+        Ok(metadata_to_dict(py, &metadata)?.unbind())
+    }
+
+    /// Metadata of the promoted primary lane, or `None` for an ordinary
+    /// primary surface.
+    #[getter]
+    fn primary_metadata(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+        self.with(py, |s| s.primary_metadata().cloned())?
+            .map(|metadata| metadata_to_dict(py, &metadata).map(Bound::unbind))
+            .transpose()
+    }
+
     /// Set (or replace) attribute `name` from another surface's primary layer
     /// (must match this surface's geometry). Copy-on-write: an `InGeo` view
     /// detaches to an owned copy first, so the project is never mutated.
-    fn set_attr(&mut self, py: Python<'_>, name: &str, values: &Surface) -> PyResult<()> {
+    #[pyo3(signature = (name, values, metadata = None))]
+    fn set_attr(
+        &mut self,
+        py: Python<'_>,
+        name: &str,
+        values: &Surface,
+        metadata: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<()> {
         let (rhs_geom, arr) = values.with(py, |v| (v.geom.clone(), v.values().clone()))?;
         let lhs_geom = self.with(py, |s| s.geom.clone())?;
         if lhs_geom != rhs_geom {
@@ -353,7 +380,13 @@ impl Surface {
                  node counts, rotation, and yflip"
             ))));
         }
-        self.owned_mut(py)?.set_attr(name, arr).map_err(to_pyerr)
+        match metadata {
+            Some(metadata) => self
+                .owned_mut(py)?
+                .set_attr_with_metadata(name, arr, metadata_from_dict(name, metadata)?)
+                .map_err(to_pyerr),
+            None => self.owned_mut(py)?.set_attr(name, arr).map_err(to_pyerr),
+        }
     }
 
     /// `surface.thickness = values` assigns a typed surface attribute lane.
@@ -370,7 +403,7 @@ impl Surface {
                 "Surface attribute '{name}' must be assigned another Surface"
             ))
         })?;
-        self.set_attr(py, name, &values)
+        self.set_attr(py, name, &values, None)
     }
 
     // ---- shells: conversions, iso-lines, value layer ----

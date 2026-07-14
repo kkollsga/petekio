@@ -11,6 +11,7 @@
 //! dependency); attribute layers are returned as promoted `Surface`s and curve
 //! samples as plain `list[float]`.
 
+mod attribute;
 mod geodata;
 mod intersection;
 mod geometry;

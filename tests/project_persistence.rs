@@ -106,9 +106,14 @@ fn model_sections_export_split_merge_byte_lossless() {
     );
     assert_eq!(re.model_section_names().len(), 2);
 
+    // Opening and saving again must retain per-element tags, not just model tags.
+    // Exporting the re-saved project by tag proves the well tag was restored.
+    let resaved = dir.join("resaved.pproj");
+    re.save(&resaved).unwrap();
+
     // Export by tag → a shareable subset with only 'field-a' sections.
     let sub = dir.join("field-a.pproj");
-    GeoData::export(&src, &sub, &["field-a"]).unwrap();
+    GeoData::export(&resaved, &sub, &["field-a"]).unwrap();
     let s = GeoData::open(&sub).unwrap();
     assert!(s.well("99/9-X").is_some());
     assert_eq!(s.model_section_names(), vec!["model/field-a/props"]); // 'other' dropped

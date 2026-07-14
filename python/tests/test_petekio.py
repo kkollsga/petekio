@@ -210,6 +210,46 @@ def test_surface_attr_access():
         _ = s.attr["missing"]
 
 
+def test_surface_attribute_metadata_is_canonical_and_preserved_on_replace():
+    g = petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 2, 2)
+    s = petekio.Surface.constant(g, 1.0)
+    values = petekio.Surface.constant(g, 0.2)
+    metadata = {
+        "id": "porosity",
+        "label": "Porosity",
+        "kind": "continuous",
+        "units": "v/v",
+        "codes": None,
+    }
+    s.set_attr("porosity", values, metadata=metadata)
+    assert s.attr_metadata("porosity") == metadata
+    assert s.attr["porosity"].primary_metadata == metadata
+
+    s.set_attr("porosity", petekio.Surface.constant(g, 0.3))
+    assert s.attr_metadata("porosity") == metadata
+    with pytest.raises(ValueError, match="must match lane name"):
+        s.set_attr("porosity", values, metadata={"id": "other"})
+    for invalid in (
+        {"id": " "},
+        {"id": "porosity", "label": "\t"},
+        {"id": "porosity", "units": " \n"},
+    ):
+        with pytest.raises(ValueError, match="non-empty after trimming"):
+            s.set_attr("porosity", values, metadata=invalid)
+    with pytest.raises(TypeError, match="unknown attribute metadata key 'unit'"):
+        s.set_attr("porosity", values, metadata={"id": "porosity", "unit": "v/v"})
+    with pytest.raises(TypeError, match="unknown attribute code record key 'colour'"):
+        s.set_attr(
+            "facies",
+            values,
+            metadata={
+                "id": "facies",
+                "kind": "categorical",
+                "codes": {"1": {"colour": "#EDA100"}},
+            },
+        )
+
+
 def test_surface_smooth_dip_and_extrapolate(tmp_path):
     rotated_flip = petekio.GridGeometry(
         100.0, 200.0, 2.0, 3.0, 4, 5, rotation_deg=37.0, yflip=True

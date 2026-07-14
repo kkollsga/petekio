@@ -52,14 +52,16 @@ impl GeoData {
     /// scalars are characterised across the wells with default [`Cutoffs`]; the
     /// boundary is the first polygon, or the first surface's convex outline.
     pub fn model_inputs(&self) -> Result<ModelInputs> {
-        if self.structured_surfaces().next().is_some() {
+        if self.structured_surfaces().next().is_some() || self.tri_surfaces_named().next().is_some()
+        {
             let names = self
                 .structured_surfaces_named()
                 .map(|(name, _)| name)
+                .chain(self.tri_surfaces_named().map(|(name, _)| name))
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(GeoError::Unsupported(format!(
-                "model_inputs cannot yet represent structured mesh horizons; refusing to omit: {names}"
+                "model_inputs cannot yet represent non-regular horizons; refusing to omit: {names}"
             )));
         }
         let cutoffs = Cutoffs::default();

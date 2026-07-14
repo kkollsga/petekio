@@ -743,6 +743,7 @@ class Project:
         source: str | Path | None = None,
         aliases: Mapping[str, Any] | None = None,
         crs: str | None = None,
+        display_name: str | None = None,
         settings: Mapping[str, Any] | None = None,
         inventory: Mapping[str, Any] | None = None,
         tops_tables: Mapping[str, list[dict[str, Any]]] | None = None,
@@ -750,7 +751,10 @@ class Project:
         self._geo = geo
         self.source = None if source is None else str(source)
         self.aliases = dict(aliases or {})
-        self.crs = crs
+        if crs is not None:
+            self._geo.crs = crs
+        if display_name is not None:
+            self._geo.display_name = display_name
         self.settings = dict(settings or {})
         self._inventory = dict(inventory or self._empty_inventory(self.source))
         self._tops_tables = {
@@ -758,6 +762,26 @@ class Project:
             for name, rows in (tops_tables or {}).items()
         }
         self._log_resolution_cache: dict[str, list[dict[str, Any]]] = {}
+
+    @property
+    def display_name(self) -> str | None:
+        return self._geo.display_name
+
+    @display_name.setter
+    def display_name(self, value: str | None) -> None:
+        self._geo.display_name = value
+
+    @property
+    def crs(self) -> str | None:
+        return self._geo.crs
+
+    @crs.setter
+    def crs(self, value: str | None) -> None:
+        self._geo.crs = value
+
+    @property
+    def unit(self) -> str:
+        return self._geo.unit
 
     @classmethod
     def load(cls, path: str | Path) -> "Project":
@@ -789,6 +813,7 @@ class Project:
         aliases: Mapping[str, Any] | None = None,
         crs: str | None = None,
         settings: Mapping[str, Any] | ImportSettings | None = None,
+        display_name: str | None = None,
     ) -> "Project":
         """Import a raw Petrel-style source directory into a `Project`."""
 
@@ -838,6 +863,7 @@ class Project:
             source=src,
             aliases=aliases,
             crs=crs,
+            display_name=display_name,
             settings=settings_dict,
             inventory=inventory,
             tops_tables=tops_tables,
@@ -884,8 +910,8 @@ class Project:
             settings=settings,
         )
 
-    def view_catalog(self) -> list[dict[str, Any]]:
-        """The generic petekTools workspace-provider catalog (metadata only)."""
+    def view_catalog(self) -> dict[str, Any]:
+        """The generic petekTools workspace-v2 catalog (metadata only)."""
 
         from ._project_view import ProjectViewProvider
 
@@ -898,13 +924,20 @@ class Project:
         view: str,
         lane: str | None = None,
         detail: str | None = None,
+        attribute: str | None = None,
+        color_by: str | None = None,
     ) -> dict[str, Any]:
-        """Materialize one default workspace resource for ``pto.view(project)``."""
+        """Materialize one transitional workspace-v2 provider resource."""
 
         from ._project_view import ProjectViewProvider
 
         return ProjectViewProvider(self).view_resource(
-            item_id=item_id, view=view, lane=lane, detail=detail
+            item_id=item_id,
+            view=view,
+            lane=lane,
+            detail=detail,
+            attribute=attribute,
+            color_by=color_by,
         )
 
     @property
@@ -1043,6 +1076,18 @@ class Project:
 
     def rename_surface(self, old: str, new: str) -> None:
         self._rename_object("surfaces", old, new)
+
+    def replace_surface(self, name: str, surface: Any) -> None:
+        """Write a detached edited surface back under an existing project name.
+
+        Project-backed handles remain copy-on-write; this explicit call is the
+        only mutation boundary and requires unchanged geometry/topology.
+        """
+
+        resolved = _resolve_collection_name(name, self._inventory.get("surfaces", []))
+        if resolved is None:
+            raise KeyError(name)
+        self._geo.replace_surface(resolved, surface)
 
     def delete_surface(self, name: str) -> None:
         self._delete_object("surfaces", name)
@@ -1263,8 +1308,9 @@ class Project:
             info = GeoData.inspect(str(path))
         except Exception:
             return inv
+        inv["crs"] = info.get("crs")
         for kind, name in info.get("elements", []):
-            if kind in {"surface", "structured_mesh"}:
+            if kind in {"surface", "structured_mesh", "tri_surface"}:
                 inv["surfaces"].append(name)
             elif kind == "well":
                 inv["wells"].append(name)

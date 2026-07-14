@@ -129,7 +129,7 @@ pub struct GridGeometry {           // regular, rotatable
 pub struct Surface {
     pub geom: GridGeometry,
     values: Array2<f64>,                       // primary (e.g. depth); NaN = undefined
-    attributes: IndexMap<String, Array2<f64>>, // thickness, seismic_amp, twt, ...
+    attributes: IndexMap<String, AttributeLane<Array2<f64>>>,
 }
 ```
 
@@ -137,7 +137,11 @@ pub struct Surface {
 - **Load:** `Surface::load_irap_classic(path)` — **FIRST format to implement.**
   (Then `load_irap_binary`, `load_zmap`, `load_xyz_csv`.)
 - **Attributes:** `surface.attr("thickness") -> &Array2` ; `set_attr(name, arr)` ;
-  `as_attr_surface("seismic") -> Surface` (promote an attribute for ops).
+  `as_attr_surface("seismic") -> Surface` (promote an attribute for ops). Each
+  lane durably carries `{id,label,kind,units,codes}` metadata. Values-only
+  replacement preserves existing metadata; a new legacy lane defaults honestly
+  to continuous, its lane name as id/label, and null units/codes. Explicit
+  metadata replaces the descriptor, and promotion carries it onto the primary lane.
 - **Scalar arithmetic + math:** operator overloads (`&s + 100.0`, `&a * &b`) and
   methods on the active layer: `.ln() .log10() .exp() .powf(n) .sqrt() .abs()
   .clamp_min(x) .clamp(lo,hi)`. Each returns a new `Surface`.
@@ -208,6 +212,10 @@ walkability (the `MeshShell` corner table) is lazy and never serialized.
 Every level exposes `iso_lines` (NaN-aware marching triangles; holes break
 lines, never bend them) and `value_layer` (the viewer's trimesh bundle).
 `.pproj` stores a level-2/3 surface's shell once with N property lanes.
+Element schema v2 stores the same canonical descriptor beside regular,
+structured, and triangular attribute values. Exact positional v1 DTO decoders
+migrate old values-only lanes to the legacy defaults; standalone and whole-project
+loads route by each section's version.
 
 Python `PointSet.infer_geometry(...)` returns **only empty geometry roles**:
 `GridGeometry` when the points fit one affine lattice; `StructuredShell` when
@@ -376,10 +384,18 @@ impl GeoData {
 }
 ```
 
+The project manifest also persists an optional authored display name, optional
+free-text CRS declaration, and the existing canonical `Unit`. Missing title/CRS
+in v1 manifests remains `None`; neither is inferred from a file path.
+
 Regular and structured surfaces have separate typed Rust collections so the
 existing `Surface` API remains exact, but share one name-uniqueness domain and
 one Python `project.surfaces` namespace. Whole-project `.pproj` persistence
 stores structured entries with the existing `structured_mesh` element kind.
+Triangulated replacements use the existing `tri_surface` element kind in that
+same namespace. Project-backed handles stay cheap/read-only or copy-on-write;
+only explicit `replace_surface(name, detached_surface)` writes regular,
+structured, or triangular edits back after exact geometry/topology validation.
 `model_inputs()` must fail loudly while its horizon contract cannot represent
 them; it must never silently omit a structured horizon.
 
@@ -401,9 +417,21 @@ Python exposes them as immutable, folder-aware `project.templates` snapshots
 whose petekTools materialization remains lazy and optional.
 
 `Project` implements petekTools' generic workspace provider duck:
-`view_catalog()` returns an ordered metadata-only snapshot and
-`view_resource(item_id, view, lane, detail)` materializes exactly one requested
-role. Regular surfaces use a private native row-major transport and emit
+`view_catalog()` returns a workspace-v2 envelope whose ordered metadata-only
+tree declares persisted `{title,crs,unit}` project identity when an authored
+title exists. Surface views declare the primary descriptor first, followed by
+named attributes in durable insertion order; every descriptor is the canonical
+`{id,label,kind,units,codes}` shape with independent `active_attribute` and
+`active_color_by` selectors. Missing CRS/units/code labels remain null, and only
+an ordinary primary/depth descriptor may inherit the project unit.
+`view_resource(item_id, view, attribute, color_by, detail)` materializes exactly
+one transitional non-shared v2 role. Phase 5 accepts equal geometry/paint
+selectors and retains direct `lane=` as their v1 compatibility spelling;
+independent dual-axis materialization and shared multi-attribute transport are
+reserved for Phase 6. Consequently multi-attribute `include="selected"`
+exports fail before materialization instead of enumerating a Cartesian product;
+visible exports freeze only the active pair. Regular surfaces use a private
+native row-major transport and emit
 block-backed affine `regular_grid` Map fills plus preview/full
 `regular_surface` 3-D resources without constructing a `ValueLayer`, nodes, or
 triangles. Preview sampling preserves the complete world footprint. General
@@ -426,8 +454,8 @@ MD-ordered crossing, and includes the exact MD/XYZ endpoint. No-hit keeps the
 full path and failures remain explicit diagnostics. This display choice does
 not change public `intersection()` ambiguity semantics.
 Stable IDs use canonical full paths with every segment percent-encoded; wells
-add an explicit bore segment. Surface primary/attribute values stay lanes of
-one item. Catalog building never calls `value_layer`, trajectory sampling, top
+add an explicit bore segment. Surface primary/attribute values remain selectors
+of one item. Catalog building never calls `value_layer`, trajectory sampling, top
 positioning, or log gathering. Unknown provider assets remain byte-preserved
 and appear as disabled diagnostic leaves.
 ```python

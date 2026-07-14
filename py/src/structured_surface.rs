@@ -2,6 +2,7 @@
 //! per-node XY coordinates: a shared `StructuredShell` (geometry) + primary
 //! values + attribute lanes.
 
+use crate::attribute::{metadata_from_dict, metadata_to_dict};
 use crate::geodata::GeoData;
 use crate::geometry::{BBox, GridGeometry};
 use crate::points::{PointSet, PolygonSet};
@@ -206,14 +207,34 @@ impl StructuredMeshSurface {
         })
     }
 
+    /// Canonical durable metadata for attribute `name`.
+    fn attr_metadata(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyDict>> {
+        let metadata = self
+            .with(py, |surface| surface.attr_metadata(name).cloned())?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyKeyError::new_err(format!("no attribute layer '{name}'"))
+            })?;
+        Ok(metadata_to_dict(py, &metadata)?.unbind())
+    }
+
+    /// Metadata of the promoted primary lane, if this surface is an attribute.
+    #[getter]
+    fn primary_metadata(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+        self.with(py, |surface| surface.primary_metadata().cloned())?
+            .map(|metadata| metadata_to_dict(py, &metadata).map(Bound::unbind))
+            .transpose()
+    }
+
     /// Set (or replace) attribute `name` from row-major nested lists (the
     /// same shape `values()` returns) — returns a **new**
     /// `StructuredMeshSurface` (surfaces are immutable; the shell is shared).
+    #[pyo3(signature = (name, values, metadata = None))]
     fn set_attr(
         &self,
         py: Python<'_>,
         name: &str,
         values: Vec<Vec<f64>>,
+        metadata: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<StructuredMeshSurface> {
         let mut out = self.with(py, Clone::clone)?;
         let (ncol, nrow) = (out.ncol(), out.nrow());
@@ -228,7 +249,12 @@ impl StructuredMeshSurface {
                 lane[[i, j]] = *v;
             }
         }
-        out.set_attr(name, lane).map_err(to_pyerr)?;
+        match metadata {
+            Some(metadata) => out
+                .set_attr_with_metadata(name, lane, metadata_from_dict(name, metadata)?)
+                .map_err(to_pyerr)?,
+            None => out.set_attr(name, lane).map_err(to_pyerr)?,
+        }
         Ok(StructuredMeshSurface::wrap(out).named(self.name.clone()))
     }
 

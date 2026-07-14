@@ -38,7 +38,13 @@ pub(crate) trait Persistable: Serialize + DeserializeOwned + Sized {
         })
     }
     /// Decode this element from a section payload.
-    fn from_payload(bytes: &[u8]) -> Result<Self> {
+    fn from_payload(version: u32, bytes: &[u8]) -> Result<Self> {
+        if !(1..=DATA_VERSION).contains(&version) {
+            return Err(GeoError::Parse(format!(
+                "unsupported '{}' element schema v{version}",
+                Self::KIND
+            )));
+        }
         serial::from_bytes(bytes)
     }
 }
@@ -47,6 +53,19 @@ impl Persistable for Surface {
     const KIND: &'static str = "surface";
     fn element_name(&self) -> String {
         "surface".to_string()
+    }
+    fn from_payload(version: u32, bytes: &[u8]) -> Result<Self> {
+        match version {
+            1 => Surface::from_v1_payload(bytes),
+            DATA_VERSION => {
+                let surface: Surface = serial::from_bytes(bytes)?;
+                surface.validate_metadata()?;
+                Ok(surface)
+            }
+            _ => Err(GeoError::Parse(format!(
+                "unsupported surface element schema v{version}"
+            ))),
+        }
     }
 }
 impl Persistable for Well {
@@ -67,22 +86,36 @@ impl Persistable for PolygonSet {
         "polygons".to_string()
     }
 }
-// Level-2/3 surfaces (shell + property lanes). New kinds — no earlier writer
-// ever emitted them, so their v1 (`DATA_VERSION`) payload IS the shell-once
-// + N-lane encoding (the shell serializes exactly once per section; every
-// lane references it). Derived walk indexes (the corner table) are never
-// persisted; decoding routes through the validating constructors, which
-// rebuild them lazily.
+// Level-2/3 surfaces (shell + property lanes). Their v1 payloads stored raw
+// values-only attribute maps; v2 wraps each lane with canonical metadata.
 impl Persistable for StructuredMeshSurface {
     const KIND: &'static str = "structured_mesh";
     fn element_name(&self) -> String {
         "structured_mesh".to_string()
+    }
+    fn from_payload(version: u32, bytes: &[u8]) -> Result<Self> {
+        match version {
+            1 => StructuredMeshSurface::from_v1_payload(bytes),
+            DATA_VERSION => serial::from_bytes(bytes),
+            _ => Err(GeoError::Parse(format!(
+                "unsupported structured_mesh element schema v{version}"
+            ))),
+        }
     }
 }
 impl Persistable for TriSurface {
     const KIND: &'static str = "tri_surface";
     fn element_name(&self) -> String {
         "tri_surface".to_string()
+    }
+    fn from_payload(version: u32, bytes: &[u8]) -> Result<Self> {
+        match version {
+            1 => TriSurface::from_v1_payload(bytes),
+            DATA_VERSION => serial::from_bytes(bytes),
+            _ => Err(GeoError::Parse(format!(
+                "unsupported tri_surface element schema v{version}"
+            ))),
+        }
     }
 }
 
@@ -108,7 +141,8 @@ fn load_one<T: Persistable>(path: &Path) -> Result<T> {
         })?
         .name
         .clone();
-    T::from_payload(&reader.read(&name)?.payload)
+    let section = reader.read(&name)?;
+    T::from_payload(section.version, &section.payload)
 }
 
 impl Surface {
@@ -204,8 +238,11 @@ mod tests {
     use crate::core::log::Log;
     use crate::core::tops::Top;
     use crate::core::trajectory::{Station, TrajectoryInput};
-    use crate::core::{PointSet, PolygonSet, Surface, Well};
-    use crate::foundation::GridGeometry;
+    use crate::core::{
+        AttributeKind, AttributeMetadata, CodeRecord, PointSet, PolygonSet, Surface, Well,
+    };
+    use crate::foundation::{GridGeometry, OperationHistory, Unit};
+    use crate::io::container::{self, Section};
     use indexmap::IndexMap;
     use ndarray::Array2;
 
@@ -226,14 +263,84 @@ mod tests {
         }
     }
 
+    fn facies_metadata() -> AttributeMetadata {
+        let mut codes = IndexMap::new();
+        codes.insert(
+            "1".into(),
+            CodeRecord::new(Some("Sand".into()), Some("#EDA100".into())).unwrap(),
+        );
+        AttributeMetadata::new(
+            "facies",
+            "Facies",
+            AttributeKind::Categorical,
+            None,
+            Some(codes),
+        )
+        .unwrap()
+    }
+
+    #[derive(serde::Serialize)]
+    struct SurfaceV1Fixture {
+        geom: GridGeometry,
+        values: Array2<f64>,
+        attributes: IndexMap<String, Array2<f64>>,
+        history: OperationHistory,
+    }
+
+    #[test]
+    fn v1_surface_section_routes_through_standalone_and_project_loaders() {
+        let mut attributes = IndexMap::new();
+        attributes.insert("legacy".into(), Array2::from_elem((3, 2), 4.0));
+        let old = SurfaceV1Fixture {
+            geom: geom(),
+            values: Array2::from_elem((3, 2), 2.0),
+            attributes,
+            history: OperationHistory::from_entry("v1.fixture"),
+        };
+        let section = Section {
+            kind: "surface".into(),
+            name: "legacy_surface".into(),
+            tags: Vec::new(),
+            version: 1,
+            payload: crate::io::serial::to_bytes(&old).unwrap(),
+        };
+        let p = tmp("v1_surface");
+        container::write(
+            &p,
+            &serde_json::json!({"unit": Unit::Metres}),
+            1,
+            &[section],
+        )
+        .unwrap();
+
+        let standalone = Surface::load(&p).unwrap();
+        assert_eq!(
+            standalone.attr_metadata("legacy"),
+            Some(&AttributeMetadata::continuous("legacy").unwrap())
+        );
+        let project = crate::GeoData::open(&p).unwrap();
+        assert!(project.surface("legacy_surface").is_some());
+        assert_eq!(
+            project
+                .surface("legacy_surface")
+                .unwrap()
+                .attr_metadata("legacy"),
+            Some(&AttributeMetadata::continuous("legacy").unwrap())
+        );
+        std::fs::remove_file(&p).ok();
+    }
+
     #[test]
     fn surface_round_trips_incl_nan() {
         let vals = Array2::from_shape_vec((3, 2), vec![1.0, f64::NAN, 2.0, 3.0, 4.0, 5.0]).unwrap();
-        let s = Surface::new(geom(), vals).unwrap();
+        let mut s = Surface::new(geom(), vals).unwrap();
+        s.set_attr_with_metadata("facies", Array2::from_elem((3, 2), 1.0), facies_metadata())
+            .unwrap();
         let p = tmp("surf");
         s.save(&p).unwrap();
         let back = Surface::load(&p).unwrap();
         assert_eq!(back.geom, geom());
+        assert_eq!(back.attr_metadata("facies"), Some(&facies_metadata()));
         // Sample everywhere; loaded must be bit-identical to original (NaN too).
         for x in [0.0, 25.0, 50.0] {
             for y in [0.0, 25.0] {
@@ -285,9 +392,10 @@ mod tests {
         use crate::core::StructuredMeshSurface;
         let s = Surface::constant(geom(), -1800.0);
         let mut sm = s.to_structured_mesh().unwrap();
-        let mut amp = Array2::from_elem((3, 2), 0.5);
+        let mut amp = Array2::from_elem((3, 2), 1.0);
         amp[[1, 1]] = f64::NAN;
-        sm.set_attr("amp", amp).unwrap();
+        sm.set_attr_with_metadata("facies", amp, facies_metadata())
+            .unwrap();
 
         let p = tmp("smesh");
         sm.save(&p).unwrap();
@@ -295,8 +403,9 @@ mod tests {
         assert_eq!((back.ncol(), back.nrow()), (3, 2));
         assert_eq!(back.values(), sm.values());
         assert_eq!(back.x(), sm.x());
-        assert_eq!(back.attr_names(), vec!["amp"]);
-        assert!(back.attr("amp").unwrap()[[1, 1]].is_nan());
+        assert_eq!(back.attr_names(), vec!["facies"]);
+        assert!(back.attr("facies").unwrap()[[1, 1]].is_nan());
+        assert_eq!(back.attr_metadata("facies"), Some(&facies_metadata()));
         assert_eq!(back.nominal_geometry(), Some(&geom()));
         std::fs::remove_file(&p).ok();
     }
@@ -308,7 +417,8 @@ mod tests {
         let n = tri.points().len();
         let mut amp: Vec<f64> = (0..n).map(|k| k as f64).collect();
         amp[2] = f64::NAN;
-        tri.set_attr("amp", amp.clone()).unwrap();
+        tri.set_attr_with_metadata("facies", amp.clone(), facies_metadata())
+            .unwrap();
 
         let p = tmp("tri");
         tri.save(&p).unwrap();
@@ -317,9 +427,10 @@ mod tests {
         assert_eq!(back.triangles(), tri.triangles());
         assert_eq!(back.wireframe_edges(None), tri.wireframe_edges(None));
         assert_eq!(back.shell().labels(), tri.shell().labels());
-        let a = back.attr("amp").unwrap();
+        let a = back.attr("facies").unwrap();
         assert!(a[2].is_nan());
         assert_eq!(a[3], 3.0);
+        assert_eq!(back.attr_metadata("facies"), Some(&facies_metadata()));
         // The derived corner table was not persisted but rebuilds on demand.
         assert_eq!(
             back.shell().corner_table().n_corners(),

@@ -9,6 +9,7 @@
 //! [`TriSurface`](crate::TriSurface). The shell is immutable and shared — N
 //! properties/clones never repeat the geometry in memory.
 
+use crate::core::attribute::{check_metadata_name, AttributeLane, AttributeMetadata};
 use crate::core::points::structured_edge;
 use crate::core::shell::StructuredShell;
 use crate::core::{GeometryEdge, PointSet, PolygonSet};
@@ -27,7 +28,9 @@ use std::sync::Arc;
 pub struct StructuredMeshSurface {
     shell: Arc<StructuredShell>,
     values: Array2<f64>,
-    attributes: IndexMap<String, Array2<f64>>,
+    #[serde(default)]
+    primary_metadata: Option<AttributeMetadata>,
+    attributes: IndexMap<String, AttributeLane<Array2<f64>>>,
     #[serde(default)]
     history: OperationHistory,
 }
@@ -39,7 +42,9 @@ struct StructuredMeshSurfaceData {
     shell: StructuredShell,
     values: Array2<f64>,
     #[serde(default)]
-    attributes: IndexMap<String, Array2<f64>>,
+    primary_metadata: Option<AttributeMetadata>,
+    #[serde(default)]
+    attributes: IndexMap<String, AttributeLane<Array2<f64>>>,
     #[serde(default)]
     history: OperationHistory,
 }
@@ -48,8 +53,12 @@ impl TryFrom<StructuredMeshSurfaceData> for StructuredMeshSurface {
     type Error = GeoError;
     fn try_from(d: StructuredMeshSurfaceData) -> Result<StructuredMeshSurface> {
         let mut out = StructuredMeshSurface::from_shell(Arc::new(d.shell), d.values)?;
+        if let Some(metadata) = &d.primary_metadata {
+            metadata.validate()?;
+        }
+        out.primary_metadata = d.primary_metadata;
         for (name, lane) in d.attributes {
-            out.set_attr(&name, lane)?;
+            out.set_attr_with_metadata(&name, lane.values, lane.metadata)?;
         }
         out.history = d.history;
         Ok(out)
@@ -186,6 +195,7 @@ impl StructuredMeshSurface {
         Ok(Self {
             shell,
             values,
+            primary_metadata: None,
             attributes: IndexMap::new(),
             history: OperationHistory::from_entry("structured_surface.from_shell"),
         })
@@ -224,15 +234,65 @@ impl StructuredMeshSurface {
 
     /// A named attribute lane, if present.
     pub fn attr(&self, name: &str) -> Option<&Array2<f64>> {
-        self.attributes.get(name)
+        self.attributes.get(name).map(|lane| &lane.values)
+    }
+
+    pub fn attr_metadata(&self, name: &str) -> Option<&AttributeMetadata> {
+        self.attributes.get(name).map(|lane| &lane.metadata)
+    }
+
+    pub fn primary_metadata(&self) -> Option<&AttributeMetadata> {
+        self.primary_metadata.as_ref()
+    }
+
+    pub(crate) fn set_primary_metadata(&mut self, metadata: Option<AttributeMetadata>) {
+        self.primary_metadata = metadata;
     }
 
     /// Set (or replace) a named attribute lane. Must match the shell shape or
     /// `GeometryMismatch` is returned.
     pub fn set_attr(&mut self, name: &str, values: Array2<f64>) -> Result<()> {
         check_lane(&self.shell, &values, "StructuredMeshSurface::set_attr")?;
-        self.attributes.insert(name.to_string(), values);
+        if let Some(existing) = self.attributes.get_mut(name) {
+            existing.values = values;
+        } else {
+            self.attributes.insert(
+                name.to_string(),
+                AttributeLane::new(AttributeMetadata::continuous(name)?, values)?,
+            );
+        }
         self.record_history(format!("structured_surface.set_attr(name={name})"));
+        Ok(())
+    }
+
+    pub fn set_attr_with_metadata(
+        &mut self,
+        name: &str,
+        values: Array2<f64>,
+        metadata: AttributeMetadata,
+    ) -> Result<()> {
+        check_lane(
+            &self.shell,
+            &values,
+            "StructuredMeshSurface::set_attr_with_metadata",
+        )?;
+        check_metadata_name(name, &metadata)?;
+        self.attributes
+            .insert(name.to_string(), AttributeLane::new(metadata, values)?);
+        self.record_history(format!(
+            "structured_surface.set_attr_with_metadata(name={name})"
+        ));
+        Ok(())
+    }
+
+    pub fn set_attr_metadata(&mut self, name: &str, metadata: AttributeMetadata) -> Result<()> {
+        check_metadata_name(name, &metadata)?;
+        let lane = self
+            .attributes
+            .get_mut(name)
+            .ok_or_else(|| GeoError::NotFound(format!("no attribute lane '{name}'")))?;
+        lane.metadata = metadata;
+        self.record_history(format!("structured_surface.set_attr_metadata(name={name})"));
         Ok(())
     }
 
@@ -244,9 +304,10 @@ impl StructuredMeshSurface {
     /// Promote an attribute lane to a standalone surface (its primary values)
     /// on the **same shared shell** — no geometry is copied.
     pub fn as_attr_surface(&self, name: &str) -> Option<StructuredMeshSurface> {
-        self.attributes.get(name).map(|a| StructuredMeshSurface {
+        self.attributes.get(name).map(|lane| StructuredMeshSurface {
             shell: Arc::clone(&self.shell),
-            values: a.clone(),
+            values: lane.values.clone(),
+            primary_metadata: Some(lane.metadata.clone()),
             attributes: IndexMap::new(),
             history: self
                 .history
@@ -334,6 +395,28 @@ impl StructuredMeshSurface {
 
     pub(crate) fn set_history(&mut self, history: impl Into<OperationHistory>) {
         self.history = history.into();
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StructuredMeshSurfaceDataV1 {
+    shell: StructuredShell,
+    values: Array2<f64>,
+    #[serde(default)]
+    attributes: IndexMap<String, Array2<f64>>,
+    #[serde(default)]
+    history: OperationHistory,
+}
+
+impl StructuredMeshSurface {
+    pub(crate) fn from_v1_payload(bytes: &[u8]) -> Result<Self> {
+        let old: StructuredMeshSurfaceDataV1 = crate::io::serial::from_bytes(bytes)?;
+        let mut out = StructuredMeshSurface::from_shell(Arc::new(old.shell), old.values)?;
+        for (name, values) in old.attributes {
+            out.set_attr(&name, values)?;
+        }
+        out.history = old.history;
+        Ok(out)
     }
 }
 
@@ -465,6 +548,57 @@ mod tests {
         // The shell appears exactly once in the payload (JSON projection).
         let json = serde_json::to_string(&back.as_attr_surface("amp").unwrap()).unwrap();
         assert_eq!(json.matches("\"shell\"").count(), 1);
+    }
+
+    #[test]
+    fn positional_v1_payload_migrates_attribute_metadata() {
+        let x = array![[0.0, 0.0], [10.0, 10.0]];
+        let y = array![[0.0, 10.0], [0.0, 10.0]];
+        let edge =
+            PolygonSet::convex_hull_xy(vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]])
+                .unwrap();
+        let current =
+            StructuredMeshSurface::new(x, y, array![[1.0, 2.0], [3.0, 4.0]], None, edge).unwrap();
+        let mut attributes = IndexMap::new();
+        attributes.insert("legacy".into(), array![[5.0, 6.0], [7.0, 8.0]]);
+        let old = StructuredMeshSurfaceDataV1 {
+            shell: (**current.shell()).clone(),
+            values: current.values().clone(),
+            attributes,
+            history: OperationHistory::from_entry("v1.fixture"),
+        };
+        let bytes = crate::io::serial::to_bytes(&old).unwrap();
+        let migrated = StructuredMeshSurface::from_v1_payload(&bytes).unwrap();
+        assert_eq!(
+            migrated.attr_metadata("legacy"),
+            Some(&AttributeMetadata::continuous("legacy").unwrap())
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_invalid_primary_metadata() {
+        let x = array![[0.0, 0.0], [10.0, 10.0]];
+        let y = array![[0.0, 10.0], [0.0, 10.0]];
+        let edge =
+            PolygonSet::convex_hull_xy(vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]])
+                .unwrap();
+        let current =
+            StructuredMeshSurface::new(x, y, array![[1.0, 2.0], [3.0, 4.0]], None, edge).unwrap();
+        let bad = StructuredMeshSurfaceData {
+            shell: (**current.shell()).clone(),
+            values: current.values().clone(),
+            primary_metadata: Some(AttributeMetadata {
+                id: " ".into(),
+                label: "Bad".into(),
+                kind: crate::AttributeKind::Continuous,
+                units: None,
+                codes: None,
+            }),
+            attributes: IndexMap::new(),
+            history: OperationHistory::new(),
+        };
+        let bytes = crate::io::serial::to_bytes(&bad).unwrap();
+        assert!(crate::io::serial::from_bytes::<StructuredMeshSurface>(&bytes).is_err());
     }
 
     #[test]

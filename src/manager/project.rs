@@ -8,7 +8,7 @@
 //! decoding any element.
 
 use crate::core::persist::Persistable;
-use crate::core::{PointSet, PolygonSet, StructuredMeshSurface, Surface, Well};
+use crate::core::{PointSet, PolygonSet, StructuredMeshSurface, Surface, TriSurface, Well};
 use crate::foundation::{GeoError, Result, Unit};
 use crate::io::container::{self, Section};
 use crate::io::serial::DATA_VERSION;
@@ -56,6 +56,8 @@ pub struct ProjectAsset {
 /// A project's manifest without its element data — the result of [`inspect`].
 #[derive(Debug, Clone)]
 pub struct ProjectInfo {
+    pub display_name: Option<String>,
+    pub crs: Option<String>,
     pub owner: Option<String>,
     pub tags: Vec<String>,
     pub created: Option<u64>,
@@ -66,6 +68,25 @@ pub struct ProjectInfo {
 }
 
 impl GeoData {
+    /// Optional authored project display name.
+    pub fn display_name(&self) -> Option<&str> {
+        self.display_name.as_deref()
+    }
+    /// Set or clear the authored project display name.
+    pub fn set_display_name(&mut self, display_name: Option<String>) -> Result<()> {
+        self.display_name = validate_optional_project_text(display_name, "display name")?;
+        Ok(())
+    }
+    /// Optional free-text CRS declaration.
+    pub fn crs(&self) -> Option<&str> {
+        self.crs.as_deref()
+    }
+    /// Set or clear the free-text CRS declaration.
+    pub fn set_crs(&mut self, crs: Option<String>) -> Result<()> {
+        self.crs = validate_optional_project_text(crs, "CRS")?;
+        Ok(())
+    }
+
     /// The project owner recorded in the manifest, if set.
     pub fn owner(&self) -> Option<&str> {
         self.owner.as_deref()
@@ -226,11 +247,14 @@ impl GeoData {
 
     /// Save the whole project to a single `.pproj` file (written atomically).
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        validate_optional_project_text(self.display_name.clone(), "display name")?;
+        validate_optional_project_text(self.crs.clone(), "CRS")?;
         let mut sections: Vec<Section> = Vec::new();
         for name in self
             .surfaces
             .keys()
             .chain(self.structured_surfaces.keys())
+            .chain(self.tri_surfaces.keys())
             .chain(self.wells.keys())
             .chain(self.points.keys())
             .chain(self.polygons.keys())
@@ -245,11 +269,19 @@ impl GeoData {
         // Each element frames itself via the shared `Persistable` mapping (kind +
         // payload + version); the project overrides the section name with the
         // collection key and stamps its element tags.
-        for (name, s) in &self.surfaces {
-            sections.push(self.named_section(name, s.to_section()?));
-        }
-        for (name, s) in &self.structured_surfaces {
-            sections.push(self.named_section(name, s.to_section()?));
+        for name in &self.surface_order {
+            let section = if let Some(surface) = self.surfaces.get(name) {
+                surface.to_section()?
+            } else if let Some(surface) = self.structured_surfaces.get(name) {
+                surface.to_section()?
+            } else if let Some(surface) = self.tri_surfaces.get(name) {
+                surface.to_section()?
+            } else {
+                return Err(GeoError::NotFound(format!(
+                    "surface order references missing surface '{name}'"
+                )));
+            };
+            sections.push(self.named_section(name, section));
         }
         for (id, w) in &self.wells {
             sections.push(self.named_section(id, w.to_section()?));
@@ -286,6 +318,8 @@ impl GeoData {
         let now = now_secs();
         let app = json!({
             "petekio_version": env!("CARGO_PKG_VERSION"),
+            "display_name": self.display_name,
+            "crs": self.crs,
             "unit": self.unit,
             "owner": self.owner,
             "created": self.created.unwrap_or(now),
@@ -315,6 +349,12 @@ impl GeoData {
             .and_then(|v| serde_json::from_value(v).ok())
             .ok_or_else(|| GeoError::Parse(".pproj manifest missing/invalid unit".into()))?;
         let mut geo = GeoData::new(unit);
+        geo.set_display_name(project_text_from_json(
+            &app,
+            "display_name",
+            "display name",
+        )?)?;
+        geo.set_crs(project_text_from_json(&app, "crs", "CRS")?)?;
         geo.owner = app.get("owner").and_then(|v| v.as_str()).map(String::from);
         geo.tags = from_json(&app, "tags");
         geo.created = app.get("created").and_then(Value::as_u64);
@@ -331,42 +371,70 @@ impl GeoData {
             }
         }
 
-        let index: Vec<(String, String)> = r
+        let index: Vec<(String, String, u32)> = r
             .entries()
             .iter()
-            .map(|e| (e.kind.clone(), e.name.clone()))
+            .map(|e| (e.kind.clone(), e.name.clone(), e.version))
             .collect();
-        for (kind, name) in index {
+        for (kind, name, version) in index {
             // Kind strings come from the same `Persistable::KIND` the writer used.
             match kind.as_str() {
                 k if k == Surface::KIND => {
-                    if geo.structured_surfaces.contains_key(&name) {
+                    if geo.structured_surfaces.contains_key(&name)
+                        || geo.tri_surfaces.contains_key(&name)
+                    {
                         return Err(GeoError::Parse(format!(
                             ".pproj contains duplicate surface name '{name}' across surface kinds"
                         )));
                     }
-                    let s = Surface::from_payload(&r.read(&name)?.payload)?;
+                    let section = r.read(&name)?;
+                    let s = Surface::from_payload(version, &section.payload)?;
+                    restore_element_tags(&mut geo, &name, section.tags);
+                    geo.surface_order.push(name.clone());
                     geo.surfaces.insert(name, s);
                 }
                 k if k == StructuredMeshSurface::KIND => {
-                    if geo.surfaces.contains_key(&name) {
+                    if geo.surfaces.contains_key(&name) || geo.tri_surfaces.contains_key(&name) {
                         return Err(GeoError::Parse(format!(
                             ".pproj contains duplicate surface name '{name}' across surface kinds"
                         )));
                     }
-                    let s = StructuredMeshSurface::from_payload(&r.read(&name)?.payload)?;
+                    let section = r.read(&name)?;
+                    let s = StructuredMeshSurface::from_payload(version, &section.payload)?;
+                    restore_element_tags(&mut geo, &name, section.tags);
+                    geo.surface_order.push(name.clone());
                     geo.structured_surfaces.insert(name, s);
                 }
+                k if k == TriSurface::KIND => {
+                    if geo.surfaces.contains_key(&name)
+                        || geo.structured_surfaces.contains_key(&name)
+                    {
+                        return Err(GeoError::Parse(format!(
+                            ".pproj contains duplicate surface name '{name}' across surface kinds"
+                        )));
+                    }
+                    let section = r.read(&name)?;
+                    let s = TriSurface::from_payload(version, &section.payload)?;
+                    restore_element_tags(&mut geo, &name, section.tags);
+                    geo.surface_order.push(name.clone());
+                    geo.tri_surfaces.insert(name, s);
+                }
                 k if k == Well::KIND => {
-                    let w = Well::from_payload(&r.read(&name)?.payload)?;
+                    let section = r.read(&name)?;
+                    let w = Well::from_payload(version, &section.payload)?;
+                    restore_element_tags(&mut geo, &name, section.tags);
                     geo.wells.insert(name, w);
                 }
                 k if k == PointSet::KIND => {
-                    let p = PointSet::from_payload(&r.read(&name)?.payload)?;
+                    let section = r.read(&name)?;
+                    let p = PointSet::from_payload(version, &section.payload)?;
+                    restore_element_tags(&mut geo, &name, section.tags);
                     geo.points.insert(name, p);
                 }
                 k if k == PolygonSet::KIND => {
-                    let p = PolygonSet::from_payload(&r.read(&name)?.payload)?;
+                    let section = r.read(&name)?;
+                    let p = PolygonSet::from_payload(version, &section.payload)?;
+                    restore_element_tags(&mut geo, &name, section.tags);
                     geo.polygons.insert(name, p);
                 }
                 "model" => {
@@ -446,6 +514,8 @@ impl GeoData {
         let r = container::open(path.as_ref())?;
         let app = r.app();
         Ok(ProjectInfo {
+            display_name: project_text_from_json(app, "display_name", "display name")?,
+            crs: project_text_from_json(app, "crs", "CRS")?,
             owner: app.get("owner").and_then(|v| v.as_str()).map(String::from),
             tags: from_json(app, "tags"),
             created: app.get("created").and_then(Value::as_u64),
@@ -481,6 +551,28 @@ fn validate_asset_name(name: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn validate_optional_project_text(value: Option<String>, field: &str) -> Result<Option<String>> {
+    if value.as_deref().is_some_and(|text| text.trim().is_empty()) {
+        return Err(GeoError::Parse(format!(
+            "project {field} must be non-empty after trimming or null"
+        )));
+    }
+    Ok(value)
+}
+
+fn project_text_from_json(app: &Value, key: &str, field: &str) -> Result<Option<String>> {
+    let value = match app.get(key) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()),
+        Some(_) => {
+            return Err(GeoError::Parse(format!(
+                ".pproj manifest {field} must be a string or null"
+            )))
+        }
+    };
+    validate_optional_project_text(value, field)
 }
 
 fn validate_new_asset(kind: &str, envelope: &[u8], version: u32) -> Result<()> {
@@ -561,17 +653,26 @@ fn decode_asset_payload(payload: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
 
 /// The element-schema (`data_version`) compatibility gate. A file newer than
 /// this build is refused with a clear message; an older one is routed through a
-/// migration (none needed at v1 — the hook is here so a future bump lands a
-/// `data_version < N` decoder instead of a hard break).
+/// migration. Element payload routing is handled by each `Persistable`
+/// implementation so positional bincode v1 data is decoded by its exact DTO.
 fn migrate_gate(file_version: u32) -> Result<()> {
     if file_version > DATA_VERSION {
         return Err(GeoError::Parse(format!(
             ".pproj element schema v{file_version} is newer than this petekIO (reads ≤ v{DATA_VERSION}) — upgrade petekIO"
         )));
     }
-    // file_version < DATA_VERSION → migrate here (per-version decoders). At v1
-    // there is nothing older, so current-version files pass straight through.
+    if file_version == 0 {
+        return Err(GeoError::Parse(
+            ".pproj element schema v0 is unsupported (reads v1 and v2)".into(),
+        ));
+    }
     Ok(())
+}
+
+fn restore_element_tags(geo: &mut GeoData, name: &str, tags: Vec<String>) {
+    if !tags.is_empty() {
+        geo.element_tags.insert(name.to_string(), tags);
+    }
 }
 
 fn from_json<T: serde::de::DeserializeOwned + Default>(app: &Value, key: &str) -> T {
@@ -608,5 +709,66 @@ mod tests {
         container::write(&p, &json!({"unit": "Feet"}), DATA_VERSION, &[]).unwrap();
         assert_eq!(GeoData::open(&p).unwrap().unit, Unit::Feet);
         std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn project_display_metadata_round_trips_without_path_guessing() {
+        let p = tmp("display_metadata");
+        let mut geo = GeoData::new(Unit::Metres);
+        geo.set_display_name(Some("North Sea Demo".into())).unwrap();
+        geo.set_crs(Some("EPSG:23031 / local datum note".into()))
+            .unwrap();
+        geo.save(&p).unwrap();
+
+        let info = GeoData::inspect(&p).unwrap();
+        assert_eq!(info.display_name.as_deref(), Some("North Sea Demo"));
+        assert_eq!(info.crs.as_deref(), Some("EPSG:23031 / local datum note"));
+        assert_eq!(info.unit.as_deref(), Some("Metres"));
+
+        let opened = GeoData::open(&p).unwrap();
+        assert_eq!(opened.display_name(), Some("North Sea Demo"));
+        assert_eq!(opened.crs(), Some("EPSG:23031 / local datum note"));
+        assert_eq!(opened.unit, Unit::Metres);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn v1_manifest_without_display_metadata_remains_valid() {
+        let p = tmp("legacy_manifest");
+        container::write(&p, &json!({"unit": "Feet"}), 1, &[]).unwrap();
+        let opened = GeoData::open(&p).unwrap();
+        assert_eq!(opened.display_name(), None);
+        assert_eq!(opened.crs(), None);
+        assert_eq!(opened.unit, Unit::Feet);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn project_display_metadata_rejects_whitespace_only_strings() {
+        let mut geo = GeoData::new(Unit::Metres);
+        assert!(geo.set_display_name(Some(" \t".into())).is_err());
+        assert!(geo.set_crs(Some("\n".into())).is_err());
+        geo.set_display_name(Some(" Authored title ".into()))
+            .unwrap();
+        geo.set_crs(Some(" Local CRS ".into())).unwrap();
+        assert_eq!(geo.display_name(), Some(" Authored title "));
+        assert_eq!(geo.crs(), Some(" Local CRS "));
+    }
+
+    #[test]
+    fn malformed_project_display_metadata_types_are_rejected() {
+        for (tag, app) in [
+            (
+                "bad_title_type",
+                json!({"unit": "Metres", "display_name": 7}),
+            ),
+            ("bad_crs_type", json!({"unit": "Metres", "crs": ["EPSG"]})),
+        ] {
+            let p = tmp(tag);
+            container::write(&p, &app, DATA_VERSION, &[]).unwrap();
+            assert!(GeoData::open(&p).is_err());
+            assert!(GeoData::inspect(&p).is_err());
+            std::fs::remove_file(&p).ok();
+        }
     }
 }

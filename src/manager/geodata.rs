@@ -12,7 +12,7 @@
 //! the sibling [`loaders`](super::loaders) module.
 
 use crate::core::{
-    PointSet, PolygonSet, StructuredMeshSurface, Surface, SurfaceIntersection, Well,
+    PointSet, PolygonSet, StructuredMeshSurface, Surface, SurfaceIntersection, TriSurface, Well,
 };
 use crate::foundation::{GeoError, Result, Unit};
 use crate::manager::wells_view::WellsView;
@@ -23,11 +23,19 @@ use indexmap::IndexMap;
 pub struct GeoData {
     /// The project's length unit; surfaces/wells/points/polygons share it.
     pub unit: Unit,
+    /// Optional user-facing project title. It is deliberately not inferred
+    /// from the file path so save/load never changes author intent.
+    pub(crate) display_name: Option<String>,
+    /// Optional free-text coordinate reference system declaration.
+    pub(crate) crs: Option<String>,
     pub(crate) surfaces: IndexMap<String, Surface>,
     /// Explicit-node structured surfaces. Kept separate so the existing Rust
     /// regular-surface API remains source-compatible; names are nevertheless
     /// unique across both surface collections.
     pub(crate) structured_surfaces: IndexMap<String, StructuredMeshSurface>,
+    pub(crate) tri_surfaces: IndexMap<String, TriSurface>,
+    /// Cross-kind surface order used by project inventory and persistence.
+    pub(crate) surface_order: Vec<String>,
     pub(crate) wells: IndexMap<String, Well>,
     pub(crate) points: IndexMap<String, PointSet>,
     pub(crate) polygons: IndexMap<String, PolygonSet>,
@@ -64,6 +72,41 @@ pub struct GeoData {
     pub(crate) curve_aliases: Option<crate::analysis::NameMap>,
 }
 
+enum ProjectSurfaceRef<'a> {
+    Regular(&'a Surface),
+    Structured(&'a StructuredMeshSurface),
+    Tri(&'a TriSurface),
+}
+
+#[derive(PartialEq)]
+struct SurfaceGeometrySignature {
+    nodes: Vec<[f64; 2]>,
+    triangles: Vec<[u32; 3]>,
+    labels: Vec<Option<crate::WalkLabel>>,
+}
+
+impl ProjectSurfaceRef<'_> {
+    fn geometry_signature(&self) -> Result<SurfaceGeometrySignature> {
+        let owned;
+        let tri = match self {
+            ProjectSurfaceRef::Regular(surface) => {
+                owned = surface.to_tri_surface()?;
+                &owned
+            }
+            ProjectSurfaceRef::Structured(surface) => {
+                owned = surface.to_tri_surface()?;
+                &owned
+            }
+            ProjectSurfaceRef::Tri(surface) => surface,
+        };
+        Ok(SurfaceGeometrySignature {
+            nodes: tri.shell().nodes().to_vec(),
+            triangles: tri.shell().triangles().to_vec(),
+            labels: tri.shell().labels().to_vec(),
+        })
+    }
+}
+
 /// One persisted formation-pick row aggregated from a well bore.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WellTopRow {
@@ -77,8 +120,12 @@ impl GeoData {
     pub fn new(unit: Unit) -> GeoData {
         GeoData {
             unit,
+            display_name: None,
+            crs: None,
             surfaces: IndexMap::new(),
             structured_surfaces: IndexMap::new(),
+            tri_surfaces: IndexMap::new(),
+            surface_order: Vec::new(),
             wells: IndexMap::new(),
             points: IndexMap::new(),
             polygons: IndexMap::new(),
@@ -172,12 +219,76 @@ impl GeoData {
         self.structured_surfaces.get(name)
     }
 
+    /// The triangulated surface stored under `name`, or `None`.
+    pub fn tri_surface(&self, name: &str) -> Option<&TriSurface> {
+        self.tri_surfaces.get(name)
+    }
+
+    /// Explicitly replace an existing project surface with a detached regular surface.
+    pub fn replace_surface(&mut self, name: &str, surface: Surface) -> Result<&Surface> {
+        self.check_replacement_geometry(name, ProjectSurfaceRef::Regular(&surface))?;
+        self.remove_surface_value(name);
+        self.surfaces.insert(name.to_string(), surface);
+        Ok(self.surfaces.get(name).expect("just inserted"))
+    }
+
+    /// Explicitly replace an existing project surface with a detached structured surface.
+    pub fn replace_structured_surface(
+        &mut self,
+        name: &str,
+        surface: StructuredMeshSurface,
+    ) -> Result<&StructuredMeshSurface> {
+        self.check_replacement_geometry(name, ProjectSurfaceRef::Structured(&surface))?;
+        self.remove_surface_value(name);
+        self.structured_surfaces.insert(name.to_string(), surface);
+        Ok(self.structured_surfaces.get(name).expect("just inserted"))
+    }
+
+    /// Explicitly replace an existing project surface with a detached triangulated surface.
+    pub fn replace_tri_surface(&mut self, name: &str, surface: TriSurface) -> Result<&TriSurface> {
+        self.check_replacement_geometry(name, ProjectSurfaceRef::Tri(&surface))?;
+        self.remove_surface_value(name);
+        self.tri_surfaces.insert(name.to_string(), surface);
+        Ok(self.tri_surfaces.get(name).expect("just inserted"))
+    }
+
+    fn check_replacement_geometry(
+        &self,
+        name: &str,
+        replacement: ProjectSurfaceRef<'_>,
+    ) -> Result<()> {
+        let current = if let Some(surface) = self.surfaces.get(name) {
+            ProjectSurfaceRef::Regular(surface)
+        } else if let Some(surface) = self.structured_surfaces.get(name) {
+            ProjectSurfaceRef::Structured(surface)
+        } else if let Some(surface) = self.tri_surfaces.get(name) {
+            ProjectSurfaceRef::Tri(surface)
+        } else {
+            return Err(GeoError::NotFound(format!("surface '{name}'")));
+        };
+        if current.geometry_signature()? != replacement.geometry_signature()? {
+            return Err(GeoError::GeometryMismatch(format!(
+                "replace_surface('{name}'): replacement geometry/topology differs from the stored surface"
+            )));
+        }
+        Ok(())
+    }
+
+    fn remove_surface_value(&mut self, name: &str) {
+        self.surfaces.shift_remove(name);
+        self.structured_surfaces.shift_remove(name);
+        self.tri_surfaces.shift_remove(name);
+    }
+
     /// Rename a stored surface.
     pub fn rename_surface(&mut self, old: &str, new: &str) -> Result<()> {
         if old == new {
             return Ok(());
         }
-        if self.surfaces.contains_key(new) || self.structured_surfaces.contains_key(new) {
+        if self.surfaces.contains_key(new)
+            || self.structured_surfaces.contains_key(new)
+            || self.tri_surfaces.contains_key(new)
+        {
             return Err(GeoError::Parse(format!(
                 "rename_surface: destination '{new}' already exists"
             )));
@@ -186,8 +297,17 @@ impl GeoData {
             rename_key(&mut self.surfaces, old, new, "surface")?;
         } else if self.structured_surfaces.contains_key(old) {
             rename_key(&mut self.structured_surfaces, old, new, "surface")?;
+        } else if self.tri_surfaces.contains_key(old) {
+            rename_key(&mut self.tri_surfaces, old, new, "surface")?;
         } else {
             return Err(GeoError::NotFound(format!("surface '{old}'")));
+        }
+        if let Some(name) = self
+            .surface_order
+            .iter_mut()
+            .find(|name| name.as_str() == old)
+        {
+            *name = new.to_string();
         }
         rename_element_tags(&mut self.element_tags, old, new);
         Ok(())
@@ -196,8 +316,10 @@ impl GeoData {
     /// Delete a stored surface. Returns whether anything was removed.
     pub fn delete_surface(&mut self, name: &str) -> bool {
         let removed = self.surfaces.shift_remove(name).is_some()
-            || self.structured_surfaces.shift_remove(name).is_some();
+            || self.structured_surfaces.shift_remove(name).is_some()
+            || self.tri_surfaces.shift_remove(name).is_some();
         if removed {
+            self.surface_order.retain(|stored| stored != name);
             self.element_tags.shift_remove(name);
         }
         removed
@@ -395,6 +517,11 @@ impl GeoData {
             .map(|(k, v)| (k.as_str(), v))
     }
 
+    /// All triangulated surfaces with names, in insertion order.
+    pub fn tri_surfaces_named(&self) -> impl Iterator<Item = (&str, &TriSurface)> {
+        self.tri_surfaces.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
     /// All polygon sets with their names, in insertion order.
     pub fn polygons_named(&self) -> impl Iterator<Item = (&str, &PolygonSet)> {
         self.polygons.iter().map(|(k, v)| (k.as_str(), v))
@@ -446,7 +573,9 @@ fn rename_element_tags(tags: &mut IndexMap<String, Vec<String>>, old: &str, new:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::GridGeometry;
     use approx::assert_relative_eq;
+    use ndarray::Array2;
 
     const IRAP: &str = "tests/fixtures/simple.irap";
     const WELL_DIR: &str = "tests/fixtures/wells/15_9-A1";
@@ -472,6 +601,54 @@ mod tests {
         assert!(geo.surface("base").is_some());
         assert!(geo.surface("missing").is_none()); // miss → None
         assert_eq!(geo.surfaces().count(), 2);
+    }
+
+    #[test]
+    fn explicit_surface_replacement_preserves_geometry_and_allows_level_changes() {
+        let mut geo = GeoData::new(Unit::Metres);
+        geo.load_surface("top", IRAP).unwrap();
+        let mut detached = geo.surface("top").unwrap().clone();
+        detached
+            .set_attr(
+                "facies",
+                Array2::from_elem((detached.geom.ncol, detached.geom.nrow), 1.0),
+            )
+            .unwrap();
+        assert!(geo.surface("top").unwrap().attr("facies").is_none());
+        geo.replace_surface("top", detached).unwrap();
+        assert!(geo.surface("top").unwrap().attr("facies").is_some());
+
+        let structured = geo.surface("top").unwrap().to_structured_mesh().unwrap();
+        geo.replace_structured_surface("top", structured).unwrap();
+        assert!(geo.surface("top").is_none());
+        assert!(geo.structured_surface("top").is_some());
+
+        let tri = geo
+            .structured_surface("top")
+            .unwrap()
+            .to_tri_surface()
+            .unwrap();
+        geo.replace_tri_surface("top", tri).unwrap();
+        assert!(geo.structured_surface("top").is_none());
+        assert!(geo.tri_surface("top").is_some());
+
+        let wrong = Surface::constant(
+            GridGeometry {
+                xori: 0.0,
+                yori: 0.0,
+                xinc: 1.0,
+                yinc: 1.0,
+                ncol: 2,
+                nrow: 2,
+                rotation_deg: 0.0,
+                yflip: false,
+            },
+            1.0,
+        );
+        assert!(matches!(
+            geo.replace_surface("top", wrong),
+            Err(GeoError::GeometryMismatch(_))
+        ));
     }
 
     #[test]

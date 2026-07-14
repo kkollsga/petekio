@@ -171,6 +171,9 @@ def test_surface_volumetrics():
 def test_surface_resample_rotated_identity_uses_world_frame():
     # The committed IRAP fixture is rotated 30 degrees. Identity resampling and
     # point sampling now share petekTools' exact world↔intrinsic transform.
+    doc = petekio.Surface.resample.__doc__
+    assert "rotation and `yflip` are honoured independently" in doc
+    assert "axis-aligned kernel only" not in doc
     s = petekio.Surface.load_irap_classic(IRAP)
     assert s.geometry.rotation_deg == 30.0
     resampled = s.resample(s.geometry)

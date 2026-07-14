@@ -179,7 +179,8 @@ impl Surface {
 
     /// Resample the primary layer onto `target` (bilinear). Kernel NaN-corner
     /// policy (nearest corner NaN → NaN, else renormalized over finite corners).
-    /// Raises on a rotated source/target geometry (axis-aligned kernel only).
+    /// Source and target rotation and `yflip` are honoured independently through
+    /// the exact world-to-intrinsic lattice transforms.
     fn resample(&self, py: Python<'_>, target: &GridGeometry) -> PyResult<Surface> {
         let t = target.inner.clone();
         self.with(py, |s| py.detach(|| s.resample(&t)))?

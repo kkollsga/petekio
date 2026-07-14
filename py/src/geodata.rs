@@ -8,12 +8,15 @@
 
 use crate::points::{PointSet, PolygonSet};
 use crate::stats::Stats;
+use crate::structured_surface::StructuredMeshSurface;
 use crate::surface::Surface;
+use crate::tri_surface::TriSurface;
 use crate::well::Well;
 use crate::{parse_unit, to_pyerr, unit_label};
 use petekio::GeoData as RsGeoData;
 use pyo3::exceptions::{PyAttributeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyAny;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 /// A load-once subsurface project under one declared length unit.
@@ -52,6 +55,23 @@ impl GeoData {
         Ok(Surface::view(slf.clone().unbind(), name.to_string()))
     }
 
+    /// Load an EarthVision grid into the shared surface namespace as a
+    /// null-preserving structured mesh surface.
+    fn load_structured_surface(
+        slf: Bound<'_, Self>,
+        name: &str,
+        path: &str,
+    ) -> PyResult<StructuredMeshSurface> {
+        slf.borrow_mut()
+            .inner
+            .load_structured_surface(name, path)
+            .map_err(to_pyerr)?;
+        Ok(StructuredMeshSurface::view(
+            slf.clone().unbind(),
+            name.to_string(),
+        ))
+    }
+
     /// Load a point set from `path` (extension-dispatched) under `name`,
     /// returning a view.
     fn load_points(slf: Bound<'_, Self>, name: &str, path: &str) -> PyResult<PointSet> {
@@ -88,12 +108,78 @@ impl GeoData {
     }
 
     /// The surface stored under `name` (view), or `None`.
-    fn surface(slf: Bound<'_, Self>, name: &str) -> Option<Surface> {
-        slf.borrow()
-            .inner
-            .surface(name)
-            .is_some()
-            .then(|| Surface::view(slf.clone().unbind(), name.to_string()))
+    fn surface(slf: Bound<'_, Self>, py: Python<'_>, name: &str) -> PyResult<Option<Py<PyAny>>> {
+        let geo = slf.borrow();
+        let regular = geo.inner.surface(name).is_some();
+        let structured = geo.inner.structured_surface(name).is_some();
+        let tri = geo.inner.tri_surface(name).cloned();
+        drop(geo);
+        if regular {
+            return Ok(Some(
+                Surface::view(slf.clone().unbind(), name.to_string())
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            ));
+        }
+        if structured {
+            return Ok(Some(
+                StructuredMeshSurface::view(slf.clone().unbind(), name.to_string())
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            ));
+        }
+        if let Some(tri) = tri {
+            return Ok(Some(
+                TriSurface::wrap(tri)
+                    .named(Some(crate::leaf_name(name)))
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            ));
+        }
+        Ok(None)
+    }
+
+    /// Deliberately write a detached regular/structured/triangulated surface
+    /// back under an existing project name. Geometry/topology must be unchanged.
+    fn replace_surface(
+        slf: Bound<'_, Self>,
+        py: Python<'_>,
+        name: &str,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        if let Ok(surface) = value.extract::<PyRef<'_, Surface>>() {
+            let detached = surface.with(py, Clone::clone)?;
+            return slf
+                .borrow_mut()
+                .inner
+                .replace_surface(name, detached)
+                .map(drop)
+                .map_err(to_pyerr);
+        }
+        if let Ok(surface) = value.extract::<PyRef<'_, StructuredMeshSurface>>() {
+            let detached = surface.with(py, Clone::clone)?;
+            return slf
+                .borrow_mut()
+                .inner
+                .replace_structured_surface(name, detached)
+                .map(drop)
+                .map_err(to_pyerr);
+        }
+        if let Ok(surface) = value.extract::<PyRef<'_, TriSurface>>() {
+            let detached = surface.with(Clone::clone);
+            return slf
+                .borrow_mut()
+                .inner
+                .replace_tri_surface(name, detached)
+                .map(drop)
+                .map_err(to_pyerr);
+        }
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "replace_surface value must be Surface, StructuredMeshSurface, or TriSurface",
+        ))
     }
 
     /// Rename a stored surface.
@@ -142,6 +228,26 @@ impl GeoData {
     /// Delete a stored polygon set. Returns whether anything was removed.
     fn delete_polygons(&mut self, name: &str) -> bool {
         self.inner.delete_polygons(name)
+    }
+
+    /// Distinct persisted formation-top names across every well/bore.
+    fn well_top_names(&self) -> Vec<String> {
+        self.inner.well_top_names()
+    }
+
+    /// Persisted picks for one horizon as `(well, bore, md, xyz-or-None)` rows.
+    #[allow(clippy::type_complexity)]
+    fn well_top_set(&self, name: &str) -> Vec<(String, String, f64, Option<(f64, f64, f64)>)> {
+        self.inner
+            .well_top_set(name)
+            .into_iter()
+            .map(|row| (row.well, row.bore, row.md, row.xyz.map(|p| (p.x, p.y, p.z))))
+            .collect()
+    }
+
+    /// Delete a persisted formation horizon globally; returns picks removed.
+    fn delete_well_top(&mut self, name: &str) -> usize {
+        self.inner.delete_well_top(name)
     }
 
     /// Load a well from `files` (a per-well directory or single file) under
@@ -310,17 +416,51 @@ impl GeoData {
     }
 
     /// All surfaces in insertion order, as cheap views (no grid copy).
-    fn surfaces(slf: Bound<'_, Self>) -> Vec<Surface> {
-        let names: Vec<String> = slf
-            .borrow()
+    fn surfaces(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        let geo = slf.borrow();
+        let regular: Vec<String> = geo
             .inner
             .surfaces_named()
-            .map(|(n, _)| n.to_string())
+            .map(|(name, _)| name.to_string())
             .collect();
-        names
-            .into_iter()
-            .map(|name| Surface::view(slf.clone().unbind(), name))
-            .collect()
+        let structured: Vec<String> = geo
+            .inner
+            .structured_surfaces_named()
+            .map(|(name, _)| name.to_string())
+            .collect();
+        let tri: Vec<(String, petekio::TriSurface)> = geo
+            .inner
+            .tri_surfaces_named()
+            .map(|(name, surface)| (name.to_string(), surface.clone()))
+            .collect();
+        drop(geo);
+        let mut out = Vec::with_capacity(regular.len() + structured.len() + tri.len());
+        for name in regular {
+            out.push(
+                Surface::view(slf.clone().unbind(), name)
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            );
+        }
+        for name in structured {
+            out.push(
+                StructuredMeshSurface::view(slf.clone().unbind(), name)
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            );
+        }
+        for (name, surface) in tri {
+            out.push(
+                TriSurface::wrap(surface)
+                    .named(Some(crate::leaf_name(&name)))
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind(),
+            );
+        }
+        Ok(out)
     }
 
     /// A broadcastable, filterable view over all wells (insertion order).
@@ -358,6 +498,8 @@ impl GeoData {
         let info = py.detach(|| RsGeoData::inspect(path)).map_err(to_pyerr)?;
         let d = PyDict::new(py);
         d.set_item("owner", info.owner)?;
+        d.set_item("display_name", info.display_name)?;
+        d.set_item("crs", info.crs)?;
         d.set_item("tags", info.tags)?;
         d.set_item("created", info.created)?;
         d.set_item("modified", info.modified)?;
@@ -392,6 +534,26 @@ impl GeoData {
     #[getter]
     fn owner(&self) -> Option<String> {
         self.inner.owner().map(String::from)
+    }
+
+    /// Optional authored project title (never inferred from a path).
+    #[getter]
+    fn display_name(&self) -> Option<String> {
+        self.inner.display_name().map(String::from)
+    }
+    #[setter]
+    fn set_display_name(&mut self, value: Option<String>) -> PyResult<()> {
+        self.inner.set_display_name(value).map_err(to_pyerr)
+    }
+
+    /// Optional free-text coordinate reference system declaration.
+    #[getter]
+    fn crs(&self) -> Option<String> {
+        self.inner.crs().map(String::from)
+    }
+    #[setter]
+    fn set_crs(&mut self, value: Option<String>) -> PyResult<()> {
+        self.inner.set_crs(value).map_err(to_pyerr)
     }
     fn set_owner(&mut self, owner: &str) {
         self.inner.set_owner(owner);
@@ -430,6 +592,63 @@ impl GeoData {
             .model_section(name)
             .map(|(v, b)| (v, PyBytes::new(py, &b)))
     }
+
+    /// Add a generic provider-owned project asset. `envelope` and `data` are
+    /// retained exactly; existing physical names are never overwritten.
+    fn add_asset(
+        &mut self,
+        name: &str,
+        kind: &str,
+        envelope: &[u8],
+        tags: Vec<String>,
+        version: u32,
+        data: &[u8],
+    ) -> PyResult<()> {
+        self.inner
+            .add_asset(name, kind, envelope.to_vec(), tags, version, data.to_vec())
+            .map_err(to_pyerr)
+    }
+
+    /// Replace an existing generic project asset; missing names are an error.
+    fn replace_asset(
+        &mut self,
+        name: &str,
+        kind: &str,
+        envelope: &[u8],
+        tags: Vec<String>,
+        version: u32,
+        data: &[u8],
+    ) -> PyResult<()> {
+        self.inner
+            .replace_asset(name, kind, envelope.to_vec(), tags, version, data.to_vec())
+            .map_err(to_pyerr)
+    }
+
+    fn rename_asset(&mut self, old: &str, new: &str) -> PyResult<()> {
+        self.inner.rename_asset(old, new).map_err(to_pyerr)
+    }
+
+    fn delete_asset(&mut self, name: &str) -> bool {
+        self.inner.delete_asset(name)
+    }
+
+    fn asset_names(&self) -> Vec<String> {
+        self.inner.asset_names()
+    }
+
+    /// Snapshot one generic asset as plain fields, or `None`.
+    fn asset<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(asset) = self.inner.asset(name) else {
+            return Ok(None);
+        };
+        let out = PyDict::new(py);
+        out.set_item("kind", asset.kind)?;
+        out.set_item("envelope", PyBytes::new(py, &asset.envelope))?;
+        out.set_item("version", asset.version)?;
+        out.set_item("tags", asset.tags)?;
+        out.set_item("bytes", PyBytes::new(py, &asset.bytes))?;
+        Ok(Some(out))
+    }
 }
 
 /// A lightweight, broadcastable, filterable view over a project's wells.
@@ -454,6 +673,41 @@ impl WellsView {
             current_top,
         }
     }
+
+    fn evaluate_intersections(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+        all: bool,
+    ) -> PyResult<crate::intersection::WellIntersectionSet> {
+        let full_scope = {
+            let geo = self.geo.borrow(py);
+            let all_ids: Vec<&str> = geo.inner.wells_named().map(|(id, _)| id).collect();
+            all_ids.len() == self.ids.len()
+                && all_ids
+                    .iter()
+                    .zip(&self.ids)
+                    .all(|(actual, selected)| *actual == selected)
+        };
+        let (mut result, surface_name) = crate::intersection::with_surface(py, surface, |s| {
+            let geo = self.geo.borrow(py);
+            let view = geo.inner.wells_by_ids(&self.ids);
+            if all {
+                view.intersections(s, tolerance)
+            } else {
+                view.intersection(s, tolerance)
+            }
+        })?;
+        for hit in &mut result.hits {
+            hit.surface = surface_name.clone();
+        }
+        Ok(crate::intersection::WellIntersectionSet::new(
+            result,
+            self.geo.clone_ref(py),
+            full_scope,
+        ))
+    }
 }
 
 #[pymethods]
@@ -468,6 +722,29 @@ impl WellsView {
 
     fn is_empty(&self) -> bool {
         self.ids.is_empty()
+    }
+
+    /// One hit per bore across the view; no-hit and failed bores remain in the
+    /// returned diagnostics rather than aborting other wells.
+    #[pyo3(signature = (surface, tolerance=1e-3))]
+    fn intersection(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+    ) -> PyResult<crate::intersection::WellIntersectionSet> {
+        self.evaluate_intersections(py, surface, tolerance, false)
+    }
+
+    /// All crossings per bore across the view.
+    #[pyo3(signature = (surface, tolerance=1e-3))]
+    fn intersections(
+        &self,
+        py: Python<'_>,
+        surface: &Bound<'_, PyAny>,
+        tolerance: f64,
+    ) -> PyResult<crate::intersection::WellIntersectionSet> {
+        self.evaluate_intersections(py, surface, tolerance, true)
     }
 
     /// The wells in this view as `Well` objects (insertion order).
@@ -553,7 +830,7 @@ impl WellsView {
     /// Arguments mirror `Well.view` (`spec=ViewSpec`/`settings=ViewSettings` or
     /// the legacy per-call kwargs; spec XOR kwargs, loud on both). Returns the
     /// `LogSession`.
-    #[pyo3(signature = (spec=None, settings=None, curves=None, tops=None, flatten_default=None, phie_cutoff=None, flags=None, serve=None, save=None))]
+    #[pyo3(signature = (spec=None, settings=None, curves=None, tops=None, flatten_default=None, phie_cutoff=None, flags=None, serve=None, save=None, *, template=None))]
     #[allow(clippy::too_many_arguments)]
     fn view(
         &self,
@@ -567,6 +844,7 @@ impl WellsView {
         flags: Option<Vec<String>>,
         serve: Option<bool>,
         save: Option<String>,
+        template: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let what_set = curves.is_some()
             || tops.is_some()
@@ -591,6 +869,7 @@ impl WellsView {
             list.into_any(),
             spec,
             settings,
+            template,
             tops,
             flatten_default,
             phie_cutoff,

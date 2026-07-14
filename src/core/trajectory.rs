@@ -89,6 +89,12 @@ pub struct Trajectory {
 const STEER_STEP: f64 = 30.0;
 
 impl Trajectory {
+    /// Original survey/positioned-path station MDs. Kept crate-private so
+    /// adaptive geometry operations preserve station boundaries without
+    /// exposing persistence internals.
+    pub(crate) fn md_breaks(&self) -> Vec<f64> {
+        self.nodes.iter().map(|node| node.md).collect()
+    }
     /// Normalize a survey input into a positioned path, accumulating from the
     /// wellhead `head` and datum `kb`. `Err` on empty or non-increasing input.
     pub fn from_input(input: TrajectoryInput, head: (f64, f64), kb: f64) -> Result<Self> {

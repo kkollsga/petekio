@@ -13,7 +13,7 @@ use serde::Serialize;
 /// On-disk element-DTO schema version. Bump on any element struct-layout change;
 /// a bump ships a migration. Distinct from the container magic's hard format
 /// version and from petekSim's per-`model/*`-section version.
-pub const DATA_VERSION: u32 = 1;
+pub const DATA_VERSION: u32 = 2;
 
 fn opts() -> impl bincode::Options {
     bincode::options()

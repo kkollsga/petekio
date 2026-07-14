@@ -49,7 +49,7 @@ pub enum GeometryEdge {
 
 impl GridMethod {
     /// Map onto petekTools' identically-named method enum at the kernel seam.
-    fn to_petektools(self) -> PtGridMethod {
+    pub(crate) fn to_petektools(self) -> PtGridMethod {
         match self {
             GridMethod::Nearest => PtGridMethod::Nearest,
             GridMethod::InverseDistance => PtGridMethod::InverseDistance,
@@ -157,9 +157,11 @@ impl PointSet {
         Ok(out)
     }
 
-    /// Load scattered points from an EarthVision grid ASCII file
+    /// Legacy finite-node compatibility view of an EarthVision grid ASCII file
     /// (`.EarthVisionGrid`) — `x y z` nodes with a directive header; null nodes
-    /// dropped (see [`crate::io::earthvision`]). Petrel `column`/`row` fields,
+    /// dropped (see [`crate::io::earthvision`]). New code should use
+    /// [`StructuredMeshSurface::load_earthvision_grid`](crate::StructuredMeshSurface::load_earthvision_grid).
+    /// Petrel `column`/`row` fields,
     /// when present, are preserved as attributes so geometry inference can use
     /// the exported grid topology instead of guessing from XY alone.
     pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<PointSet> {
@@ -563,7 +565,7 @@ fn topology_occupied_edge_from_points(
         .or_else(|_| convex_hull_from_node_arrays(&x, &y))
 }
 
-fn structured_edge(
+pub(crate) fn structured_edge(
     x: &Array2<f64>,
     y: &Array2<f64>,
     values: Option<&Array2<f64>>,
@@ -1157,6 +1159,45 @@ mod tests {
             mesh.nominal_geometry().is_none(),
             "a curvilinear mesh must not advertise a regular nominal geometry"
         );
+    }
+
+    #[test]
+    fn curvilinear_structured_edge_modes_remain_distinct() {
+        // Curvilinear L-shaped topology: strict regular inference must fail,
+        // while the exact structured representation supports both the concave
+        // occupied footprint and its broader convex envelope.
+        let mut coords = Vec::new();
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        for j in 0..6 {
+            for i in 0..6 {
+                if i > 2 && j > 2 {
+                    continue;
+                }
+                let x = 1000.0 + 40.0 * i as f64 * (1.0 + 0.055 * i as f64) + 0.8 * (i * j) as f64;
+                let y = 2000.0 + 35.0 * j as f64 * (1.0 + 0.045 * j as f64) + 0.35 * (i * j) as f64;
+                coords.push([x, y, 100.0 + (i + j) as f64]);
+                columns.push((i + 1) as f64);
+                rows.push((j + 1) as f64);
+            }
+        }
+        let mut attrs = IndexMap::new();
+        attrs.insert("column".to_string(), columns);
+        attrs.insert("row".to_string(), rows);
+        let points = PointSet::from_parts(coords, attrs);
+
+        assert!(points
+            .infer_geometry_with_edge(1e-3, GeometryEdge::ConvexHull)
+            .is_err());
+        let occupied = points
+            .to_structured_surface(1e-3, GeometryEdge::Occupied)
+            .unwrap();
+        let hull = points
+            .to_structured_surface(1e-3, GeometryEdge::ConvexHull)
+            .unwrap();
+        assert!(occupied.edge().area() < hull.edge().area());
+        approx::assert_relative_eq!(occupied.edge().area(), 33_384.96, epsilon = 1e-8);
+        approx::assert_relative_eq!(hull.edge().area(), 45_348.642_5, epsilon = 1e-8);
     }
 
     #[test]

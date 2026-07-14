@@ -30,16 +30,36 @@ ongrid = top.resample(grid_geom) # bilinear onto another GridGeometry
 
 Operations return **new** surfaces; the stored surface is unchanged.
 
+### Attributes, interpretation, and hole repair
+
+```python
+thick = top.thickness(base, clamp_zero=True)  # base - top; unbound form also works
+top.thickness = thick                         # typed attribute assignment
+top.attr["thickness"]                         # promote the lane as a Surface
+
+smoothed = top.smooth(radius=1)               # preserves the original NaN mask
+dip = top.dip_angle()                         # degrees from horizontal
+azimuth = top.dip_azimuth()                   # down-dip clockwise from North
+filled = top.extrapolate("nearest")            # also "idw" / "min_curvature"
+```
+
+An assigned lane must be another `Surface` with identical complete geometry.
+Assignment is copy-on-write for project views and does not shadow the instance
+`top.thickness(base)` method. Interpretation and extrapolation return detached,
+same-geometry surfaces containing only the derived primary lane. Extrapolation
+changes only original NaNs and uses finite nodes as controls.
+
 ## Points
 
 A `PointSet` is scattered `(x, y, z)` with optional per-point attributes. Load
 GeoJSON, CSV (with `x`/`y`/`z` columns; other numeric columns become
-attributes), EarthVision/Petrel point grids, or RMS/IRAP plain `X Y Z`.
+attributes), the deprecated finite-node view of EarthVision/Petrel grids, or
+RMS/IRAP plain `X Y Z`.
 
 ```python
 pts = geo.load_points("picks", "picks.geojson")
 pts.bbox
-geom = pts.infer_geometry()                    # GridGeometry, or TriSurface fallback
+geom = pts.infer_geometry()                    # GridGeometry | StructuredShell | MeshShell
 grid = pts.to_surface(grid_geom)               # or grid scattered points onto an explicit model grid
 mesh = pts.to_structured_surface()             # topology-bearing points, explicit shifted XY nodes
 ```
@@ -71,19 +91,31 @@ row/column topology while preserving each node's actual XY coordinate. This is
 the right home for Petrel surfaces that are locally shifted around faults.
 A mesh whose nodes do not sit on any regular lattice — varying cell size, a cell
 angle away from 90° — is **curvilinear**. `infer_geometry(...)` refuses to invent a
-regular lattice and returns a `TriSurface` over the original points instead.
-`to_structured_surface(...)` remains its exact row/column representation when
-topology attributes are present.
+regular lattice and returns geometry only: `StructuredShell` when explicit
+topology validates, otherwise a fault-aware `MeshShell`. The MeshShell fallback
+bridges short open fringes and seams up to `3.4` cells by default; pass
+`max_bridge=None` for strict lattice-closed triangulation. `fallback="error"`
+raises; deprecated `fallback="tri"` aliases the default `"mesh"` spelling.
+Direct `to_tri_surface()` remains strict and value-bearing; similarly,
+`to_structured_surface(...)` explicitly attaches values to the exact row/column
+representation.
 
 `edge="full_rect"` is the default point footprint: the four corners of the
 inferred lattice. It over-claims whenever the data does not fill its bounding
 lattice. `edge="occupied"` is the true footprint — the outline of the nodes that
 carry data, following interior holes and a non-rectangular boundary — and is the
 default for `to_structured_surface(...)`. `edge="convex_hull"` is intentionally
-broader for envelope/QC comparison.
+broader for envelope/QC comparison. `infer_geometry(...)` carries explicit
+`occupied`/`convex_hull` through when regular inference falls back to a
+topology-verified `StructuredShell`. Its `full_rect` default remains the
+compatible occupied structured boundary because a curvilinear shell has no
+nominal rectangle; only a `MeshShell` keeps its triangle-derived boundary.
 
-During `Project.import_data(...)`, same-stem Petrel IRAP point exports are
-enriched from matching EarthVision topology files when both are present.
+During `Project.import_data(...)`, an EarthVision grid is loaded canonically as
+a `StructuredMeshSurface` under `project.surfaces`; null nodes retain XY and
+become `NaN` values. Same-stem Petrel IRAP point exports remain separate point
+sets and are enriched from the EarthVision topology. Both retain stable,
+path-qualified names when they coexist.
 Standalone plain IRAP/XYZ point exports must infer from XY only, so they cannot
 recover exact grid topology once those fields are lost. For genuinely scattered
 picks or irregular vendor exports, choose the model/template `GridGeometry`
@@ -94,6 +126,11 @@ explicitly and call `to_surface(...)`.
 `values()`, `edge`, `nominal_geometry`, `bbox()`, `stats()`, and `history()`.
 Use `nominal_geometry` only as approximate metadata; the explicit node XY arrays
 are canonical.
+
+```python
+mesh = petekio.StructuredMeshSurface.load_earthvision_grid("top.EarthVisionGrid")
+mesh = geo.load_structured_surface("top", "top.EarthVisionGrid")
+```
 
 ## Polygons
 

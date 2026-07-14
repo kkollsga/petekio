@@ -9,7 +9,8 @@
 //! method for the formats it accepts.
 
 use crate::core::{
-    FluidContact, Log, LogKind, PointSet, PolygonSet, Station, Surface, Top, TrajectoryInput, Well,
+    FluidContact, Log, LogKind, PointSet, PolygonSet, Station, StructuredMeshSurface, Surface, Top,
+    TrajectoryInput, Well,
 };
 use crate::foundation::{GeoError, Point3, Result};
 use crate::manager::GeoData;
@@ -41,6 +42,11 @@ impl GeoData {
     /// detector returns `Unknown`: IRAP classic (FIRST) ASCII grid or CPS-3
     /// regular grid. Returns a borrow of the stored surface.
     pub fn load_surface(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&Surface> {
+        if self.structured_surfaces.contains_key(name) || self.tri_surfaces.contains_key(name) {
+            return Err(GeoError::Parse(format!(
+                "load_surface: surface name '{name}' already belongs to a structured mesh surface"
+            )));
+        }
         let path = path.as_ref();
         let surface = match classify(path)? {
             FormatKind::IrapClassicGrid => Surface::load_irap_classic(path)?,
@@ -62,8 +68,45 @@ impl GeoData {
                 )))
             }
         };
-        let entry = self.surfaces.entry(name.to_string());
-        Ok(entry.or_insert(surface))
+        if !self.surfaces.contains_key(name) {
+            self.surfaces.insert(name.to_string(), surface);
+            self.surface_order.push(name.to_string());
+        }
+        Ok(self.surfaces.get(name).expect("just inserted or existed"))
+    }
+
+    /// Load an EarthVision explicit-node grid and store it under the shared
+    /// surface namespace as a [`StructuredMeshSurface`].
+    pub fn load_structured_surface(
+        &mut self,
+        name: &str,
+        path: impl AsRef<Path>,
+    ) -> Result<&StructuredMeshSurface> {
+        if self.surfaces.contains_key(name) || self.tri_surfaces.contains_key(name) {
+            return Err(GeoError::Parse(format!(
+                "load_structured_surface: surface name '{name}' already belongs to a regular surface"
+            )));
+        }
+        let path = path.as_ref();
+        match classify(path)? {
+            FormatKind::EarthVisionGrid => {}
+            FormatKind::Unknown if ext_of(path) == "earthvisiongrid" => {}
+            other => {
+                return Err(GeoError::Format(format!(
+                    "load_structured_surface: '{}' is {other:?}, not an EarthVision grid",
+                    path.display()
+                )))
+            }
+        }
+        let surface = StructuredMeshSurface::load_earthvision_grid(path)?;
+        if !self.structured_surfaces.contains_key(name) {
+            self.structured_surfaces.insert(name.to_string(), surface);
+            self.surface_order.push(name.to_string());
+        }
+        Ok(self
+            .structured_surfaces
+            .get(name)
+            .expect("just inserted or existed"))
     }
 
     /// Load a well from `files` and store it under `id`, returning a borrow.

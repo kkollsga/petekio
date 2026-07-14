@@ -16,14 +16,16 @@
 //! so a handed-back surface never writes back into the project — the same
 //! observable semantics as the former eager deep copy, minus the copy on read.
 
+use crate::attribute::{metadata_from_dict, metadata_to_dict};
 use crate::geodata::GeoData;
 use crate::geometry::{BBox, GridGeometry};
 use crate::points::PolygonSet;
 use crate::stats::Stats;
-use crate::to_pyerr;
-use petekio::{PolygonSet as RsPolygonSet, Surface as RsSurface};
+use crate::{parse_grid_method, to_pyerr};
+use petekio::{AttributeKind, GeoError, PolygonSet as RsPolygonSet, Surface as RsSurface};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyDict};
 use std::sync::Arc;
 
 /// Where a `Surface` wrapper reads its grid from.
@@ -40,6 +42,24 @@ enum SurfaceBacking {
 pub struct Surface {
     backing: SurfaceBacking,
     name: Option<String>,
+}
+
+fn encode_shared_value(value: f64, kind: AttributeKind, name: &str) -> PyResult<f32> {
+    if !value.is_finite() {
+        return Ok(f32::from_bits(0x7fc0_0000));
+    }
+    let encoded = value as f32;
+    if !encoded.is_finite() {
+        return Err(PyValueError::new_err(format!(
+            "shared surface lane '{name}' contains finite value {value} outside the f32 transport range"
+        )));
+    }
+    if kind == AttributeKind::Categorical && f64::from(encoded) != value {
+        return Err(PyValueError::new_err(format!(
+            "shared categorical surface lane '{name}' value {value} is not exactly representable as f32"
+        )));
+    }
+    Ok(encoded)
 }
 
 impl Surface {
@@ -64,6 +84,10 @@ impl Surface {
     pub(crate) fn named(mut self, name: Option<String>) -> Surface {
         self.name = name;
         self
+    }
+
+    pub(crate) fn dataset_name(&self) -> Option<String> {
+        self.name.clone()
     }
 
     /// Resolve the borrowed Rust surface and run `f` over it.
@@ -155,10 +179,38 @@ impl Surface {
 
     /// Resample the primary layer onto `target` (bilinear). Kernel NaN-corner
     /// policy (nearest corner NaN → NaN, else renormalized over finite corners).
-    /// Raises on a rotated source/target geometry (axis-aligned kernel only).
+    /// Source and target rotation and `yflip` are honoured independently through
+    /// the exact world-to-intrinsic lattice transforms.
     fn resample(&self, py: Python<'_>, target: &GridGeometry) -> PyResult<Surface> {
         let t = target.inner.clone();
         self.with(py, |s| py.detach(|| s.resample(&t)))?
+            .map(Surface::wrap)
+            .map_err(to_pyerr)
+    }
+
+    /// NaN-aware square-window moving average. The original NaN mask is
+    /// preserved; the returned surface is detached and primary-only.
+    #[pyo3(signature = (radius = 1))]
+    fn smooth(&self, py: Python<'_>, radius: usize) -> PyResult<Surface> {
+        self.with(py, |s| py.detach(|| Surface::wrap(s.smooth(radius))))
+    }
+
+    /// Geological dip angle in degrees, derived in the surface's world frame.
+    fn dip_angle(&self, py: Python<'_>) -> PyResult<Surface> {
+        self.with(py, |s| py.detach(|| Surface::wrap(s.dip_angle())))
+    }
+
+    /// Down-dip azimuth in degrees clockwise from North. Flat nodes are NaN.
+    fn dip_azimuth(&self, py: Python<'_>) -> PyResult<Surface> {
+        self.with(py, |s| py.detach(|| Surface::wrap(s.dip_azimuth())))
+    }
+
+    /// Fill only original NaN nodes on this geometry using a shared petekTools
+    /// gridding kernel (`nearest`, `idw`, or `min_curvature`).
+    #[pyo3(signature = (method = "nearest"))]
+    fn extrapolate(&self, py: Python<'_>, method: &str) -> PyResult<Surface> {
+        let method = parse_grid_method(method)?;
+        self.with(py, |s| py.detach(|| s.extrapolate(method)))?
             .map(Surface::wrap)
             .map_err(to_pyerr)
     }
@@ -214,15 +266,11 @@ impl Surface {
     }
 
     /// `base - top`, optionally clamped at zero (negative thickness → 0).
-    #[staticmethod]
-    #[pyo3(signature = (top, base, clamp_zero = false))]
-    fn thickness(
-        py: Python<'_>,
-        top: &Surface,
-        base: &Surface,
-        clamp_zero: bool,
-    ) -> PyResult<Surface> {
-        top.with2(py, base, |t, b| RsSurface::thickness(t, b, clamp_zero))?
+    /// Works as `top.thickness(base)` and, through Python's normal unbound
+    /// method protocol, as `Surface.thickness(top, base)`.
+    #[pyo3(signature = (base, clamp_zero = false))]
+    fn thickness(&self, py: Python<'_>, base: &Surface, clamp_zero: bool) -> PyResult<Surface> {
+        self.with2(py, base, |t, b| RsSurface::thickness(t, b, clamp_zero))?
             .map(Surface::wrap)
             .map_err(to_pyerr)
     }
@@ -313,12 +361,68 @@ impl Surface {
         })
     }
 
+    /// Canonical durable metadata for attribute `name`.
+    fn attr_metadata(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyDict>> {
+        let metadata = self
+            .with(py, |s| s.attr_metadata(name).cloned())?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyKeyError::new_err(format!("no attribute layer '{name}'"))
+            })?;
+        Ok(metadata_to_dict(py, &metadata)?.unbind())
+    }
+
+    /// Metadata of the promoted primary lane, or `None` for an ordinary
+    /// primary surface.
+    #[getter]
+    fn primary_metadata(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+        self.with(py, |s| s.primary_metadata().cloned())?
+            .map(|metadata| metadata_to_dict(py, &metadata).map(Bound::unbind))
+            .transpose()
+    }
+
     /// Set (or replace) attribute `name` from another surface's primary layer
     /// (must match this surface's geometry). Copy-on-write: an `InGeo` view
     /// detaches to an owned copy first, so the project is never mutated.
-    fn set_attr(&mut self, py: Python<'_>, name: &str, values: &Surface) -> PyResult<()> {
-        let arr = values.with(py, |v| v.values().clone())?;
-        self.owned_mut(py)?.set_attr(name, arr).map_err(to_pyerr)
+    #[pyo3(signature = (name, values, metadata = None))]
+    fn set_attr(
+        &mut self,
+        py: Python<'_>,
+        name: &str,
+        values: &Surface,
+        metadata: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<()> {
+        let (rhs_geom, arr) = values.with(py, |v| (v.geom.clone(), v.values().clone()))?;
+        let lhs_geom = self.with(py, |s| s.geom.clone())?;
+        if lhs_geom != rhs_geom {
+            return Err(to_pyerr(GeoError::GeometryMismatch(format!(
+                "Surface::set_attr('{name}'): attribute surface must match origin, increments, \
+                 node counts, rotation, and yflip"
+            ))));
+        }
+        match metadata {
+            Some(metadata) => self
+                .owned_mut(py)?
+                .set_attr_with_metadata(name, arr, metadata_from_dict(name, metadata)?)
+                .map_err(to_pyerr),
+            None => self.owned_mut(py)?.set_attr(name, arr).map_err(to_pyerr),
+        }
+    }
+
+    /// `surface.thickness = values` assigns a typed surface attribute lane.
+    /// Read it through `surface.attr["thickness"]`; methods with the same name
+    /// remain callable on the instance and unbound through the class.
+    fn __setattr__(
+        &mut self,
+        py: Python<'_>,
+        name: &str,
+        value: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let values = value.extract::<PyRef<'_, Surface>>().map_err(|_| {
+            PyTypeError::new_err(format!(
+                "Surface attribute '{name}' must be assigned another Surface"
+            ))
+        })?;
+        self.set_attr(py, name, &values, None)
     }
 
     // ---- shells: conversions, iso-lines, value layer ----
@@ -380,6 +484,339 @@ impl Surface {
             .with(py, |s| py.detach(|| s.value_layer(attr, stride)))?
             .map_err(to_pyerr)?;
         crate::shell::value_layer_dict(py, layer)
+    }
+
+    /// Private workspace-v2 shared transport for every declared regular-grid
+    /// lane in one node pass. Attribute selectors are local viewer state, so
+    /// this method is called once per `(item, map, detail)` resource rather
+    /// than once per geometry/paint combination.
+    #[pyo3(signature = (attrs, stride = 1))]
+    fn _view_shared_regular_grid(
+        &self,
+        py: Python<'_>,
+        attrs: Vec<Option<String>>,
+        stride: usize,
+    ) -> PyResult<Py<PyDict>> {
+        if stride == 0 {
+            return Err(PyValueError::new_err(
+                "Surface._view_shared_regular_grid: stride must be at least 1",
+            ));
+        }
+        if attrs.is_empty() {
+            return Err(PyValueError::new_err(
+                "Surface._view_shared_regular_grid: at least one lane is required",
+            ));
+        }
+        let transport = self.with(py, |surface| {
+            let lanes = attrs
+                .iter()
+                .map(|attr| match attr {
+                    Some(name) => surface
+                        .attr(name)
+                        .map(|lane| {
+                            let kind = surface
+                                .attr_metadata(name)
+                                .expect("listed attribute lane has metadata")
+                                .kind;
+                            (lane, kind, name.as_str())
+                        })
+                        .ok_or_else(|| {
+                            PyValueError::new_err(format!("no attribute layer '{name}'"))
+                        }),
+                    None => Ok((
+                        surface.values(),
+                        surface
+                            .primary_metadata()
+                            .map_or(AttributeKind::Continuous, |metadata| metadata.kind),
+                        "primary",
+                    )),
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            let geom = &surface.geom;
+            if geom.ncol < 2 || geom.nrow < 2 {
+                return Err(PyValueError::new_err(
+                    "Surface._view_shared_regular_grid: affine shared transport requires at least 2x2 nodes",
+                ));
+            }
+            let mut effective_stride = stride
+                .min(geom.ncol.saturating_sub(1).max(1))
+                .min(geom.nrow.saturating_sub(1).max(1));
+            let mut ncol = geom.ncol.saturating_sub(1).div_ceil(effective_stride) + 1;
+            let mut nrow = geom.nrow.saturating_sub(1).div_ceil(effective_stride) + 1;
+            let mut values = (0..lanes.len())
+                .map(|_| Vec::with_capacity(ncol * nrow * 4))
+                .collect::<Vec<_>>();
+            let mut ranges: Vec<Option<(f64, f64)>> = vec![None; lanes.len()];
+            let mut sampled_finite = vec![false; lanes.len()];
+            let mut sampled_i = vec![false; geom.ncol];
+            let mut sampled_j = vec![false; geom.nrow];
+            for oi in 0..ncol {
+                sampled_i[(oi * (geom.ncol - 1) + (ncol - 1) / 2) / (ncol - 1)] = true;
+            }
+            for oj in 0..nrow {
+                sampled_j[(oj * (geom.nrow - 1) + (nrow - 1) / 2) / (nrow - 1)] = true;
+            }
+            for j in 0..geom.nrow {
+                for i in 0..geom.ncol {
+                    for (index, (lane, kind, name)) in lanes.iter().enumerate() {
+                        let value = lane[[i, j]];
+                        let encoded = encode_shared_value(value, *kind, name)?;
+                        if encoded.is_finite() {
+                            let transported = f64::from(encoded);
+                            ranges[index] = Some(match ranges[index] {
+                                None => (transported, transported),
+                                Some((lo, hi)) => {
+                                    (lo.min(transported), hi.max(transported))
+                                }
+                            });
+                        }
+                        if sampled_i[i] && sampled_j[j] {
+                            sampled_finite[index] |= encoded.is_finite();
+                            values[index].extend_from_slice(&encoded.to_le_bytes());
+                        }
+                    }
+                }
+            }
+            if effective_stride > 1
+                && ranges
+                    .iter()
+                    .zip(&sampled_finite)
+                    .any(|(range, sampled)| range.is_some() && !sampled)
+            {
+                effective_stride = 1;
+                ncol = geom.ncol;
+                nrow = geom.nrow;
+                values = (0..lanes.len())
+                    .map(|_| Vec::with_capacity(ncol * nrow * 4))
+                    .collect();
+                for j in 0..geom.nrow {
+                    for i in 0..geom.ncol {
+                        for (index, (lane, kind, name)) in lanes.iter().enumerate() {
+                            let encoded = encode_shared_value(lane[[i, j]], *kind, name)?;
+                            values[index].extend_from_slice(&encoded.to_le_bytes());
+                        }
+                    }
+                }
+            }
+            let origin = geom.node_xy(0, 0);
+            let end_i = geom.node_xy(geom.ncol - 1, 0);
+            let end_j = geom.node_xy(0, geom.nrow - 1);
+            Ok::<_, PyErr>((
+                ncol,
+                nrow,
+                origin,
+                [
+                    (end_i.0 - origin.0) / (ncol - 1) as f64,
+                    (end_i.1 - origin.1) / (ncol - 1) as f64,
+                ],
+                [
+                    (end_j.0 - origin.0) / (nrow - 1) as f64,
+                    (end_j.1 - origin.1) / (nrow - 1) as f64,
+                ],
+                values,
+                ranges,
+                vec![1u8; ncol * nrow],
+                2 * ncol.saturating_sub(1) * nrow.saturating_sub(1),
+                effective_stride,
+            ))
+        })??;
+        let (ncol, nrow, origin, step_i, step_j, values, ranges, mask, triangles, stride) =
+            transport;
+        let lane_records = values
+            .into_iter()
+            .zip(ranges)
+            .map(|(values, range)| {
+                let record = PyDict::new(py);
+                record.set_item("values", PyBytes::new(py, &values))?;
+                record.set_item("range", range.map(|(minimum, maximum)| [minimum, maximum]))?;
+                Ok(record.unbind())
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let out = PyDict::new(py);
+        out.set_item("dimensions", [ncol, nrow])?;
+        out.set_item("origin", [origin.0, origin.1])?;
+        out.set_item("step_i", step_i)?;
+        out.set_item("step_j", step_j)?;
+        out.set_item("lanes", lane_records)?;
+        out.set_item("mask", PyBytes::new(py, &mask))?;
+        out.set_item("triangle_count", triangles)?;
+        out.set_item("stride", stride)?;
+        Ok(out.unbind())
+    }
+
+    /// Private project-view transport for an affine regular surface. It copies
+    /// only compact row-major f32 lanes and u8 masks; unlike `value_layer`, it
+    /// never constructs node or triangle arrays. `stride` is display-only and
+    /// samples native nodes before marshaling.
+    #[pyo3(signature = (attr = None, stride = 1))]
+    fn _view_regular_grid(
+        &self,
+        py: Python<'_>,
+        attr: Option<&str>,
+        stride: usize,
+    ) -> PyResult<Py<PyDict>> {
+        if stride == 0 {
+            return Err(PyValueError::new_err(
+                "Surface._view_regular_grid: stride must be at least 1",
+            ));
+        }
+        let transport = self.with(py, |surface| {
+            let selected = match attr {
+                Some(name) => surface
+                    .attr(name)
+                    .ok_or_else(|| PyValueError::new_err(format!("no attribute layer '{name}'")))?,
+                None => surface.values(),
+            };
+            let geom = &surface.geom;
+            let effective_stride = stride.min(
+                geom.ncol
+                    .saturating_sub(1)
+                    .max(geom.nrow.saturating_sub(1))
+                    .max(1),
+            );
+            // Preview dimensions use ceil division and then sample evenly from
+            // first through last source node. That preserves the complete
+            // world footprint even when `(n-1)` is not divisible by stride,
+            // so the later full-detail swap cannot change camera framing.
+            let sampled_count = |count: usize| {
+                if count == 1 {
+                    1
+                } else {
+                    count.saturating_sub(1).div_ceil(effective_stride) + 1
+                }
+            };
+            let ncol = sampled_count(geom.ncol);
+            let nrow = sampled_count(geom.nrow);
+            let mut elevations = Vec::with_capacity(ncol * nrow * 4);
+            let mut values = Vec::with_capacity(ncol * nrow * 4);
+            let mut elevation_mask = Vec::with_capacity(ncol * nrow);
+            let mut value_mask = Vec::with_capacity(ncol * nrow);
+            let mut sampled_elevation_mask = Vec::with_capacity(ncol * nrow);
+            for oj in 0..nrow {
+                let j = if nrow == 1 {
+                    0
+                } else {
+                    (oj * (geom.nrow - 1) + (nrow - 1) / 2) / (nrow - 1)
+                };
+                for oi in 0..ncol {
+                    let i = if ncol == 1 {
+                        0
+                    } else {
+                        (oi * (geom.ncol - 1) + (ncol - 1) / 2) / (ncol - 1)
+                    };
+                    let elevation = surface.values()[[i, j]];
+                    let value = selected[[i, j]];
+                    let elevation_finite = elevation.is_finite();
+                    let value_finite = value.is_finite();
+                    elevations.extend_from_slice(
+                        &(if elevation_finite {
+                            elevation as f32
+                        } else {
+                            f32::from_bits(0x7fc0_0000)
+                        })
+                        .to_le_bytes(),
+                    );
+                    values.extend_from_slice(
+                        &(if value_finite {
+                            value as f32
+                        } else {
+                            f32::from_bits(0x7fc0_0000)
+                        })
+                        .to_le_bytes(),
+                    );
+                    elevation_mask.push(u8::from(elevation_finite));
+                    value_mask.push(u8::from(value_finite));
+                    sampled_elevation_mask.push(elevation_finite);
+                }
+            }
+            let triangle_count = sampled_elevation_mask
+                .chunks_exact(ncol)
+                .collect::<Vec<_>>()
+                .windows(2)
+                .map(|rows| {
+                    (0..ncol.saturating_sub(1))
+                        .filter(|&i| rows[0][i] && rows[0][i + 1] && rows[1][i] && rows[1][i + 1])
+                        .count()
+                        * 2
+                })
+                .sum::<usize>();
+            let finite_range = |lane: &ndarray::Array2<f64>| {
+                lane.iter()
+                    .copied()
+                    .filter(|value| value.is_finite())
+                    .fold(None, |range, value| match range {
+                        None => Some((value, value)),
+                        Some((lo, hi)) => Some((lo.min(value), hi.max(value))),
+                    })
+                    .unwrap_or((0.0, 1.0))
+            };
+            let value_range = finite_range(selected);
+            let elevation_range = finite_range(surface.values());
+            let origin = geom.node_xy(0, 0);
+            let end_i = geom.node_xy(geom.ncol - 1, 0);
+            let end_j = geom.node_xy(0, geom.nrow - 1);
+            let unit_i = geom.node_xy(1, 0);
+            let unit_j = geom.node_xy(0, 1);
+            Ok::<_, PyErr>((
+                ncol,
+                nrow,
+                origin,
+                if ncol == 1 {
+                    [unit_i.0 - origin.0, unit_i.1 - origin.1]
+                } else {
+                    [
+                        (end_i.0 - origin.0) / (ncol - 1) as f64,
+                        (end_i.1 - origin.1) / (ncol - 1) as f64,
+                    ]
+                },
+                if nrow == 1 {
+                    [unit_j.0 - origin.0, unit_j.1 - origin.1]
+                } else {
+                    [
+                        (end_j.0 - origin.0) / (nrow - 1) as f64,
+                        (end_j.1 - origin.1) / (nrow - 1) as f64,
+                    ]
+                },
+                elevations,
+                values,
+                elevation_mask,
+                value_mask,
+                [elevation_range.0, elevation_range.1],
+                [value_range.0, value_range.1],
+                triangle_count,
+                effective_stride,
+            ))
+        })??;
+        let (
+            ncol,
+            nrow,
+            origin,
+            step_i,
+            step_j,
+            elevations,
+            values,
+            elevation_mask,
+            value_mask,
+            elevation_range,
+            value_range,
+            triangle_count,
+            effective_stride,
+        ) = transport;
+        let out = PyDict::new(py);
+        out.set_item("name", attr.unwrap_or("values"))?;
+        out.set_item("dimensions", [ncol, nrow])?;
+        out.set_item("origin", [origin.0, origin.1])?;
+        out.set_item("step_i", step_i)?;
+        out.set_item("step_j", step_j)?;
+        out.set_item("elevations", PyBytes::new(py, &elevations))?;
+        out.set_item("values", PyBytes::new(py, &values))?;
+        out.set_item("elevation_mask", PyBytes::new(py, &elevation_mask))?;
+        out.set_item("value_mask", PyBytes::new(py, &value_mask))?;
+        out.set_item("elevation_range", elevation_range)?;
+        out.set_item("range", value_range)?;
+        out.set_item("triangle_count", triangle_count)?;
+        out.set_item("stride", effective_stride)?;
+        Ok(out.unbind())
     }
 
     // ---- geometry getters ----

@@ -17,10 +17,34 @@ use std::sync::Arc;
 #[pyclass(name = "StructuredShell")]
 pub struct StructuredShell {
     pub(crate) inner: Arc<RsStructuredShell>,
+    name: Option<String>,
+}
+
+impl StructuredShell {
+    pub(crate) fn wrap(inner: Arc<RsStructuredShell>) -> StructuredShell {
+        StructuredShell { inner, name: None }
+    }
+
+    pub(crate) fn named(mut self, name: Option<String>) -> StructuredShell {
+        self.name = name;
+        self
+    }
 }
 
 #[pymethods]
 impl StructuredShell {
+    /// Stable kind label for type dispatch without imports.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "structured_shell"
+    }
+
+    /// Dataset geometry name propagated from the source, or `None`.
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.name.clone()
+    }
+
     #[getter]
     fn ncol(&self) -> usize {
         self.inner.ncol()
@@ -49,9 +73,9 @@ impl StructuredShell {
     /// Optional approximate regular geometry (metadata only).
     #[getter]
     fn nominal_geometry(&self) -> Option<GridGeometry> {
-        self.inner
-            .nominal_geometry()
-            .map(|g| GridGeometry::with_edge(g.clone(), self.inner.edge().clone()))
+        self.inner.nominal_geometry().map(|g| {
+            GridGeometry::with_edge(g.clone(), self.inner.edge().clone()).named(self.name.clone())
+        })
     }
 
     /// Edge polygon in modelling coordinates.
@@ -69,7 +93,7 @@ impl StructuredShell {
     fn to_mesh_shell(&self) -> PyResult<MeshShell> {
         self.inner
             .to_mesh_shell()
-            .map(|m| MeshShell { inner: Arc::new(m) })
+            .map(|m| MeshShell::wrap(Arc::new(m)).named(self.name.clone()))
             .map_err(to_pyerr)
     }
 
@@ -79,7 +103,7 @@ impl StructuredShell {
     fn infer_grid(&self, tolerance: f64) -> PyResult<GridGeometry> {
         self.inner
             .infer_grid(tolerance)
-            .map(|g| GridGeometry::with_edge(g, self.inner.edge().clone()))
+            .map(|g| GridGeometry::with_edge(g, self.inner.edge().clone()).named(self.name.clone()))
             .map_err(to_pyerr)
     }
 
@@ -98,10 +122,34 @@ impl StructuredShell {
 #[pyclass(name = "MeshShell")]
 pub struct MeshShell {
     pub(crate) inner: Arc<RsMeshShell>,
+    name: Option<String>,
+}
+
+impl MeshShell {
+    pub(crate) fn wrap(inner: Arc<RsMeshShell>) -> MeshShell {
+        MeshShell { inner, name: None }
+    }
+
+    pub(crate) fn named(mut self, name: Option<String>) -> MeshShell {
+        self.name = name;
+        self
+    }
 }
 
 #[pymethods]
 impl MeshShell {
+    /// Stable kind label for type dispatch without imports.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "mesh_shell"
+    }
+
+    /// Dataset geometry name propagated from the source, or `None`.
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.name.clone()
+    }
+
     #[getter]
     fn n_nodes(&self) -> usize {
         self.inner.n_nodes()
@@ -167,7 +215,7 @@ impl MeshShell {
     fn infer_grid(&self, tolerance: f64) -> PyResult<GridGeometry> {
         self.inner
             .infer_grid(tolerance)
-            .map(|g| GridGeometry::with_edge(g, self.inner.edge().clone()))
+            .map(|g| GridGeometry::with_edge(g, self.inner.edge().clone()).named(self.name.clone()))
             .map_err(to_pyerr)
     }
 

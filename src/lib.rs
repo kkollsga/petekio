@@ -31,14 +31,17 @@ pub use analysis::{
     SummaryInputs, WellCurveInput,
 };
 pub use core::{
-    CornerTable, FluidContact, GeometryEdge, GridMethod, Interval, Log, LogKind, LogView,
-    MeshShell, PointSet, PolygonSet, Sidetrack, Station, StructuredMeshSurface, StructuredShell,
-    Surface, Top, TopologyReport, Trajectory, TrajectoryInput, TriSurface, ValueLayer, WalkLabel,
-    Well, DEFAULT_MAX_LINK, NO_CORNER,
+    AttributeKind, AttributeMetadata, CodeRecord, CornerTable, FluidContact, GeometryEdge,
+    GridMethod, IntersectableSurface, Interval, Log, LogKind, LogView, MeshShell, PointSet,
+    PolygonSet, Sidetrack, Station, StructuredMeshSurface, StructuredShell, Surface,
+    SurfaceIntersection, Top, TopologyReport, Trajectory, TrajectoryInput, TriSurface, ValueLayer,
+    WalkLabel, Well, DEFAULT_MAX_LINK, NO_CORNER,
 };
 pub use foundation::{
     BBox, Distribution, GeoError, GridGeometry, HasHistory, OperationHistory, Point3, Provenance,
     Result, Stats, Uncertain, Unit,
 };
 pub use io::detect::{detect, FormatKind};
-pub use manager::{GeoData, ProjectInfo, WellsView};
+pub use manager::{
+    GeoData, IntersectionDiagnostic, ProjectInfo, WellIntersectionSet, WellTopRow, WellsView,
+};

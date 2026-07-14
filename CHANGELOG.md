@@ -6,6 +6,166 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-07-14
+
+### Added
+- **Rotated regular-surface sampling and resampling.** `GridGeometry` now maps
+  node/world/index transforms through the shared petekTools lattice. Rotated
+  and independently y-flipped source/target grids are supported without
+  changing the public API or zero-rotation results. Continuous lanes remain
+  bilinear, categorical lanes use nearest-neighbour, and project resources,
+  cursor transforms, and trajectory intersections retain one world frame.
+- **Durable viewer-ready surface and project metadata.** Regular, structured,
+  and triangular surface attributes now persist canonical
+  `{id,label,kind,units,codes}` descriptors through replacement, promotion,
+  conversion, copy-on-write, and `.pproj` save/load. Element schema v2 migrates
+  v1 projects positionally, while project manifests can retain an authored name
+  and CRS. Existing values-only APIs remain compatible; explicit Rust and
+  Python APIs add validated continuous/categorical descriptors.
+- **Workspace-v2 project resources.** Project catalogs expose persisted project
+  identity and ordered attribute metadata. Supported regular surfaces share one
+  selector-free Map/3-D resource containing geometry, mask, and all properties;
+  structured, triangular, and degenerate surfaces retain compatible fallback
+  resources. Preview/full detail remains the only fetch axis, sparse previews
+  remain valid, and well overlays retain all finite MD-ordered crossings.
+
+### Fixed
+- **Degenerate project surfaces replace without forced triangulation.** Exact
+  same-kind regular and structured geometry checks now use their native lattice
+  or shell, so valid `1×1`, `1×N`, and `N×1` surfaces can be replaced and
+  persisted. Regular↔structured replacement compares logical node coordinates;
+  transitions involving triangular surfaces retain topology signatures.
+- **Surface replacement now guards authoritative shell boundaries.** Structured
+  edges and triangular edges/wireframes are part of the exact geometry/topology
+  comparison, so equal nodes cannot silently replace occupied boundaries with
+  full rectangles (or alter a mesh wireframe). Structured→tri conversion now
+  carries the explicit modelling boundary; nominal regular geometry remains
+  metadata and is deliberately excluded from identity.
+
+## [0.3.14] - 2026-07-14
+
+### Fixed
+- **Correlation accepts coincident formation picks.** Equal-TVD picks now keep
+  their stable producer order and represent valid zero-thickness zones; only a
+  truly decreasing/overturned stack fails. Coordinates are never jittered.
+- **Structured geometry fallback now honours `edge=`.** When strict regular
+  inference falls back to a topology-verified `StructuredShell`,
+  `PointSet.infer_geometry(edge="occupied"|"convex_hull")` now passes that mode
+  through instead of always returning the occupied boundary. Mesh fallback and
+  `fallback="error"` semantics are unchanged; the `full_rect` default retains
+  its compatible occupied boundary for curvilinear structured fallbacks.
+- **Logs-only sessions now use the generic viewer root envelope.**
+  `LogSession.bundle()` remains the exact raw `WellLogBundle`, while
+  `LogSession.serve()` / `.save()` nest it under top-level `wells_logs` and emit
+  null/empty geometry and analytics tabs. The browser therefore selects Wells
+  and never initializes the Map panel against a raw logs bundle.
+- **Small scattered point clouds retain their triangulated boundary.** Mesh
+  cleanup now treats the eight-triangle island threshold as a relative speck
+  filter, not a minimum surface size, so complete four- and five-point
+  triangulations return `MeshShell` geometry instead of failing with a
+  misleading `triangulated surface has no boundary` error. Truly degenerate
+  clouds still fail loudly, and bridge/component/label behaviour is unchanged.
+
+### Added
+- **Responsive compact project surfaces and exact well overlays.** Regular
+  surface Map resources now emit block-backed affine grids directly from the
+  native row-major array, with no node/triangle expansion. 3-D advertises a
+  bounded full-footprint preview and compact full detail; attribute colour
+  values remain independent from primary depth elevations and holes.
+  Surface-context Map well paths use the canonical intersection kernel and end
+  at the exact MD/XYZ of the first MD-ordered hit, while no-hit paths remain
+  complete and errors stay diagnostic. Public intersection ambiguity semantics
+  are unchanged.
+- **Project correlation is discovered automatically and remains lazy.** Bore
+  catalog construction calls only `mnemonics()` and advertises a hidden Wells
+  resource when curves exist. Selecting it gathers tops plus at most six useful
+  tracks: one gamma, shale-volume, porosity, water-saturation, permeability,
+  and deep-resistivity curve, with deterministic safe continuous fallbacks when
+  needed. Coordinate and obvious discrete curves are excluded.
+  `logs=ViewSpec(...)` remains exact; inspectable stored/passed template tracks
+  restrict gathering and remain layout-authoritative.
+- **Lazy project workspaces.** `project.view()` now exposes the same generic
+  workspace as `petektools.view(project)`: an ordered searchable project tree
+  with canonical folder-qualified object IDs and bore-qualified well IDs.
+  Startup is metadata-only; surface depth/attribute lanes, points, polygons,
+  trajectories, explicitly requested bore logs, and templates materialize once
+  on demand. `ProjectViewSession` adds diagnostics, refresh, live serving, and
+  self-contained `include="visible"|"selected"` snapshots while petekTools
+  remains an optional lazy dependency.
+- **Persistent project correlation templates.** `.pproj` now retains generic,
+  typed/versioned provider assets in collision-safe `@asset/...` sections with
+  exact envelope/payload preservation, including unknown asset fields and
+  types. Python adds the folder-aware `project.templates` library with explicit
+  add/replace/rename/delete, immutable callable `BoundTemplate` snapshots, and
+  lazy optional petekTools materialization. `Well.view()` and `WellsView.view()`
+  accept `template=`; the template is an additive plain dictionary in the
+  `WellLogBundle`, while calls without a template remain wire-identical.
+- **Accurate well/surface intersections and persistent computed horizons.**
+  `Trajectory`, `Sidetrack`, resolved `Well`, and `WellsView` now intersect
+  regular, structured, and triangulated surfaces using adaptive sampling of the
+  actual minimum-curvature path, spatial triangle candidates, root/tangent
+  refinement, shared-edge de-duplication, null-hole handling, and loud coplanar
+  rejection. Typed immutable hits carry MD/XYZ plus source identity; aggregate
+  reports retain skipped/failed diagnostics. Strict per-bore add/replace/remove
+  APIs persist the unchanged `Top {name, md}` shape. The new folder-aware
+  `project.well_tops` mapping atomically validates and replaces complete
+  horizons, removes stale picks, and round-trips through `.pproj`; the older
+  `project.tops` source-table view is unchanged.
+- **`PointSet.infer_geometry()` now returns geometry-only roles.** Regular
+  points return `GridGeometry`; validated topology-bearing curvilinear points
+  return `StructuredShell`; triangulated/faulted/scattered fallback returns
+  `MeshShell`. Shell wrappers expose stable `kind` values and propagate project
+  names as `"<name> geometry"`, while retaining components, edge, labels, and
+  wireframe access. The mesh path keeps the 3.4-cell default bridge, explicit
+  `None` strictness, loud warning, and `fallback="error"`. The documented
+  default is now `fallback="mesh"`; legacy `fallback="tri"` remains accepted
+  with a `DeprecationWarning` but no longer implies a value-bearing result.
+  Values remain on the `PointSet` until explicit `to_surface`,
+  `to_structured_surface`, or `to_tri_surface` conversion.
+- **EarthVision grids are first-class structured project surfaces.**
+  `StructuredMeshSurface.load_earthvision_grid(...)` and
+  `GeoData.load_structured_surface(...)` retain every logical node, including
+  null-z nodes as `NaN` with their finite XY and row/column topology. Raw
+  `Project.import_data(...)` routes EarthVision grids into the unified surface
+  namespace while same-stem IRAP point exports remain topology-enriched point
+  sets with stable path-qualified names. Structured surfaces now round-trip in
+  whole-project `.pproj` files using the existing `structured_mesh` kind, with
+  no data-version bump. `PointSet.load_earthvision_grid(...)` remains as a
+  deprecated finite-node compatibility view. `model_inputs()` errors rather
+  than silently dropping structured horizons it cannot yet represent.
+
+## [0.3.13] - 2026-07-13
+
+### Added
+- **Surface interpretation and hole repair.** Python `Surface` now exposes
+  `smooth(radius=1)`, `dip_angle()`, `dip_azimuth()`, and
+  `extrapolate(method="nearest")` (`idw` / `min_curvature` also supported).
+  Dip is derived with NaN-aware central/one-sided differences transformed into
+  the rotated/y-flipped world frame; flat azimuth is undefined. Extrapolation
+  delegates to the shared petekTools kernels, fills only original NaNs, excludes
+  infinities from controls, and preserves every original non-NaN bit. Each
+  operation returns a detached, same-geometry, primary-only surface with
+  appended history.
+- **Typed Python `Surface` attribute assignment.** `surface.thickness = rhs`
+  now delegates to `surface.set_attr("thickness", rhs)` and adds or replaces a
+  copy-on-write attribute lane, readable through `surface.attr["thickness"]`.
+  The right-hand side must be a `Surface` with identical complete grid geometry;
+  same-shaped grids with different origins, increments, rotations, or y-flip
+  are rejected. Instance/unbound operations such as `surface.thickness(...)`
+  and `Surface.thickness(...)` remain callable.
+
+### Fixed
+- **Python `Surface.thickness` instance ergonomics.** Both
+  `top.thickness(base, clamp_zero=True)` and the equivalent unbound
+  `Surface.thickness(top, base, clamp_zero=True)` now work. Assigning a
+  `thickness` attribute lane remains supported and does not shadow either call
+  form; geometry validation, clamp defaults, and operation history are unchanged.
+- **`infer_geometry()` now closes ordinary TriSurface fallback fringes and seams.**
+  The Python fallback defaults `max_bridge` to 3.4 cells, avoiding fragmented,
+  ragged boundaries when a point export does not quite close on its recovered
+  lattice. Pass `max_bridge=None` for the previous strict lattice-closed result.
+  Direct `to_tri_surface()` remains strict by default.
+
 ## [0.3.12] - 2026-07-10
 
 ### Added

@@ -9,7 +9,7 @@ use crate::analysis::normalize::{canonical_mnemonic, harmonise_fraction};
 use crate::analysis::validate::mask_out_of_range;
 use crate::analysis::{HorizonInput, ModelInputs, SpatialInputs, SummaryInputs, WellCurveInput};
 use crate::core::{Sidetrack, Well};
-use crate::foundation::{Provenance, Result, Uncertain, Unit};
+use crate::foundation::{GeoError, Provenance, Result, Uncertain, Unit};
 
 /// A canonical curve `(md, harmonised+validated values)` on `bore` whose
 /// normalized mnemonic equals `target`, or `None`.
@@ -52,6 +52,18 @@ impl GeoData {
     /// scalars are characterised across the wells with default [`Cutoffs`]; the
     /// boundary is the first polygon, or the first surface's convex outline.
     pub fn model_inputs(&self) -> Result<ModelInputs> {
+        if self.structured_surfaces().next().is_some() || self.tri_surfaces_named().next().is_some()
+        {
+            let names = self
+                .structured_surfaces_named()
+                .map(|(name, _)| name)
+                .chain(self.tri_surfaces_named().map(|(name, _)| name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(GeoError::Unsupported(format!(
+                "model_inputs cannot yet represent non-regular horizons; refusing to omit: {names}"
+            )));
+        }
         let cutoffs = Cutoffs::default();
         let mut acc = PetroAcc::default();
         let mut well_curves = Vec::new();

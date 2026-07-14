@@ -9,13 +9,18 @@
 //! [`TriSurface`](crate::TriSurface). The shell is immutable and shared — N
 //! properties/clones never repeat the geometry in memory.
 
+use crate::core::attribute::{
+    check_metadata_name, validate_attribute_values, AttributeLane, AttributeMetadata,
+};
+use crate::core::points::structured_edge;
 use crate::core::shell::StructuredShell;
-use crate::core::{PointSet, PolygonSet};
+use crate::core::{GeometryEdge, PointSet, PolygonSet};
 use crate::foundation::{
     BBox, GeoError, GridGeometry, HasHistory, OperationHistory, Result, Stats,
 };
 use indexmap::IndexMap;
 use ndarray::Array2;
+use std::path::Path;
 use std::sync::Arc;
 
 /// A logically regular surface with explicit per-node coordinates: shell +
@@ -25,7 +30,9 @@ use std::sync::Arc;
 pub struct StructuredMeshSurface {
     shell: Arc<StructuredShell>,
     values: Array2<f64>,
-    attributes: IndexMap<String, Array2<f64>>,
+    #[serde(default)]
+    primary_metadata: Option<AttributeMetadata>,
+    attributes: IndexMap<String, AttributeLane<Array2<f64>>>,
     #[serde(default)]
     history: OperationHistory,
 }
@@ -37,17 +44,30 @@ struct StructuredMeshSurfaceData {
     shell: StructuredShell,
     values: Array2<f64>,
     #[serde(default)]
-    attributes: IndexMap<String, Array2<f64>>,
+    primary_metadata: Option<AttributeMetadata>,
+    #[serde(default)]
+    attributes: IndexMap<String, AttributeLane<Array2<f64>>>,
     #[serde(default)]
     history: OperationHistory,
 }
 
 impl TryFrom<StructuredMeshSurfaceData> for StructuredMeshSurface {
     type Error = GeoError;
-    fn try_from(d: StructuredMeshSurfaceData) -> Result<StructuredMeshSurface> {
+    fn try_from(mut d: StructuredMeshSurfaceData) -> Result<StructuredMeshSurface> {
+        if let Some(metadata) = &mut d.primary_metadata {
+            metadata.migrate_persisted_text();
+        }
+        for lane in d.attributes.values_mut() {
+            lane.metadata.migrate_persisted_text();
+        }
         let mut out = StructuredMeshSurface::from_shell(Arc::new(d.shell), d.values)?;
+        if let Some(metadata) = &d.primary_metadata {
+            metadata.validate()?;
+            validate_attribute_values(metadata, out.values.iter())?;
+        }
+        out.primary_metadata = d.primary_metadata;
         for (name, lane) in d.attributes {
-            out.set_attr(&name, lane)?;
+            out.set_attr_with_metadata(&name, lane.values, lane.metadata)?;
         }
         out.history = d.history;
         Ok(out)
@@ -55,6 +75,113 @@ impl TryFrom<StructuredMeshSurfaceData> for StructuredMeshSurface {
 }
 
 impl StructuredMeshSurface {
+    /// Load an EarthVision ASCII grid as a topology-preserving structured
+    /// surface. Every logical node is retained; a null z value becomes `NaN`
+    /// while its finite XY coordinate remains part of the shell.
+    pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let data = crate::io::earthvision::load_earthvision_grid_all(path)?;
+        if data.nodes.is_empty() {
+            return Err(GeoError::GeometryInference(
+                "EarthVision grid contains no data nodes".into(),
+            ));
+        }
+        let any_index = data
+            .nodes
+            .iter()
+            .any(|node| node.column.is_some() || node.row.is_some());
+        let all_index = data
+            .nodes
+            .iter()
+            .all(|node| node.column.is_some() && node.row.is_some());
+        if any_index && !all_index {
+            return Err(GeoError::GeometryInference(
+                "EarthVision grid mixes indexed and unindexed nodes".into(),
+            ));
+        }
+
+        let (ncol, nrow, indexed): (usize, usize, Vec<(usize, usize)>) = if all_index {
+            let mut raw = Vec::with_capacity(data.nodes.len());
+            for node in &data.nodes {
+                raw.push((
+                    earthvision_index(node.column.unwrap(), "column")?,
+                    earthvision_index(node.row.unwrap(), "row")?,
+                ));
+            }
+            let min_col = raw.iter().map(|(i, _)| *i).min().unwrap_or(0);
+            let max_col = raw.iter().map(|(i, _)| *i).max().unwrap_or(0);
+            let min_row = raw.iter().map(|(_, j)| *j).min().unwrap_or(0);
+            let max_row = raw.iter().map(|(_, j)| *j).max().unwrap_or(0);
+            let shape = (max_col - min_col + 1, max_row - min_row + 1);
+            if let Some(header) = data.grid_size {
+                if header != shape {
+                    return Err(GeoError::GeometryMismatch(format!(
+                        "EarthVision Grid_size {header:?} disagrees with column/row topology {shape:?}"
+                    )));
+                }
+            }
+            (
+                shape.0,
+                shape.1,
+                raw.into_iter()
+                    .map(|(i, j)| (i - min_col, j - min_row))
+                    .collect(),
+            )
+        } else {
+            let (ncol, nrow) = data.grid_size.ok_or_else(|| {
+                GeoError::GeometryInference(
+                    "EarthVision grid needs column/row fields or a Grid_size directive".into(),
+                )
+            })?;
+            let expected = ncol.checked_mul(nrow).ok_or_else(|| {
+                GeoError::GeometryMismatch("EarthVision Grid_size overflows usize".into())
+            })?;
+            if data.nodes.len() != expected {
+                return Err(GeoError::GeometryMismatch(format!(
+                    "EarthVision Grid_size {ncol} x {nrow} expects {expected} nodes, found {}",
+                    data.nodes.len()
+                )));
+            }
+            (
+                ncol,
+                nrow,
+                (0..data.nodes.len())
+                    .map(|slot| (slot % ncol, slot / ncol))
+                    .collect(),
+            )
+        };
+
+        let mut x = Array2::from_elem((ncol, nrow), f64::NAN);
+        let mut y = Array2::from_elem((ncol, nrow), f64::NAN);
+        let mut values = Array2::from_elem((ncol, nrow), f64::NAN);
+        let mut occupied = vec![false; ncol * nrow];
+        for (node, (i, j)) in data.nodes.iter().zip(indexed) {
+            let slot = i + j * ncol;
+            if occupied[slot] {
+                return Err(GeoError::GeometryInference(format!(
+                    "multiple EarthVision nodes map to column={}, row={}",
+                    i + 1,
+                    j + 1
+                )));
+            }
+            occupied[slot] = true;
+            x[[i, j]] = node.x;
+            y[[i, j]] = node.y;
+            values[[i, j]] = node.z;
+        }
+
+        let edge = structured_edge(&x, &y, None, None, GeometryEdge::Occupied)?;
+        let nominal_geometry = StructuredShell::new(x.clone(), y.clone(), None, edge.clone())?
+            .infer_grid(1e-3)
+            .ok();
+        let mut out = Self::new(x, y, values, nominal_geometry, edge)?;
+        out.history = OperationHistory::from_entry(format!(
+            "structured_surface.load_earthvision_grid(path={})",
+            path.display()
+        ));
+        Ok(out)
+    }
+
     /// Build a structured mesh surface from explicit node coordinate/value
     /// arrays. Arrays must all be shaped `(ncol, nrow)`.
     pub fn new(
@@ -77,6 +204,7 @@ impl StructuredMeshSurface {
         Ok(Self {
             shell,
             values,
+            primary_metadata: None,
             attributes: IndexMap::new(),
             history: OperationHistory::from_entry("structured_surface.from_shell"),
         })
@@ -115,15 +243,68 @@ impl StructuredMeshSurface {
 
     /// A named attribute lane, if present.
     pub fn attr(&self, name: &str) -> Option<&Array2<f64>> {
-        self.attributes.get(name)
+        self.attributes.get(name).map(|lane| &lane.values)
+    }
+
+    pub fn attr_metadata(&self, name: &str) -> Option<&AttributeMetadata> {
+        self.attributes.get(name).map(|lane| &lane.metadata)
+    }
+
+    pub fn primary_metadata(&self) -> Option<&AttributeMetadata> {
+        self.primary_metadata.as_ref()
+    }
+
+    pub(crate) fn set_primary_metadata(&mut self, metadata: Option<AttributeMetadata>) {
+        self.primary_metadata = metadata;
     }
 
     /// Set (or replace) a named attribute lane. Must match the shell shape or
     /// `GeometryMismatch` is returned.
     pub fn set_attr(&mut self, name: &str, values: Array2<f64>) -> Result<()> {
         check_lane(&self.shell, &values, "StructuredMeshSurface::set_attr")?;
-        self.attributes.insert(name.to_string(), values);
+        if let Some(existing) = self.attributes.get_mut(name) {
+            validate_attribute_values(&existing.metadata, values.iter())?;
+            existing.values = values;
+        } else {
+            self.attributes.insert(
+                name.to_string(),
+                AttributeLane::new(AttributeMetadata::continuous(name)?, values)?,
+            );
+        }
         self.record_history(format!("structured_surface.set_attr(name={name})"));
+        Ok(())
+    }
+
+    pub fn set_attr_with_metadata(
+        &mut self,
+        name: &str,
+        values: Array2<f64>,
+        metadata: AttributeMetadata,
+    ) -> Result<()> {
+        check_lane(
+            &self.shell,
+            &values,
+            "StructuredMeshSurface::set_attr_with_metadata",
+        )?;
+        check_metadata_name(name, &metadata)?;
+        validate_attribute_values(&metadata, values.iter())?;
+        self.attributes
+            .insert(name.to_string(), AttributeLane::new(metadata, values)?);
+        self.record_history(format!(
+            "structured_surface.set_attr_with_metadata(name={name})"
+        ));
+        Ok(())
+    }
+
+    pub fn set_attr_metadata(&mut self, name: &str, metadata: AttributeMetadata) -> Result<()> {
+        check_metadata_name(name, &metadata)?;
+        let lane = self
+            .attributes
+            .get_mut(name)
+            .ok_or_else(|| GeoError::NotFound(format!("no attribute lane '{name}'")))?;
+        validate_attribute_values(&metadata, lane.values.iter())?;
+        lane.metadata = metadata;
+        self.record_history(format!("structured_surface.set_attr_metadata(name={name})"));
         Ok(())
     }
 
@@ -135,9 +316,10 @@ impl StructuredMeshSurface {
     /// Promote an attribute lane to a standalone surface (its primary values)
     /// on the **same shared shell** — no geometry is copied.
     pub fn as_attr_surface(&self, name: &str) -> Option<StructuredMeshSurface> {
-        self.attributes.get(name).map(|a| StructuredMeshSurface {
+        self.attributes.get(name).map(|lane| StructuredMeshSurface {
             shell: Arc::clone(&self.shell),
-            values: a.clone(),
+            values: lane.values.clone(),
+            primary_metadata: Some(lane.metadata.clone()),
             attributes: IndexMap::new(),
             history: self
                 .history
@@ -228,6 +410,42 @@ impl StructuredMeshSurface {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StructuredMeshSurfaceDataV1 {
+    shell: StructuredShell,
+    values: Array2<f64>,
+    #[serde(default)]
+    attributes: IndexMap<String, Array2<f64>>,
+    #[serde(default)]
+    history: OperationHistory,
+}
+
+impl StructuredMeshSurface {
+    pub(crate) fn from_v1_payload(bytes: &[u8]) -> Result<Self> {
+        let old: StructuredMeshSurfaceDataV1 = crate::io::serial::from_bytes(bytes)?;
+        let mut out = StructuredMeshSurface::from_shell(Arc::new(old.shell), old.values)?;
+        for (name, values) in old.attributes {
+            out.set_attr(&name, values)?;
+        }
+        out.history = old.history;
+        Ok(out)
+    }
+}
+
+fn earthvision_index(value: f64, label: &str) -> Result<usize> {
+    if !value.is_finite() || value.fract().abs() > 1e-9 || value < 0.0 {
+        return Err(GeoError::GeometryInference(format!(
+            "EarthVision {label} index must be a finite non-negative integer, got {value}"
+        )));
+    }
+    if value > usize::MAX as f64 {
+        return Err(GeoError::GeometryInference(format!(
+            "EarthVision {label} index exceeds platform range: {value}"
+        )));
+    }
+    Ok(value as usize)
+}
+
 impl HasHistory for StructuredMeshSurface {
     fn operation_history(&self) -> &OperationHistory {
         &self.history
@@ -274,6 +492,31 @@ mod tests {
     }
 
     #[test]
+    fn earthvision_loader_preserves_null_node_and_topology() {
+        use std::io::Write;
+
+        let path = std::env::temp_dir().join(format!(
+            "petekio_structured_ev_{}.EarthVisionGrid",
+            std::process::id()
+        ));
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(
+                b"# Type: scattered data\n# Grid_size: 2 x 2\n# Null_value: 1.0e30\n# End:\n\
+                  100 200 -50 1 1\n110 200 -51 2 1\n100 210 1.0e30 1 2\n110 210 -53 2 2\n",
+            )
+            .unwrap();
+
+        let surface = StructuredMeshSurface::load_earthvision_grid(&path).unwrap();
+        assert_eq!((surface.ncol(), surface.nrow()), (2, 2));
+        assert_eq!(surface.node_xy(0, 1).unwrap(), (100.0, 210.0));
+        assert!(surface.z(0, 1).unwrap().is_nan());
+        assert_eq!(surface.to_points().len(), 4);
+        assert!(surface.nominal_geometry().is_some());
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
     fn attribute_lanes_share_one_shell() {
         let x = array![[0.0, 0.0], [10.0, 10.0]];
         let y = array![[0.0, 10.0], [0.0, 10.0]];
@@ -317,6 +560,76 @@ mod tests {
         // The shell appears exactly once in the payload (JSON projection).
         let json = serde_json::to_string(&back.as_attr_surface("amp").unwrap()).unwrap();
         assert_eq!(json.matches("\"shell\"").count(), 1);
+    }
+
+    #[test]
+    fn positional_v1_payload_migrates_attribute_metadata() {
+        let x = array![[0.0, 0.0], [10.0, 10.0]];
+        let y = array![[0.0, 10.0], [0.0, 10.0]];
+        let edge =
+            PolygonSet::convex_hull_xy(vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]])
+                .unwrap();
+        let current =
+            StructuredMeshSurface::new(x, y, array![[1.0, 2.0], [3.0, 4.0]], None, edge).unwrap();
+        let mut attributes = IndexMap::new();
+        attributes.insert("legacy".into(), array![[5.0, 6.0], [7.0, 8.0]]);
+        let old = StructuredMeshSurfaceDataV1 {
+            shell: (**current.shell()).clone(),
+            values: current.values().clone(),
+            attributes,
+            history: OperationHistory::from_entry("v1.fixture"),
+        };
+        let bytes = crate::io::serial::to_bytes(&old).unwrap();
+        let migrated = StructuredMeshSurface::from_v1_payload(&bytes).unwrap();
+        assert_eq!(
+            migrated.attr_metadata("legacy"),
+            Some(&AttributeMetadata::continuous("legacy").unwrap())
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_invalid_primary_metadata() {
+        let x = array![[0.0, 0.0], [10.0, 10.0]];
+        let y = array![[0.0, 10.0], [0.0, 10.0]];
+        let edge =
+            PolygonSet::convex_hull_xy(vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]])
+                .unwrap();
+        let current =
+            StructuredMeshSurface::new(x, y, array![[1.0, 2.0], [3.0, 4.0]], None, edge).unwrap();
+        let bad = StructuredMeshSurfaceData {
+            shell: (**current.shell()).clone(),
+            values: current.values().clone(),
+            primary_metadata: Some(AttributeMetadata {
+                id: " ".into(),
+                label: "Bad".into(),
+                kind: crate::AttributeKind::Continuous,
+                units: None,
+                codes: None,
+            }),
+            attributes: IndexMap::new(),
+            history: OperationHistory::new(),
+        };
+        let bytes = crate::io::serial::to_bytes(&bad).unwrap();
+        assert!(crate::io::serial::from_bytes::<StructuredMeshSurface>(&bytes).is_err());
+
+        let fractional_categorical = StructuredMeshSurfaceData {
+            shell: (**current.shell()).clone(),
+            values: Array2::from_elem((2, 2), 1.5),
+            primary_metadata: Some(
+                AttributeMetadata::new(
+                    "facies",
+                    "Facies",
+                    crate::AttributeKind::Categorical,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            ),
+            attributes: IndexMap::new(),
+            history: OperationHistory::new(),
+        };
+        let bytes = crate::io::serial::to_bytes(&fractional_categorical).unwrap();
+        assert!(crate::io::serial::from_bytes::<StructuredMeshSurface>(&bytes).is_err());
     }
 
     #[test]

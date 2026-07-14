@@ -11,7 +11,7 @@ import json
 import math
 import re
 import shlex
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from math import isfinite
 from pathlib import Path
@@ -23,6 +23,10 @@ from ._petekio import FormatKind, GeoData, IngestSpec, detect
 SKIP_UNSUPPORTED_FORMAT = "unsupported_format"
 SKIP_AMBIGUOUS_GEOJSON = "ambiguous_geojson"
 SKIP_IMPORT_ERROR = "import_error"
+
+_TEMPLATE_ASSET_PREFIX = "@asset/templates/"
+_ASSET_FRAME_VERSION = 1
+_TEMPLATE_CODEC = "application/json"
 
 
 @dataclass(frozen=True)
@@ -244,6 +248,129 @@ class _TopsCollection:
     __str__ = __repr__
 
 
+@dataclass(frozen=True)
+class WellTopSet:
+    """One persisted formation horizon aggregated across project well bores."""
+
+    name: str
+    rows: tuple[dict[str, Any], ...]
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        return iter(self.rows)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        return self.rows[index]
+
+    def summary(self) -> dict[str, int]:
+        return {
+            "picks": len(self.rows),
+            "wells": len({row["well"] for row in self.rows}),
+            "bores": len({(row["well"], row["bore"]) for row in self.rows}),
+        }
+
+    def to_dataframe(self) -> Any:
+        return _dataframe(list(self.rows))
+
+    def __repr__(self) -> str:
+        return f"WellTopSet(name={self.name!r}, picks={len(self.rows)})"
+
+
+class _WellTopsMapping(MutableMapping[str, WellTopSet]):
+    """Folder-aware mutable view over the actual persisted per-bore tops."""
+
+    def __init__(self, project: "Project", *, prefix: str = "") -> None:
+        self._project = project
+        self._prefix = _normalise_project_path(prefix)
+
+    def _names(self) -> list[str]:
+        return list(self._project.geodata.well_top_names())
+
+    def __len__(self) -> int:
+        return len(self._visible_names())
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._visible_names())
+
+    def __getitem__(self, name: str) -> WellTopSet | "_WellTopsMapping":
+        names = self._names()
+        resolved = _resolve_collection_name(name, names, prefix=self._prefix)
+        if resolved is not None:
+            rows = []
+            for well, bore, md, xyz in self._project.geodata.well_top_set(resolved):
+                rows.append({"well": well, "bore": bore, "md": md, "xyz": xyz})
+            return WellTopSet(resolved, tuple(rows))
+        folder = _resolve_collection_folder(name, names, prefix=self._prefix)
+        if folder is not None:
+            return _WellTopsMapping(self._project, prefix=folder)
+        raise KeyError(name)
+
+    def __setitem__(self, name: str, value: Any) -> None:
+        logical = _normalise_project_path(name)
+        full_name = "/".join(part for part in (self._prefix, logical) if part)
+        if not full_name:
+            raise ValueError("well-top name cannot be empty")
+        apply_top = getattr(value, "_apply_top", None)
+        if not callable(apply_top):
+            raise TypeError(
+                "well-top assignment requires project.wells.intersection(surface); "
+                "use bore.add_top(...) for an explicit single-bore pick"
+            )
+        # The compiled result validates same-project identity, complete-view
+        # scope, failure-free diagnostics, unique bore hits, and every XYZ/MD
+        # before its no-fail replacement pass mutates any Top record.
+        apply_top(self._project.geodata, full_name)
+
+    def __delitem__(self, name: str) -> None:
+        names = self._names()
+        resolved = _resolve_collection_name(name, names, prefix=self._prefix)
+        if resolved is None:
+            raise KeyError(name)
+        removed = self._project.geodata.delete_well_top(resolved)
+        if not removed:
+            raise KeyError(resolved)
+
+    def names(self) -> list[str]:
+        return self._visible_names()
+
+    def all_names(self) -> list[str]:
+        return self._names()
+
+    def folders(self) -> list[str]:
+        return [name for name in self._visible_names() if name.endswith("/")]
+
+    def values(self) -> list[WellTopSet]:
+        return [self[name] for name in self._object_names_at_prefix()]  # type: ignore[list-item]
+
+    def items(self) -> list[tuple[str, WellTopSet]]:
+        return [
+            (name.rsplit("/", 1)[-1], self[name])  # type: ignore[list-item]
+            for name in self._object_names_at_prefix()
+        ]
+
+    def _visible_names(self) -> list[str]:
+        return _visible_collection_names(self._names(), self._prefix)
+
+    def _object_names_at_prefix(self) -> list[str]:
+        return [
+            name
+            for name in self._names()
+            if _relative_to_project_prefix(name, self._prefix) is not None
+            and "/" not in _relative_to_project_prefix(name, self._prefix)
+        ]
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __repr__(self) -> str:
+        return repr(self._visible_names())
+
+
 class _ProjectWellView:
     """Project well wrapper that exposes notebook-friendly log discovery."""
 
@@ -313,6 +440,35 @@ class _ProjectWellsView:
             return self[well_id]
         except KeyError:
             return default
+
+    def view(
+        self,
+        *args: Any,
+        template: Any = None,
+        wells: Iterable[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Render this project's wells, optionally narrowed by well id.
+
+        ``template`` is presentation state and remains independent of
+        ``ViewSpec`` (WHAT) and ``ViewSettings`` (HOW).
+        """
+
+        target = self._view
+        if wells is not None:
+            requested = [wells] if isinstance(wells, str) else list(wells)
+            selected: set[str] = set()
+            for name in requested:
+                if not isinstance(name, str):
+                    raise TypeError("view wells must be well-id strings")
+                resolved = _resolve_collection_name(name, self._names)
+                if resolved is None:
+                    raise KeyError(name)
+                selected.add(resolved)
+            target = target.filter(lambda well: well.id in selected)
+        if template is not None:
+            kwargs["template"] = template
+        return target.view(*args, **kwargs)
 
     def assign_log(
         self,
@@ -424,6 +580,159 @@ class _ProjectWellsView:
     __str__ = __repr__
 
 
+@dataclass(frozen=True, slots=True)
+class BoundTemplate:
+    """Immutable project-owned snapshot of one persisted view template."""
+
+    _project: "Project" = field(repr=False, compare=False)
+    name: str
+    kind: str
+    schema_version: int
+    _provider: str = field(repr=False)
+    _bytes: bytes = field(repr=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a detached plain-data copy of the stored snapshot."""
+
+        value = json.loads(self._bytes.decode("utf-8"))
+        if not isinstance(value, dict):  # guarded on insertion/open; defensive
+            raise ValueError(f"template '{self.name}' payload is not a JSON object")
+        return value
+
+    def materialize(self) -> Any:
+        """Decode through the optional provider that owns template semantics."""
+
+        if not self._provider.startswith("petektools.viewer."):
+            raise ValueError(
+                f"template '{self.name}' declares unsupported provider {self._provider!r}"
+            )
+        try:
+            from petektools import viewer
+        except (ImportError, AttributeError) as exc:
+            raise ImportError(_template_provider_guidance(self.kind)) from exc
+        template_type = getattr(viewer, self._provider.rsplit(".", 1)[-1], None)
+        if template_type is None or not callable(getattr(template_type, "from_dict", None)):
+            raise ImportError(_template_provider_guidance(self.kind))
+        return template_type.from_dict(self.to_dict())
+
+    def __call__(
+        self,
+        *,
+        wells: Iterable[str] | str | None = None,
+        spec: Any = None,
+        settings: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Render all project wells, or the explicitly selected well ids."""
+
+        if spec is not None:
+            kwargs["spec"] = spec
+        if settings is not None:
+            kwargs["settings"] = settings
+        return self._project.wells.view(template=self, wells=wells, **kwargs)
+
+
+class _TemplatesCollection(_NamedCollection):
+    """Folder-aware mutable library of immutable project template snapshots."""
+
+    def __init__(self, project: "Project", *, prefix: str = "") -> None:
+        self._project = project
+        super().__init__(self._logical_names(), project._bound_template, prefix=prefix)
+
+    def _logical_names(self) -> list[str]:
+        return [
+            name[len(_TEMPLATE_ASSET_PREFIX) :]
+            for name in self._project.geodata.asset_names()
+            if name.startswith(_TEMPLATE_ASSET_PREFIX)
+        ]
+
+    def _refresh(self) -> None:
+        self._names = self._logical_names()
+
+    def _descend(self, prefix: str) -> "_TemplatesCollection":
+        return _TemplatesCollection(self._project, prefix=prefix)
+
+    def add(self, template: Any, *, tags: Iterable[str] = ()) -> BoundTemplate:
+        """Add a named snapshot; fail if its intrinsic name already exists."""
+
+        name, _, _, _, envelope, payload = _template_snapshot(template)
+        physical = _template_physical_name(name)
+        self._project.geodata.add_asset(
+            physical,
+            "template",
+            envelope,
+            [str(tag) for tag in tags],
+            _ASSET_FRAME_VERSION,
+            payload,
+        )
+        self._refresh()
+        return self._project._bound_template(name)
+
+    def replace(
+        self,
+        template: Any,
+        *,
+        tags: Iterable[str] | None = None,
+    ) -> BoundTemplate:
+        """Replace a named snapshot; fail if its intrinsic name is absent."""
+
+        name, _, _, _, envelope, payload = _template_snapshot(template)
+        physical = _template_physical_name(name)
+        existing = self._project.geodata.asset(physical)
+        if existing is None:
+            raise KeyError(name)
+        kept_tags = existing["tags"] if tags is None else [str(tag) for tag in tags]
+        self._project.geodata.replace_asset(
+            physical,
+            "template",
+            envelope,
+            kept_tags,
+            _ASSET_FRAME_VERSION,
+            payload,
+        )
+        self._refresh()
+        return self._project._bound_template(name)
+
+    def rename(self, old: str, new: str) -> BoundTemplate:
+        """Rename the physical asset and its intrinsic template name."""
+
+        self._refresh()
+        resolved = _resolve_collection_name(old, self._names, prefix=self._prefix)
+        if resolved is None:
+            raise KeyError(old)
+        new_name = _validate_template_name(new)
+        new_physical = _template_physical_name(new_name)
+        if self._project.geodata.asset(new_physical) is not None:
+            raise ValueError(f"template '{new_name}' already exists")
+        bound = self._project._bound_template(resolved)
+        data = bound.to_dict()
+        data["name"] = new_name
+        _, _, _, _, envelope, payload = _template_snapshot(data)
+        old_physical = _template_physical_name(resolved)
+        existing = self._project.geodata.asset(old_physical)
+        assert existing is not None
+        self._project.geodata.rename_asset(old_physical, new_physical)
+        self._project.geodata.replace_asset(
+            new_physical,
+            "template",
+            envelope,
+            existing["tags"],
+            _ASSET_FRAME_VERSION,
+            payload,
+        )
+        self._refresh()
+        return self._project._bound_template(new_name)
+
+    def delete(self, name: str) -> None:
+        self._refresh()
+        resolved = _resolve_collection_name(name, self._names, prefix=self._prefix)
+        if resolved is None:
+            raise KeyError(name)
+        if not self._project.geodata.delete_asset(_template_physical_name(resolved)):
+            raise KeyError(resolved)
+        self._refresh()
+
+
 class Project:
     """Canonical Python project facade, thin over `GeoData`."""
 
@@ -434,6 +743,7 @@ class Project:
         source: str | Path | None = None,
         aliases: Mapping[str, Any] | None = None,
         crs: str | None = None,
+        display_name: str | None = None,
         settings: Mapping[str, Any] | None = None,
         inventory: Mapping[str, Any] | None = None,
         tops_tables: Mapping[str, list[dict[str, Any]]] | None = None,
@@ -441,7 +751,10 @@ class Project:
         self._geo = geo
         self.source = None if source is None else str(source)
         self.aliases = dict(aliases or {})
-        self.crs = crs
+        if crs is not None:
+            self._geo.crs = crs
+        if display_name is not None:
+            self._geo.display_name = display_name
         self.settings = dict(settings or {})
         self._inventory = dict(inventory or self._empty_inventory(self.source))
         self._tops_tables = {
@@ -449,6 +762,26 @@ class Project:
             for name, rows in (tops_tables or {}).items()
         }
         self._log_resolution_cache: dict[str, list[dict[str, Any]]] = {}
+
+    @property
+    def display_name(self) -> str | None:
+        return self._geo.display_name
+
+    @display_name.setter
+    def display_name(self, value: str | None) -> None:
+        self._geo.display_name = value
+
+    @property
+    def crs(self) -> str | None:
+        return self._geo.crs
+
+    @crs.setter
+    def crs(self, value: str | None) -> None:
+        self._geo.crs = value
+
+    @property
+    def unit(self) -> str:
+        return self._geo.unit
 
     @classmethod
     def load(cls, path: str | Path) -> "Project":
@@ -480,6 +813,7 @@ class Project:
         aliases: Mapping[str, Any] | None = None,
         crs: str | None = None,
         settings: Mapping[str, Any] | ImportSettings | None = None,
+        display_name: str | None = None,
     ) -> "Project":
         """Import a raw Petrel-style source directory into a `Project`."""
 
@@ -529,6 +863,7 @@ class Project:
             source=src,
             aliases=aliases,
             crs=crs,
+            display_name=display_name,
             settings=settings_dict,
             inventory=inventory,
             tops_tables=tops_tables,
@@ -541,6 +876,69 @@ class Project:
         if dst.suffix.lower() != ".pproj":
             raise ValueError(f"Project.save: expected a .pproj path, got '{dst}'")
         self._geo.save(str(dst))
+
+    def view(
+        self,
+        selection: Any = None,
+        *,
+        visible: Any = None,
+        property: str | Mapping[str, str] | None = None,
+        logs: Any = None,
+        template: Any = None,
+        tab: str = "auto",
+        lod: bool | tuple[int, ...] = True,
+        settings: Any = None,
+    ) -> Any:
+        """Open a lazy, folder-aware multi-view workspace for this project.
+
+        Catalog construction reads metadata only. Surface values, trajectories,
+        well tops, and explicitly requested logs are materialized on first
+        enable and cached by the optional petekTools workspace.
+        """
+
+        from ._project_view import project_view
+
+        return project_view(
+            self,
+            selection,
+            visible=visible,
+            property=property,
+            logs=logs,
+            template=template,
+            tab=tab,
+            lod=lod,
+            settings=settings,
+        )
+
+    def view_catalog(self) -> dict[str, Any]:
+        """The generic petekTools workspace-v2 catalog (metadata only)."""
+
+        from ._project_view import ProjectViewProvider
+
+        return ProjectViewProvider(self).view_catalog()
+
+    def view_resource(
+        self,
+        *,
+        item_id: str,
+        view: str,
+        lane: str | None = None,
+        detail: str | None = None,
+        attribute: str | None = None,
+        color_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Materialize one transitional workspace-v2 provider resource."""
+
+        from ._project_view import ProjectViewProvider
+
+        return ProjectViewProvider(self).view_resource(
+            item_id=item_id,
+            view=view,
+            lane=lane,
+            detail=detail,
+            attribute=attribute,
+            color_by=color_by,
+        )
 
     @property
     def geodata(self) -> GeoData:
@@ -583,6 +981,22 @@ class Project:
         return _TopsCollection(self._inventory.get("tops", []), self._tops_tables)
 
     @property
+    def well_tops(self) -> _WellTopsMapping:
+        """Mutable persisted formation horizons aggregated from actual bores.
+
+        ``project.tops`` remains the compatible imported source-table view;
+        this mapping is reconstructed from serialized ``Top {name, md}`` records.
+        """
+
+        return _WellTopsMapping(self)
+
+    @property
+    def templates(self) -> _TemplatesCollection:
+        """Folder-aware persistent correlation-template library."""
+
+        return _TemplatesCollection(self)
+
+    @property
     def logs(self) -> Any:
         """Compatibility alias for ``project.wells.logs``."""
 
@@ -600,6 +1014,52 @@ class Project:
     def well(self, well_id: str) -> Any:
         return self._geo.well(well_id)
 
+    def _bound_template(self, logical_name: str) -> BoundTemplate:
+        name = _validate_template_name(logical_name)
+        physical = _template_physical_name(name)
+        asset = self._geo.asset(physical)
+        if asset is None:
+            raise KeyError(name)
+        if asset["version"] != _ASSET_FRAME_VERSION:
+            raise ValueError(
+                f"template '{name}' uses unsupported asset frame v{asset['version']}"
+            )
+        try:
+            envelope = json.loads(bytes(asset["envelope"]).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"template '{name}' has an invalid asset envelope") from exc
+        if not isinstance(envelope, dict) or envelope.get("asset_type") != "template":
+            raise ValueError(f"asset '{physical}' is not a template")
+        if envelope.get("codec") != _TEMPLATE_CODEC:
+            raise ValueError(
+                f"template '{name}' uses unsupported codec {envelope.get('codec')!r}"
+            )
+        provider = envelope.get("provider")
+        if not isinstance(provider, str) or not provider:
+            raise ValueError(f"template '{name}' has no provider")
+        payload = bytes(asset["bytes"])
+        data = _decode_template_payload(payload, name=name)
+        intrinsic = _validate_template_name(data.get("name"))
+        if intrinsic != name:
+            raise ValueError(
+                f"template asset '{name}' contains intrinsic name '{intrinsic}'"
+            )
+        kind = data.get("spec")
+        schema_version = data.get("schema_version")
+        _validate_template_header(kind, schema_version)
+        if envelope.get("schema_version") != schema_version:
+            raise ValueError(
+                f"template '{name}' envelope/payload schema versions disagree"
+            )
+        return BoundTemplate(
+            self,
+            name,
+            kind,
+            schema_version,
+            provider,
+            payload,
+        )
+
     def rename(self, kind: str, old: str, new: str) -> None:
         """Rename a project object of `kind` to `new`.
 
@@ -616,6 +1076,18 @@ class Project:
 
     def rename_surface(self, old: str, new: str) -> None:
         self._rename_object("surfaces", old, new)
+
+    def replace_surface(self, name: str, surface: Any) -> None:
+        """Write a detached edited surface back under an existing project name.
+
+        Project-backed handles remain copy-on-write; this explicit call is the
+        only mutation boundary and requires unchanged geometry/topology.
+        """
+
+        resolved = _resolve_collection_name(name, self._inventory.get("surfaces", []))
+        if resolved is None:
+            raise KeyError(name)
+        self._geo.replace_surface(resolved, surface)
 
     def delete_surface(self, name: str) -> None:
         self._delete_object("surfaces", name)
@@ -711,8 +1183,17 @@ class Project:
         inv = dict(self._inventory)
         inv["counts"] = dict(self._inventory.get("counts", {}))
         inv["skipped"] = [dict(item) for item in self._inventory.get("skipped", [])]
-        for key in ("surfaces", "wells", "tops", "points", "polygons", "sidecars"):
+        for key in (
+            "surfaces",
+            "wells",
+            "tops",
+            "points",
+            "polygons",
+            "sidecars",
+        ):
             inv[key] = list(self._inventory.get(key, []))
+        if "templates" in self._inventory:
+            inv["templates"] = list(self._inventory["templates"])
         return inv
 
     def resolve_log_expression(self, source: Any) -> list[dict[str, Any]]:
@@ -827,8 +1308,9 @@ class Project:
             info = GeoData.inspect(str(path))
         except Exception:
             return inv
+        inv["crs"] = info.get("crs")
         for kind, name in info.get("elements", []):
-            if kind == "surface":
+            if kind in {"surface", "structured_mesh", "tri_surface"}:
                 inv["surfaces"].append(name)
             elif kind == "well":
                 inv["wells"].append(name)
@@ -836,6 +1318,8 @@ class Project:
                 inv["points"].append(name)
             elif kind == "polygons":
                 inv["polygons"].append(name)
+            elif kind == "asset" and name.startswith(_TEMPLATE_ASSET_PREFIX):
+                inv.setdefault("templates", []).append(name[len(_TEMPLATE_ASSET_PREFIX) :])
         inv["counts"] = {
             "surfaces": len(inv["surfaces"]),
             "wells": len(inv["wells"]),
@@ -844,6 +1328,8 @@ class Project:
             "polygons": len(inv["polygons"]),
             "skipped": 0,
         }
+        if "templates" in inv:
+            inv["counts"]["templates"] = len(inv["templates"])
         return inv
 
 
@@ -1146,6 +1632,107 @@ def _project_kind_key(kind: str) -> str:
         return aliases[token]
     except KeyError as exc:
         raise ValueError(f"unsupported project object kind {kind!r}") from exc
+
+
+def _canonical_json_bytes(value: Any, *, what: str) -> bytes:
+    try:
+        text = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{what} must contain only finite JSON data: {exc}") from exc
+    return text.encode("utf-8")
+
+
+def _validate_template_name(value: Any) -> str:
+    if not isinstance(value, str):
+        raise TypeError("template name must be a string")
+    if not value or value != value.strip() or len(value.encode("utf-8")) > 900:
+        raise ValueError("template name must be non-empty, trimmed, and at most 900 UTF-8 bytes")
+    if value.startswith("/") or value.endswith("/") or "\\" in value or "\0" in value:
+        raise ValueError(f"invalid template name {value!r}")
+    parts = value.split("/")
+    if any(not part or part in {".", ".."} for part in parts) or parts[0] == "@asset":
+        raise ValueError(
+            "template names may use folders but not empty, reserved, or traversal segments"
+        )
+    return value
+
+
+def _validate_template_header(kind: Any, schema_version: Any) -> tuple[str, int]:
+    if not isinstance(kind, str) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", kind) is None:
+        raise ValueError("template 'spec' must be a provider type name")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version <= 0
+        or schema_version > 2**32 - 1
+    ):
+        raise ValueError("template 'schema_version' must be a positive 32-bit integer")
+    return kind, schema_version
+
+
+def _template_snapshot(
+    template: Any,
+) -> tuple[str, str, int, str, bytes, bytes]:
+    if isinstance(template, Mapping):
+        raw = template
+    else:
+        to_dict = getattr(template, "to_dict", None)
+        if not callable(to_dict):
+            raise TypeError("template must be a mapping or expose to_dict()")
+        raw = to_dict()
+    if not isinstance(raw, Mapping):
+        raise TypeError("template.to_dict() must return a mapping")
+    data = dict(raw)
+    name = _validate_template_name(data.get("name"))
+    kind, schema_version = _validate_template_header(
+        data.get("spec"), data.get("schema_version")
+    )
+    payload = _canonical_json_bytes(data, what=f"template '{name}'")
+    # Decode once to prove the snapshot is a JSON object rather than relying on
+    # a Mapping implementation with surprising conversion behaviour.
+    _decode_template_payload(payload, name=name)
+    provider = f"petektools.viewer.{kind}"
+    envelope = _canonical_json_bytes(
+        {
+            "asset_type": "template",
+            "codec": _TEMPLATE_CODEC,
+            "provider": provider,
+            "schema_version": schema_version,
+        },
+        what="template asset envelope",
+    )
+    return name, kind, schema_version, provider, envelope, payload
+
+
+def _decode_template_payload(payload: bytes, *, name: str) -> dict[str, Any]:
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"template '{name}' payload is not valid UTF-8 JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"template '{name}' payload must be a JSON object")
+    canonical = _canonical_json_bytes(data, what=f"template '{name}'")
+    if canonical != payload:
+        raise ValueError(f"template '{name}' payload is not canonical JSON")
+    return data
+
+
+def _template_physical_name(logical_name: str) -> str:
+    return f"{_TEMPLATE_ASSET_PREFIX}{_validate_template_name(logical_name)}"
+
+
+def _template_provider_guidance(kind: str) -> str:
+    return (
+        f"rendering/materializing {kind} requires a compatible petektools.viewer. "
+        "Install or upgrade it with `pip install -U 'petekio[toolkit]'`. "
+        "Project template listing and .pproj persistence work without petektools."
+    )
 
 
 def _well_attr_lookup(attr: str, well_ids: Iterable[str]) -> str | None:
@@ -1555,7 +2142,10 @@ def _load_surfaces_points_polygons(
         name = _asset_name_for(root, rec.path, role=role, stem_counts=stem_counts)
         try:
             if role == "surface":
-                geo.load_surface(name, str(rec.path))
+                if rec.kind == FormatKind.EarthVisionGrid:
+                    geo.load_structured_surface(name, str(rec.path))
+                else:
+                    geo.load_surface(name, str(rec.path))
                 inventory["surfaces"].append(name)
             elif role == "points":
                 topology = (
@@ -1618,14 +2208,26 @@ def _spatial_stem_counts(
             continue
         key = (role, rec.path.stem)
         counts[key] = counts.get(key, 0) + 1
+    # An EarthVision structured surface and its same-stem IRAP point export are
+    # distinct roles, but both historically received path-qualified names.
+    # Preserve those stable names while allowing both objects to coexist.
+    kinds_by_stem: dict[str, list[FormatKind]] = {}
+    for rec in records:
+        if rec.path in loaded_paths or _inside_any(rec.path, ignored_dirs):
+            continue
+        kinds_by_stem.setdefault(rec.path.stem, []).append(rec.kind)
+    for stem, kinds in kinds_by_stem.items():
+        if FormatKind.EarthVisionGrid in kinds and FormatKind.IrapClassicPoints in kinds:
+            counts[("surface", stem)] = max(2, counts.get(("surface", stem), 0))
+            counts[("points", stem)] = max(2, counts.get(("points", stem), 0))
     return counts
 
 
 def _spatial_role(path: Path, kind: FormatKind) -> str | None:
     suffix = path.suffix.lower()
-    if kind in (FormatKind.IrapClassicGrid, FormatKind.Cps3Grid):
+    if kind in (FormatKind.IrapClassicGrid, FormatKind.Cps3Grid, FormatKind.EarthVisionGrid):
         return "surface"
-    if kind in (FormatKind.EarthVisionGrid, FormatKind.IrapClassicPoints):
+    if kind == FormatKind.IrapClassicPoints:
         return "points"
     if kind == FormatKind.CsvPoints:
         return "points" if _csv_has_xyz(path) else None

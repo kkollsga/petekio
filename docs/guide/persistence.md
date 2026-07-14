@@ -32,6 +32,10 @@ info["owner"], info["tags"], info["unit"]
 info["elements"]                                 # [(kind, name), ...]
 ```
 
+Regular surfaces use kind `surface`; explicit-node EarthVision surfaces use
+the already-supported `structured_mesh` kind. Both materialize on open and are
+visible through the same Python surface collection.
+
 ## Share a subset — split / merge / tag-filter
 
 Sections are position-independent, so these copy blobs **byte-for-byte** (no

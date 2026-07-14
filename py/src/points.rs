@@ -8,6 +8,7 @@
 
 use crate::geodata::GeoData;
 use crate::geometry::{BBox, GridGeometry};
+use crate::shell::{MeshShell, StructuredShell};
 use crate::stats::Stats;
 use crate::structured_surface::StructuredMeshSurface;
 use crate::surface::Surface;
@@ -118,10 +119,16 @@ impl PointSet {
             .map_err(to_pyerr)
     }
 
-    /// Load scattered points from an EarthVision grid ASCII file
-    /// (`.EarthVisionGrid`); null nodes are dropped.
+    /// Deprecated finite-node compatibility view of an EarthVision grid.
+    /// Prefer `StructuredMeshSurface.load_earthvision_grid`; null nodes are
+    /// dropped here.
     #[staticmethod]
     fn load_earthvision_grid(py: Python<'_>, path: &str) -> PyResult<PointSet> {
+        crate::deprecation_warning(
+            py,
+            "PointSet.load_earthvision_grid() is deprecated; use \
+             StructuredMeshSurface.load_earthvision_grid() to preserve null nodes and topology.",
+        )?;
         py.detach(|| RsPointSet::load_earthvision_grid(path))
             .map(PointSet::owned)
             .map_err(to_pyerr)
@@ -267,27 +274,33 @@ impl PointSet {
         })
     }
 
-    /// Infer a regular grid geometry from the points, falling back to a
-    /// `TriSurface` when no regular lattice describes the point cloud.
+    /// Infer geometry only (never values): a regular `GridGeometry`, a
+    /// topology-verified curvilinear `StructuredShell`, or a triangulated
+    /// `MeshShell` when no structured topology can be verified.
     ///
     /// `edge` controls `geometry.edge`: `"full_rect"` (default; the four corners of
     /// the bounding lattice), `"occupied"` (the outline of the nodes that carry
     /// data — use this when the footprint is not rectangular), or `"convex_hull"`.
-    /// It applies only to a successfully inferred `GridGeometry`; the fallback
-    /// `TriSurface` carries the boundary of its retained triangles.
+    /// It applies to a successfully inferred `GridGeometry`. A topology-verified
+    /// `StructuredShell` fallback honours explicit `"occupied"` /
+    /// `"convex_hull"`; the default `"full_rect"` retains its compatible
+    /// occupied boundary because a curvilinear shell has no nominal rectangle.
+    /// A triangulated `MeshShell` carries the boundary implied by its triangles.
     ///
-    /// `max_bridge` (in cells) applies **only to the fallback `TriSurface`**: it
+    /// `max_bridge` (in cells) applies **only to the fallback `MeshShell`**: it
     /// admits triangle edges the closed-lattice rules reject — the boundary fringe,
     /// fault seams, interior data gaps — up to that length, closing the mesh where
-    /// the geometry does not close. `None` keeps the mesh strictly lattice-closed.
-    /// It has no effect when a regular `GridGeometry` is inferred.
+    /// the geometry does not close. The default is 3.4 cells; pass `None` to keep
+    /// the mesh strictly lattice-closed. It has no effect when a regular
+    /// `GridGeometry` is inferred.
     ///
-    /// `fallback` controls what happens when the lattice fit fails:
-    /// `"tri"` (default) returns the `TriSurface` fallback **and emits a
-    /// `UserWarning`**; `"error"` raises a `ValueError` instead. Dispatch the
-    /// result without importing types via its `kind` property
-    /// (`"grid_geometry"` vs `"tri_surface"`).
-    #[pyo3(signature = (tolerance = 1e-3, edge = "full_rect", max_bridge = None, fallback = "tri"))]
+    /// `fallback` controls what happens when the lattice fit fails: `"mesh"`
+    /// (default) returns a geometry shell **and emits a `UserWarning`**;
+    /// `"error"` raises a `ValueError`. Legacy `"tri"` is accepted with a
+    /// `DeprecationWarning` but still returns `StructuredShell | MeshShell`.
+    /// Dispatch via `kind`: `"grid_geometry"`, `"structured_shell"`, or
+    /// `"mesh_shell"`.
+    #[pyo3(signature = (tolerance = 1e-3, edge = "full_rect", max_bridge = 3.4, fallback = "mesh"))]
     fn infer_geometry(
         &self,
         py: Python<'_>,
@@ -297,7 +310,7 @@ impl PointSet {
         fallback: &str,
     ) -> PyResult<Py<PyAny>> {
         let edge = parse_geometry_edge(edge)?;
-        let fallback = parse_geometry_fallback(fallback)?;
+        let fallback = parse_geometry_fallback(py, fallback)?;
         if !tolerance.is_finite() || tolerance <= 0.0 {
             return Err(PyValueError::new_err(
                 "geometry inference failed: tolerance must be a finite positive number",
@@ -314,28 +327,59 @@ impl PointSet {
                     return Err(PyValueError::new_err(format!(
                         "geometry inference failed: no regular lattice fits these points \
                          ({regular_error}) and fallback=\"error\" was requested — pass an \
-                         explicit GridGeometry or use to_tri_surface()"
+                         explicit GridGeometry or use an explicit value-bearing conversion"
                     )));
                 }
+
+                // Explicit column/row topology is authoritative. Bare XY does not
+                // become structured here: callers must first accept and attach a
+                // verified `detect_topology()` result. That keeps genuinely
+                // scattered or fault-stalled clouds on the MeshShell path.
+                let structured_edge = match edge {
+                    // Compatibility: infer_geometry() has always returned the
+                    // occupied structured boundary under its FullRect default.
+                    // A curvilinear shell has no nominal regular rectangle, and
+                    // explicit to_structured_surface(edge="full_rect") remains
+                    // correctly strict rather than inventing one.
+                    GeometryEdge::FullRect => GeometryEdge::Occupied,
+                    requested => requested,
+                };
+                let structured = p.to_structured_surface(tolerance, structured_edge).ok();
+                if let Some(surface) = structured {
+                    crate::user_warning(
+                        py,
+                        &format!(
+                            "infer_geometry: no regular lattice fits these points \
+                             ({regular_error}); returning StructuredShell geometry \
+                             (pass fallback=\"error\" to raise instead)"
+                        ),
+                    )?;
+                    return Ok(StructuredShell::wrap(Arc::clone(surface.shell()))
+                        .named(self.name.as_ref().map(|name| format!("{name} geometry")))
+                        .into_pyobject(py)?
+                        .into_any()
+                        .unbind());
+                }
+
                 match py.detach(|| p.to_tri_surface(None, max_bridge)) {
                     Ok(tri) => {
                         crate::user_warning(
                             py,
                             &format!(
                                 "infer_geometry: no regular lattice fits these points \
-                                 ({regular_error}); returning the TriSurface fallback \
+                                 ({regular_error}); returning the MeshShell fallback \
                                  (pass fallback=\"error\" to raise instead)"
                             ),
                         )?;
-                        Ok(TriSurface::wrap(tri)
-                            .named(self.name.clone())
+                        Ok(MeshShell::wrap(Arc::clone(tri.shell()))
+                            .named(self.name.as_ref().map(|name| format!("{name} geometry")))
                             .into_pyobject(py)?
                             .into_any()
                             .unbind())
                     }
                     Err(tri_error) => Err(PyValueError::new_err(format!(
                         "geometry inference failed: no regular lattice fits these points \
-                         ({regular_error}); the TriSurface fallback also failed \
+                         ({regular_error}); the MeshShell fallback also failed \
                          ({tri_error}) — pass an explicit GridGeometry or fix the input \
                          cloud"
                     ))),
@@ -351,10 +395,10 @@ impl PointSet {
     /// (the same machinery as `infer_geometry(tolerance)`). When no regular
     /// lattice fits, this raises a `ValueError` — it never grids onto an
     /// arbitrary bounding lattice; pass an explicit `GridGeometry` or represent
-    /// the cloud with `to_tri_surface()` instead. Passing the `infer_geometry`
-    /// `TriSurface` fallback as `geom` is a `TypeError` pointing at
-    /// `tri_surface.resample(...)`. `tolerance` is used only when `geom` is
-    /// `None`.
+    /// the cloud with `to_tri_surface()` instead. Passing an `infer_geometry`
+    /// geometry shell as `geom` is a `TypeError` pointing at the corresponding
+    /// explicit value-bearing conversion. `tolerance` is used only when `geom`
+    /// is `None`.
     #[pyo3(signature = (geom = None, method = "idw", tolerance = 1e-3))]
     fn to_surface(
         &self,
@@ -368,12 +412,22 @@ impl PointSet {
             Some(obj) => {
                 if let Ok(gg) = obj.cast::<GridGeometry>() {
                     gg.borrow().inner.clone()
+                } else if obj.cast::<StructuredShell>().is_ok() {
+                    return Err(PyTypeError::new_err(
+                        "to_surface: received a StructuredShell geometry from infer_geometry, \
+                         not a GridGeometry — use to_structured_surface() for the value-bearing \
+                         representation, or pass an explicit GridGeometry",
+                    ));
+                } else if obj.cast::<MeshShell>().is_ok() {
+                    return Err(PyTypeError::new_err(
+                        "to_surface: received a MeshShell geometry from infer_geometry, not a \
+                         GridGeometry — use to_tri_surface() for the value-bearing \
+                         representation, or pass an explicit GridGeometry",
+                    ));
                 } else if obj.cast::<TriSurface>().is_ok() {
                     return Err(PyTypeError::new_err(
-                        "to_surface: received a TriSurface (the infer_geometry fallback for \
-                         non-lattice-regular points), not a GridGeometry — grid it with \
-                         tri_surface.resample(geom, method), or pass to_surface() an explicit \
-                         GridGeometry",
+                        "to_surface: received a value-bearing TriSurface, not a GridGeometry — \
+                         resample that TriSurface or pass an explicit GridGeometry",
                     ));
                 } else {
                     return Err(PyTypeError::new_err(format!(
@@ -465,18 +519,26 @@ impl PointSet {
 /// What `infer_geometry` does when no regular lattice fits the points.
 #[derive(PartialEq)]
 enum GeometryFallback {
-    /// Return the `TriSurface` fallback (with a `UserWarning`).
-    Tri,
+    /// Return a geometry shell fallback (with a `UserWarning`).
+    Mesh,
     /// Raise instead of falling back.
     Error,
 }
 
-fn parse_geometry_fallback(s: &str) -> PyResult<GeometryFallback> {
+fn parse_geometry_fallback(py: Python<'_>, s: &str) -> PyResult<GeometryFallback> {
     match s.trim().to_ascii_lowercase().as_str() {
-        "tri" | "tri_surface" | "trisurface" => Ok(GeometryFallback::Tri),
+        "mesh" | "mesh_shell" | "meshshell" => Ok(GeometryFallback::Mesh),
+        "tri" | "tri_surface" | "trisurface" => {
+            crate::deprecation_warning(
+                py,
+                "infer_geometry(fallback='tri') is deprecated because infer_geometry now \
+                 returns geometry-only shells; use fallback='mesh' instead.",
+            )?;
+            Ok(GeometryFallback::Mesh)
+        }
         "error" | "raise" => Ok(GeometryFallback::Error),
         other => Err(PyValueError::new_err(format!(
-            "unknown geometry fallback '{other}' (expected 'tri' or 'error')"
+            "unknown geometry fallback '{other}' (expected 'mesh', legacy 'tri', or 'error')"
         ))),
     }
 }

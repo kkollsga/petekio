@@ -43,4 +43,5 @@ nav:
       - Wells: guide/wells.md
       - Surfaces, points & polygons: guide/surfaces.md
       - Projects & persistence: guide/persistence.md
+      - Project workspace: guide/project-workspace.md
   - API reference: api/reference.md

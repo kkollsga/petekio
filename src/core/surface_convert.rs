@@ -12,7 +12,9 @@
 //! surfaces (shell + property lanes).
 
 use crate::core::value_layer::grid_lane_on_mesh;
-use crate::core::{GridMethod, PointSet, StructuredMeshSurface, Surface, TriSurface};
+use crate::core::{
+    AttributeMetadata, GridMethod, PointSet, StructuredMeshSurface, Surface, TriSurface,
+};
 use crate::foundation::{GridGeometry, HasHistory, Result};
 use std::sync::Arc;
 
@@ -23,9 +25,14 @@ impl Surface {
     pub fn to_structured_mesh(&self) -> Result<StructuredMeshSurface> {
         let shell = Arc::new(self.geom.to_structured_shell());
         let mut out = StructuredMeshSurface::from_shell(shell, self.values().clone())?;
+        out.set_primary_metadata(self.primary_metadata().cloned());
         for name in self.attr_names() {
             let lane = self.attr(name).expect("listed attribute exists").clone();
-            out.set_attr(name, lane)?;
+            let metadata = self
+                .attr_metadata(name)
+                .expect("listed attribute has metadata")
+                .clone();
+            out.set_attr_with_metadata(name, lane, metadata)?;
         }
         out.set_history(self.history_with("surface.to_structured_mesh()"));
         Ok(out)
@@ -38,9 +45,14 @@ impl Surface {
         let shell = Arc::new(self.geom.to_mesh_shell()?);
         let values = grid_lane_on_mesh(&shell, self.values());
         let mut out = TriSurface::from_shell(Arc::clone(&shell), values)?;
+        out.set_primary_metadata(self.primary_metadata().cloned());
         for name in self.attr_names() {
             let lane = grid_lane_on_mesh(&shell, self.attr(name).expect("listed attribute exists"));
-            out.set_attr(name, lane)?;
+            let metadata = self
+                .attr_metadata(name)
+                .expect("listed attribute has metadata")
+                .clone();
+            out.set_attr_with_metadata(name, lane, metadata)?;
         }
         out.set_history(self.history_with("surface.to_tri_surface()"));
         Ok(out)
@@ -55,9 +67,14 @@ impl StructuredMeshSurface {
         let mesh = Arc::new(self.shell().to_mesh_shell()?);
         let values = grid_lane_on_mesh(&mesh, self.values());
         let mut out = TriSurface::from_shell(Arc::clone(&mesh), values)?;
+        out.set_primary_metadata(self.primary_metadata().cloned());
         for name in self.attr_names() {
             let lane = grid_lane_on_mesh(&mesh, self.attr(name).expect("listed attribute exists"));
-            out.set_attr(name, lane)?;
+            let metadata = self
+                .attr_metadata(name)
+                .expect("listed attribute has metadata")
+                .clone();
+            out.set_attr_with_metadata(name, lane, metadata)?;
         }
         out.set_history(
             self.operation_history()
@@ -83,12 +100,24 @@ impl StructuredMeshSurface {
             }
             coords
         };
-        let lanes: Vec<(&str, Vec<[f64; 3]>)> = self
+        let lanes: Vec<(AttributeMetadata, Vec<[f64; 3]>)> = self
             .attr_names()
             .into_iter()
-            .map(|name| (name, lane_coords(self.attr(name).expect("listed"))))
+            .map(|name| {
+                (
+                    self.attr_metadata(name).expect("listed metadata").clone(),
+                    lane_coords(self.attr(name).expect("listed")),
+                )
+            })
             .collect();
-        let mut out = grid_lanes(lane_coords(self.values()), lanes, target, method)?;
+        let mut out = grid_lanes(
+            lane_coords(self.values()),
+            self.primary_metadata(),
+            lanes,
+            target,
+            method,
+        )?;
+        out.set_primary_metadata(self.primary_metadata().cloned());
         out.set_history(self.operation_history().with_entry(format!(
             "structured_surface.resample(ncol={}, nrow={}, method={method:?})",
             target.ncol, target.nrow
@@ -111,12 +140,24 @@ impl TriSurface {
                 .map(|(n, z)| [n[0], n[1], *z])
                 .collect()
         };
-        let lanes: Vec<(&str, Vec<[f64; 3]>)> = self
+        let lanes: Vec<(AttributeMetadata, Vec<[f64; 3]>)> = self
             .attr_names()
             .into_iter()
-            .map(|name| (name, lane_coords(self.attr(name).expect("listed"))))
+            .map(|name| {
+                (
+                    self.attr_metadata(name).expect("listed metadata").clone(),
+                    lane_coords(self.attr(name).expect("listed")),
+                )
+            })
             .collect();
-        let mut out = grid_lanes(lane_coords(self.values()), lanes, target, method)?;
+        let mut out = grid_lanes(
+            lane_coords(self.values()),
+            self.primary_metadata(),
+            lanes,
+            target,
+            method,
+        )?;
+        out.set_primary_metadata(self.primary_metadata().cloned());
         out.set_history(self.operation_history().with_entry(format!(
             "tri_surface.resample(ncol={}, nrow={}, method={method:?})",
             target.ncol, target.nrow
@@ -129,17 +170,27 @@ impl TriSurface {
 /// existing gridding kernels through [`PointSet::to_surface`].
 fn grid_lanes(
     primary: Vec<[f64; 3]>,
-    lanes: Vec<(&str, Vec<[f64; 3]>)>,
+    primary_metadata: Option<&AttributeMetadata>,
+    lanes: Vec<(AttributeMetadata, Vec<[f64; 3]>)>,
     target: &GridGeometry,
     method: GridMethod,
 ) -> Result<Surface> {
-    let mut out = PointSet::from_coords(primary).to_surface(target.clone(), method)?;
-    for (name, coords) in lanes {
+    let primary_method = match primary_metadata.map(|metadata| metadata.kind) {
+        Some(crate::AttributeKind::Categorical) => GridMethod::Nearest,
+        _ => method,
+    };
+    let mut out = PointSet::from_coords(primary).to_surface(target.clone(), primary_method)?;
+    for (metadata, coords) in lanes {
+        let lane_method = match metadata.kind {
+            crate::AttributeKind::Continuous => method,
+            crate::AttributeKind::Categorical => GridMethod::Nearest,
+        };
         let lane = PointSet::from_coords(coords)
-            .to_surface(target.clone(), method)?
+            .to_surface(target.clone(), lane_method)?
             .values()
             .clone();
-        out.set_attr(name, lane)?;
+        let name = metadata.id.clone();
+        out.set_attr_with_metadata(&name, lane, metadata)?;
     }
     Ok(out)
 }
@@ -177,7 +228,19 @@ mod tests {
             }
         }
         let mut s = Surface::new(g, v).unwrap();
-        s.set_attr("amp", a).unwrap();
+        s.set_attr_with_metadata(
+            "amp",
+            a,
+            crate::AttributeMetadata::new(
+                "amp",
+                "Amplitude",
+                crate::AttributeKind::Continuous,
+                Some("mV".into()),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         s
     }
 
@@ -190,12 +253,14 @@ mod tests {
         let sm = s.to_structured_mesh().unwrap();
         assert_eq!(sm.values(), s.values());
         assert_eq!(sm.attr("amp").unwrap(), s.attr("amp").unwrap());
+        assert_eq!(sm.attr_metadata("amp"), s.attr_metadata("amp"));
         assert_eq!(sm.nominal_geometry(), Some(&g));
 
         // Level 1 → 3 and 2 → 3 agree, and every node keeps its lane values.
         for tri in [s.to_tri_surface().unwrap(), sm.to_tri_surface().unwrap()] {
             assert_eq!(tri.points().len(), g.ncol * g.nrow);
             assert_eq!(tri.attr_names(), vec!["amp"]);
+            assert_eq!(tri.attr_metadata("amp"), s.attr_metadata("amp"));
             for (k, p) in tri.points().iter().enumerate() {
                 assert_relative_eq!(p[2], p[0] + 2.0 * p[1], epsilon = 1e-9);
                 assert_relative_eq!(tri.attr("amp").unwrap()[k], p[0] - p[1], epsilon = 1e-9);
@@ -216,6 +281,33 @@ mod tests {
         assert_eq!(tri.values().iter().filter(|z| z.is_nan()).count(), 1);
         // The attribute at that node is still defined.
         assert!(tri.attr("amp").unwrap().iter().all(|a| a.is_finite()));
+    }
+
+    #[test]
+    fn lifted_categorical_lanes_reject_fractional_value_replacement() {
+        let mut s = surface();
+        s.set_attr_with_metadata(
+            "facies",
+            Array2::from_elem((geom().ncol, geom().nrow), 1.0),
+            crate::AttributeMetadata::new(
+                "facies",
+                "Facies",
+                crate::AttributeKind::Categorical,
+                None,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut structured = s.to_structured_mesh().unwrap();
+        assert!(structured
+            .set_attr("facies", Array2::from_elem((geom().ncol, geom().nrow), 1.5),)
+            .is_err());
+        let mut tri = s.to_tri_surface().unwrap();
+        assert!(tri
+            .set_attr("facies", vec![1.5; tri.shell().n_nodes()])
+            .is_err());
     }
 
     #[test]
@@ -242,6 +334,7 @@ mod tests {
         ] {
             assert_eq!(down.geom, target);
             assert_eq!(down.attr_names(), vec!["amp"]);
+            assert_eq!(down.attr_metadata("amp"), s.attr_metadata("amp"));
             for j in 0..target.nrow {
                 for i in 0..target.ncol {
                     let (x, y) = target.node_xy(i, j);
@@ -264,5 +357,84 @@ mod tests {
         let sm = s.to_structured_mesh().unwrap();
         let g2 = sm.infer_grid(1e-6).unwrap();
         assert_eq!((g2.ncol, g2.nrow), (s.geom.ncol, s.geom.nrow));
+    }
+
+    #[test]
+    fn categorical_lanes_use_nearest_while_continuous_lanes_use_requested_method() {
+        let mut s = surface();
+        let mut facies = Array2::zeros((geom().ncol, geom().nrow));
+        for j in 0..geom().nrow {
+            for i in 0..geom().ncol {
+                facies[[i, j]] = if i < 3 { 1.0 } else { 2.0 };
+            }
+        }
+        s.set_attr_with_metadata(
+            "facies",
+            facies,
+            crate::AttributeMetadata::new(
+                "facies",
+                "Facies",
+                crate::AttributeKind::Categorical,
+                None,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let target = GridGeometry {
+            xori: 105.0,
+            yori: 205.0,
+            xinc: 10.0,
+            yinc: 10.0,
+            ncol: 5,
+            nrow: 4,
+            rotation_deg: 0.0,
+            yflip: false,
+        };
+        let structured = s.to_structured_mesh().unwrap();
+        let tri = s.to_tri_surface().unwrap();
+        for down in [
+            structured
+                .resample(&target, GridMethod::InverseDistance)
+                .unwrap(),
+            tri.resample(&target, GridMethod::InverseDistance).unwrap(),
+        ] {
+            assert!(down
+                .attr("facies")
+                .unwrap()
+                .iter()
+                .filter(|value| value.is_finite())
+                .all(|value| value.fract() == 0.0));
+            assert_eq!(
+                down.attr_metadata("facies").unwrap().kind,
+                crate::AttributeKind::Categorical
+            );
+            assert!(down
+                .attr("amp")
+                .unwrap()
+                .iter()
+                .any(|value| value.is_finite() && value.fract() != 0.0));
+        }
+        for promoted in [
+            structured
+                .as_attr_surface("facies")
+                .unwrap()
+                .resample(&target, GridMethod::InverseDistance)
+                .unwrap(),
+            tri.as_attr_surface("facies")
+                .unwrap()
+                .resample(&target, GridMethod::InverseDistance)
+                .unwrap(),
+        ] {
+            assert!(promoted
+                .values()
+                .iter()
+                .filter(|value| value.is_finite())
+                .all(|value| value.fract() == 0.0));
+            assert_eq!(
+                promoted.primary_metadata().unwrap().kind,
+                crate::AttributeKind::Categorical
+            );
+        }
     }
 }

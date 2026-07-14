@@ -46,3 +46,70 @@ def test_synthgen_hint_reorders_coincident_lobes(tmp_path):
     geo.load_well_tops(str(paths["tops"]))
     so = geo.strat_order
     assert so.index("Lower Sand A") < so.index("Lower Sand B")
+
+
+def test_viewer_design_fixture_has_positioned_deviated_multibore_well(tmp_path):
+    paths = synthgen.make_viewer_design_field(tmp_path)
+    geo = petekio.GeoData(unit="m")
+    geo.load_well("25/1-1", files=str(paths["wells_dir"]))
+    well = geo.well("25/1-1")
+
+    assert well.head == (1000.0, 5000.0)
+    assert well.is_multibore is True
+    assert set(well.bores()) == {"", "A", "B"}
+
+    bore_a = well.sidetrack("A")
+    first_md, last_md = bore_a.md_range()
+    first = bore_a.xyz(first_md)
+    last = bore_a.xyz(last_md)
+    assert first[:2] == (1000.0, 5000.0)
+    assert last[0] - first[0] > 50.0
+    assert last[1] - first[1] > 50.0
+
+    bore_b = well.sidetrack("B")
+    first_md, last_md = bore_b.md_range()
+    assert bore_b.xyz(first_md)[:2] == bore_b.xyz(last_md)[:2]
+
+    geo.load_well("25/1-2", files=str(paths["wells_dir"]))
+    assert geo.well("25/1-2").head == (3000.0, 5200.0)
+
+
+def test_viewer_design_fixture_has_rotated_typed_surface_lanes(tmp_path):
+    paths = synthgen.make_viewer_design_field(tmp_path)
+    surface = petekio.Surface.load_irap_classic(str(paths["surface"]))
+    expected = paths["surface_geometry"]
+
+    geom = surface.geometry
+    assert (geom.ncol, geom.nrow) == (7, 6)
+    assert geom.rotation_deg == 27.0
+    assert (geom.xori, geom.yori, geom.xinc, geom.yinc) == (
+        expected["xori"],
+        expected["yori"],
+        expected["xinc"],
+        expected["yinc"],
+    )
+
+    attributes = paths["attributes"]
+    continuous = {
+        name for name, lane in attributes.items() if lane["kind"] == "continuous"
+    }
+    assert continuous == {
+        "gross_thickness",
+        "porosity",
+    }
+    assert attributes["gross_thickness"]["unit"] == "m"
+    assert attributes["porosity"]["unit"] == "fraction"
+    assert attributes["facies"]["kind"] == "categorical"
+    assert attributes["facies"]["unit"] is None
+    assert attributes["facies"]["codes"] == {1: "Shale", 2: "Sand", 3: "Silt"}
+
+    for name, lane in attributes.items():
+        lane_surface = petekio.Surface.load_irap_classic(str(lane["path"]))
+        lane_geom = lane_surface.geometry
+        assert (lane_geom.ncol, lane_geom.nrow) == (geom.ncol, geom.nrow)
+        assert lane_geom.rotation_deg == geom.rotation_deg
+        surface.set_attr(name, lane_surface)
+
+    assert set(surface.attr_names()) == set(attributes)
+    facies = surface.attr("facies").stats()
+    assert (facies.count, facies.min, facies.max) == (42, 1.0, 3.0)

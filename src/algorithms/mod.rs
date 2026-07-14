@@ -14,4 +14,5 @@
 //! type-light boundary). Imports only from `foundation`.
 
 pub mod surfaces;
+pub mod intersections;
 pub mod wells;

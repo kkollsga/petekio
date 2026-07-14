@@ -4,6 +4,7 @@ installed wheel.
 """
 
 import math
+import warnings
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,37 @@ WELL_DIR = str(FIXTURES / "wells" / "15_9-A1")
 # --------------------------------------------------------------------------
 # Surface
 # --------------------------------------------------------------------------
+
+
+def _write_irap_surface(tmp_path, name, geom, values):
+    """Write a small synthetic grid in the committed IRAP-classic convention."""
+    yinc = -geom.yinc if geom.yflip else geom.yinc
+    xmax = geom.xori + (geom.ncol - 1) * geom.xinc
+    ymax = geom.yori + (geom.nrow - 1) * geom.yinc
+    tokens = ["9999900.0" if math.isnan(v) else repr(v) for v in values]
+    path = tmp_path / f"{name}.irap"
+    path.write_text(
+        "\n".join(
+            [
+                f"-996 {geom.nrow} {geom.xinc} {yinc}",
+                f"{geom.xori} {xmax} {geom.yori} {ymax}",
+                f"{geom.ncol} {geom.rotation_deg} {geom.xori} {geom.yori}",
+                "0 0 0 0 0 0 0",
+                " ".join(tokens),
+            ]
+        )
+        + "\n"
+    )
+    return petekio.Surface.load_irap_classic(str(path))
+
+
+def _plane_surface(tmp_path, name, geom, gx, gy, intercept=100.0):
+    values = []
+    for j in range(geom.nrow):
+        for i in range(geom.ncol):
+            x, y = geom.node_xy(i, j)
+            values.append(intercept + gx * x + gy * y)
+    return _write_irap_surface(tmp_path, name, geom, values)
 
 
 def test_surface_load_and_geometry():
@@ -93,12 +125,22 @@ def test_surface_surface_operators_and_mismatch():
     assert minus.stats().mean == 30.0
     assert any("rhs.surface.constant(value=100" in h for h in minus.history())
     assert any("surface.minus(surface)" in h for h in minus.history())
-    # thickness staticmethod (base - top)
-    assert petekio.Surface.thickness(top, base).stats().mean == 30.0
+    # thickness computes base - top in both unbound and instance forms.
+    unbound = petekio.Surface.thickness(top, base)
+    assert unbound.stats().mean == 30.0
+    assert any("surface.thickness(clamp_zero=false)" in h for h in unbound.history())
+    # Normal instance method and unbound class form are equivalent.
+    assert top.thickness(base).stats().mean == 30.0
+    assert top.thickness(base, clamp_zero=True).stats().mean == 30.0
+    assert petekio.Surface.thickness(top, base, clamp_zero=True).stats().mean == 30.0
+    assert base.thickness(top).stats().mean == -30.0
+    assert base.thickness(top, clamp_zero=True).stats().mean == 0.0
     # geometry mismatch raises
     other = petekio.Surface.constant(petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 4, 4), 1.0)
     with pytest.raises(ValueError):
         _ = top + other
+    with pytest.raises(ValueError):
+        top.thickness(other)
 
 
 def test_surface_elementwise_math():
@@ -126,15 +168,19 @@ def test_surface_volumetrics():
     assert h[-1][1] == 400.0
 
 
-def test_surface_resample_rotated_is_unsupported():
-    # The committed IRAP fixture is rotated (rotation_deg == 30). The shared
-    # resample kernel is axis-aligned-only, so resampling a rotated geometry
-    # raises LOUDLY rather than returning a silently-untested answer (pending
-    # suite task_suite_grid_rotation). Real IRAP/RMS exports CAN be rotated.
+def test_surface_resample_rotated_identity_uses_world_frame():
+    # The committed IRAP fixture is rotated 30 degrees. Identity resampling and
+    # point sampling now share petekTools' exact world↔intrinsic transform.
+    doc = petekio.Surface.resample.__doc__
+    assert "rotation and `yflip` are honoured independently" in doc
+    assert "axis-aligned kernel only" not in doc
     s = petekio.Surface.load_irap_classic(IRAP)
     assert s.geometry.rotation_deg == 30.0
-    with pytest.raises(ValueError):
-        s.resample(s.geometry)
+    resampled = s.resample(s.geometry)
+    assert resampled.geometry.rotation_deg == 30.0
+    for i, j in ((0, 0), (2, 0), (0, 3), (2, 3), (1, 2)):
+        x, y = s.geometry.node_xy(i, j)
+        assert resampled.sample(x, y) == s.sample(x, y)
 
 
 def test_surface_resample_axis_aligned():
@@ -166,6 +212,183 @@ def test_surface_attr_access():
     assert s.attr("seismic").stats().mean == 7.0
     with pytest.raises(KeyError):
         _ = s.attr["missing"]
+
+
+def test_surface_attribute_metadata_is_canonical_and_preserved_on_replace():
+    g = petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 2, 2)
+    s = petekio.Surface.constant(g, 1.0)
+    values = petekio.Surface.constant(g, 0.2)
+    metadata = {
+        "id": "porosity",
+        "label": "Porosity",
+        "kind": "continuous",
+        "units": "v/v",
+        "codes": None,
+    }
+    s.set_attr("porosity", values, metadata=metadata)
+    assert s.attr_metadata("porosity") == metadata
+    assert s.attr["porosity"].primary_metadata == metadata
+
+    s.set_attr("porosity", petekio.Surface.constant(g, 0.3))
+    assert s.attr_metadata("porosity") == metadata
+    with pytest.raises(ValueError, match="must match lane name"):
+        s.set_attr("porosity", values, metadata={"id": "other"})
+    for invalid in (
+        {"id": " "},
+        {"id": "porosity", "label": "\t"},
+        {"id": "porosity", "units": " \n"},
+        {"id": " porosity", "label": "Porosity"},
+        {"id": "porosity", "label": " Porosity "},
+        {"id": "porosity", "label": "Porosity", "units": " m "},
+    ):
+        with pytest.raises(ValueError, match="non-empty, trimmed string"):
+            s.set_attr("porosity", values, metadata=invalid)
+    with pytest.raises(ValueError, match="code label.*non-empty, trimmed string"):
+        s.set_attr(
+            "facies",
+            values,
+            metadata={
+                "id": "facies",
+                "kind": "categorical",
+                "codes": {"1": {"label": " Sand ", "color": "#EDA100"}},
+            },
+        )
+    with pytest.raises(TypeError, match="unknown attribute metadata key 'unit'"):
+        s.set_attr("porosity", values, metadata={"id": "porosity", "unit": "v/v"})
+    with pytest.raises(TypeError, match="unknown attribute code record key 'colour'"):
+        s.set_attr(
+            "facies",
+            values,
+            metadata={
+                "id": "facies",
+                "kind": "categorical",
+                "codes": {"1": {"colour": "#EDA100"}},
+            },
+        )
+
+    categorical = {
+        "id": "facies",
+        "label": "Facies",
+        "kind": "categorical",
+        "units": None,
+        "codes": None,
+    }
+    with pytest.raises(ValueError, match="integers or NaN"):
+        s.set_attr(
+            "facies", petekio.Surface.constant(g, 1.5), metadata=categorical
+        )
+    s.set_attr("facies", petekio.Surface.constant(g, 1.0), metadata=categorical)
+    with pytest.raises(ValueError, match="integers or NaN"):
+        s.set_attr("facies", petekio.Surface.constant(g, 1.5))
+
+    structured = s.to_structured_mesh()
+    with pytest.raises(ValueError, match="integers or NaN"):
+        structured.set_attr("facies", [[1.5, 1.5], [1.5, 1.5]])
+    tri = s.to_tri_surface()
+    with pytest.raises(ValueError, match="integers or NaN"):
+        tri.set_attr("facies", [1.5] * tri.n_points)
+
+
+def test_surface_smooth_dip_and_extrapolate(tmp_path):
+    rotated_flip = petekio.GridGeometry(
+        100.0, 200.0, 2.0, 3.0, 4, 5, rotation_deg=37.0, yflip=True
+    )
+    gx, gy = 0.2, -0.1
+    plane = _plane_surface(tmp_path, "rotated_plane", rotated_flip, gx, gy)
+    plane.source_lane = petekio.Surface.constant(rotated_flip, 1.0)
+
+    angle = plane.dip_angle()
+    azimuth = plane.dip_azimuth()
+    expected_angle = math.degrees(math.atan(math.hypot(gx, gy)))
+    expected_azimuth = math.degrees(math.atan2(-gx, -gy)) % 360.0
+    assert math.isclose(angle.stats().min, expected_angle, abs_tol=1e-10)
+    assert math.isclose(angle.stats().max, expected_angle, abs_tol=1e-10)
+    assert math.isclose(azimuth.stats().min, expected_azimuth, abs_tol=1e-10)
+    assert math.isclose(azimuth.stats().max, expected_azimuth, abs_tol=1e-10)
+    assert angle.geometry.rotation_deg == 37.0 and angle.geometry.yflip
+    assert angle.attr_names() == [] and azimuth.attr_names() == []
+    assert "surface.dip_angle()" in angle.history()[-1]
+    assert "surface.dip_azimuth()" in azimuth.history()[-1]
+
+    cardinal = [
+        (0.0, -1.0, 0.0),
+        (-1.0, 0.0, 90.0),
+        (0.0, 1.0, 180.0),
+        (1.0, 0.0, 270.0),
+    ]
+    axis_geom = petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 3, 3)
+    for n, (east_gradient, north_gradient, expected) in enumerate(cardinal):
+        direction = _plane_surface(
+            tmp_path, f"cardinal_{n}", axis_geom, east_gradient, north_gradient
+        ).dip_azimuth()
+        assert math.isclose(direction.stats().mean, expected, abs_tol=1e-12)
+
+    flat = petekio.Surface.constant(axis_geom, 7.0)
+    assert flat.dip_angle().stats().mean == 0.0
+    assert flat.dip_azimuth().stats().count == 0
+
+    holes = [7.0] * 9
+    holes[4] = math.nan
+    with_hole = _write_irap_surface(tmp_path, "constant_hole", axis_geom, holes)
+    with_hole.overlay = petekio.Surface.constant(axis_geom, 3.0)
+    smoothed = with_hole.smooth()
+    assert smoothed.stats().count == 8
+    assert smoothed.attr_names() == []
+    assert "surface.smooth(radius=1)" in smoothed.history()[-1]
+    assert with_hole.dip_angle().stats().count < 8
+
+    for method in ("nearest", "idw", "min_curvature"):
+        filled = with_hole.extrapolate(method)
+        assert filled.stats().count == 9
+        assert math.isclose(filled.stats().mean, 7.0, abs_tol=1e-8)
+        assert filled.attr_names() == []
+        assert "surface.extrapolate" in filled.history()[-1]
+
+    all_nan = petekio.Surface.constant(axis_geom, math.nan)
+    with pytest.raises(ValueError, match="requires at least one finite source node"):
+        all_nan.extrapolate()
+    with pytest.raises(TypeError, match="unknown grid method"):
+        with_hole.extrapolate("kriging")
+
+
+def test_surface_attribute_assignment_is_typed_geometry_safe_and_replaceable():
+    g = petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 2, 2)
+    s = petekio.Surface.constant(g, 1.0)
+
+    # Assignment is ergonomic sugar for set_attr; replacement keeps one lane.
+    s.thickness = petekio.Surface.constant(g, 7.0)
+    assert s.attr["thickness"].stats().mean == 7.0
+    s.thickness = petekio.Surface.constant(g, 9.0)
+    assert s.attr_names() == ["thickness"]
+    assert s.attr["thickness"].stats().mean == 9.0
+
+    # The instance/unbound operation is not shadowed by the attribute lane.
+    assert petekio.Surface.thickness(s, s).stats().mean == 0.0
+    assert s.thickness(s).stats().mean == 0.0
+
+    with pytest.raises(TypeError):
+        s.invalid = [1.0, 2.0, 3.0, 4.0]
+
+    wrong_shape = petekio.Surface.constant(
+        petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 3, 2), 2.0
+    )
+    with pytest.raises(ValueError):
+        s.set_attr("wrong_shape", wrong_shape)
+
+    different_geometries = [
+        petekio.GridGeometry(100.0, 0.0, 10.0, 10.0, 2, 2),
+        petekio.GridGeometry(0.0, 100.0, 10.0, 10.0, 2, 2),
+        petekio.GridGeometry(0.0, 0.0, 20.0, 10.0, 2, 2),
+        petekio.GridGeometry(0.0, 0.0, 10.0, 20.0, 2, 2),
+        petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 2, 2, rotation_deg=30.0),
+        petekio.GridGeometry(0.0, 0.0, 10.0, 10.0, 2, 2, yflip=True),
+    ]
+    for different in different_geometries:
+        rhs = petekio.Surface.constant(different, 2.0)
+        with pytest.raises(ValueError):
+            s.set_attr("same_shape", rhs)
+        with pytest.raises(ValueError):
+            s.same_shape = rhs
 
 
 def test_stats_fields():
@@ -294,6 +517,30 @@ def test_earthvision_pointset_infer_geometry_uses_column_row(tmp_path):
     assert math.isclose(geom.yinc, 10.0, abs_tol=1e-9)
 
 
+def test_earthvision_structured_surface_preserves_null_xy(tmp_path):
+    path = tmp_path / "null_surface.EarthVisionGrid"
+    path.write_text(
+        """# Type: scattered data
+# Grid_size: 2 x 2
+# Null_value: 1.0e30
+# End:
+0 0 10 1 1
+10 0 11 2 1
+0 10 1.0e30 1 2
+10 10 13 2 2
+""",
+        encoding="utf-8",
+    )
+    surface = petekio.StructuredMeshSurface.load_earthvision_grid(str(path))
+    assert (surface.ncol, surface.nrow) == (2, 2)
+    assert surface.node_xy(0, 1) == (0.0, 10.0)
+    assert math.isnan(surface.z(0, 1))
+    assert len(surface.to_points()) == 4
+
+    # Deprecated compatibility remains a finite-only point view.
+    assert len(petekio.PointSet.load_earthvision_grid(str(path))) == 3
+
+
 def _l_shaped_lattice():
     x, y, z = [], [], []
     for j in range(4):
@@ -398,6 +645,9 @@ def test_detect_topology_labels_a_curvilinear_grid_and_round_trips():
     assert abs(report.detected_cell_j - 50.0) < 1.5
 
     # the labels are what let the mesh be built, and nothing moved
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
+        shell = pts.infer_geometry(tolerance=1e-3)
+    assert shell.kind == "structured_shell"
     back = pts.to_structured_surface().to_points()
     assert sorted(zip(x, y, z)) == sorted(back.xyz())
 
@@ -516,14 +766,35 @@ def _faulted_blocks():
     return x, y, z
 
 
+def test_infer_geometry_default_bridge_closes_fringe_and_explicit_none_is_strict():
+    # One point 2.5 cells beyond a regular boundary represents the short fringe
+    # produced when an export's edge does not close on the recovered lattice.
+    x, y, z = _rotated_lattice(9, 7, 50.0, 50.0, 0.0)
+    x.append(1000.0 + 8.0 * 50.0 + 125.0)
+    y.append(2000.0 + 3.0 * 50.0)
+    z.append(-1800.0)
+    p = petekio.PointSet.from_xyz(x, y, z)
+
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
+        default = p.infer_geometry(tolerance=1e-3)
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
+        strict = p.infer_geometry(tolerance=1e-3, max_bridge=None)
+
+    assert default.kind == "mesh_shell"
+    assert default.n_nodes == 64
+    assert default.components == 1
+    assert strict.n_nodes == 63
+    assert p.to_tri_surface().n_points == 63
+
+
 def test_infer_geometry_max_bridge_closes_the_fault_seam():
     x, y, z = _faulted_blocks()
     p = petekio.PointSet.from_xyz(x, y, z)
-    with pytest.warns(UserWarning, match="TriSurface fallback"):
-        strict = p.infer_geometry(tolerance=1e-3)
-    assert strict.kind == "tri_surface"
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
+        strict = p.infer_geometry(tolerance=1e-3, max_bridge=None)
+    assert strict.kind == "mesh_shell"
     assert strict.components == 2
-    with pytest.warns(UserWarning, match="TriSurface fallback"):
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
         bridged = p.infer_geometry(tolerance=1e-3, max_bridge=4.0)
     assert bridged.components == 1
     with pytest.raises(ValueError, match="max_bridge"):
@@ -534,10 +805,10 @@ def test_infer_geometry_fallback_is_loud_and_controllable():
     x, y, z = _faulted_blocks()
     p = petekio.PointSet.from_xyz(x, y, z)
 
-    # Default: the TriSurface fallback fires a UserWarning naming the fit failure.
+    # Default: the MeshShell fallback fires a UserWarning naming the fit failure.
     with pytest.warns(UserWarning, match="no regular lattice fits these points"):
-        tri = p.infer_geometry(tolerance=1e-3)
-    assert tri.kind == "tri_surface"
+        mesh = p.infer_geometry(tolerance=1e-3)
+    assert mesh.kind == "mesh_shell"
 
     # fallback="error" raises instead of falling back.
     with pytest.raises(ValueError, match='fallback="error"'):
@@ -547,21 +818,57 @@ def test_infer_geometry_fallback_is_loud_and_controllable():
     with pytest.raises(ValueError, match="unknown geometry fallback"):
         p.infer_geometry(tolerance=1e-3, fallback="bogus")
 
+    # Legacy spelling remains accepted but is explicitly deprecated; the
+    # returned object follows the geometry-only contract.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        legacy = p.infer_geometry(tolerance=1e-3, fallback="tri")
+    assert legacy.kind == "mesh_shell"
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+    assert any(issubclass(w.category, UserWarning) for w in caught)
+
 
 def test_infer_geometry_reports_both_failures_when_fallback_also_fails():
-    # Five scattered points: no regular lattice fits, and the cloud is too
-    # degenerate for the TriSurface fallback to triangulate — the error must
-    # chain BOTH causes, not swallow the fallback's.
+    # Collinear points: no regular lattice fits, and the cloud is genuinely
+    # degenerate for the MeshShell fallback — the error must chain BOTH causes.
     p = petekio.PointSet.from_xyz(
-        [0.0, 7.3, 2.9, 11.7, 5.5],
-        [0.0, 1.1, 8.4, 9.2, 4.9],
+        [0.0, 1.0, 2.0, 3.0, 4.0],
+        [0.0, 2.0, 4.0, 6.0, 8.0],
         [-1.0, -2.0, -3.0, -4.0, -5.0],
     )
     with pytest.raises(
         ValueError,
-        match=r"no regular lattice fits these points.*TriSurface fallback also failed",
+        match=r"no regular lattice fits these points.*MeshShell fallback also failed",
     ):
         p.infer_geometry(tolerance=1e-3, max_bridge=3.5)
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "z"),
+    [
+        (
+            [0.0, 10.0, 2.0, 12.0, 6.0],
+            [0.0, 1.0, 9.0, 11.0, 5.0],
+            [-2600.0, -2610.0, -2620.0, -2630.0, -2615.0],
+        ),
+        (
+            [0.0, 10.0, 2.0, 12.0],
+            [0.0, 1.0, 9.0, 11.0],
+            [-2600.0, -2610.0, -2620.0, -2630.0],
+        ),
+    ],
+)
+def test_infer_geometry_keeps_complete_small_scattered_meshes(x, y, z):
+    p = petekio.PointSet.from_xyz(x, y, z)
+    for kwargs in ({}, {"edge": "convex_hull"}, {"max_bridge": None}):
+        with pytest.warns(UserWarning, match="MeshShell fallback"):
+            shell = p.infer_geometry(tolerance=0.1, **kwargs)
+        assert shell.kind == "mesh_shell"
+        assert shell.n_nodes == len(x)
+        assert shell.n_triangles > 0
+        assert shell.components == 1
+        assert len(shell.edge.rings()) == 1
+        assert len(shell.labels()) == len(x)
 
 
 def test_pointset_to_surface_infers_geometry_when_omitted():
@@ -602,11 +909,12 @@ def test_pointset_to_surface_rejects_non_lattice_clouds_and_wrong_geom_types():
     with pytest.raises(ValueError, match="not lattice-regular"):
         p.to_surface()
 
-    # The infer_geometry TriSurface fallback passed by mistake names itself.
+    # A geometry-only fallback passed by mistake names itself and the explicit
+    # value-bearing conversion to use.
     with pytest.warns(UserWarning):
-        tri = p.infer_geometry(tolerance=1e-3)
-    with pytest.raises(TypeError, match="TriSurface"):
-        p.to_surface(tri)
+        mesh = p.infer_geometry(tolerance=1e-3)
+    with pytest.raises(TypeError, match="MeshShell.*to_tri_surface"):
+        p.to_surface(mesh)
 
     # Any other wrong type names what was received.
     with pytest.raises(TypeError, match="GridGeometry"):
@@ -630,8 +938,8 @@ def test_infer_geometry_results_carry_discoverable_kinds():
     assert regular.to_surface(geom).kind == "surface"
     fx, fy, fz = _faulted_blocks()
     with pytest.warns(UserWarning):
-        tri = petekio.PointSet.from_xyz(fx, fy, fz).infer_geometry(tolerance=1e-3)
-    assert tri.kind == "tri_surface"
+        shell = petekio.PointSet.from_xyz(fx, fy, fz).infer_geometry(tolerance=1e-3)
+    assert shell.kind == "mesh_shell"
 
 
 def test_tri_surface_wireframe_edges_hide_interior_diagonals():
@@ -701,7 +1009,8 @@ def test_structured_surface_round_trips_points_exactly():
 def test_pointset_infer_geometry_falls_back_for_curvilinear_mesh_with_topology():
     # Regular column/row, but the node spacing swells across the grid: no single
     # (xinc, yinc, rotation) lattice fits it. The strict detector must refuse to
-    # invent one, and the Python convenience API must return the TIN fallback.
+    # invent one, and the Python convenience API must return the empty
+    # StructuredShell because explicit topology is available.
     x, y, z, col, row = [], [], [], [], []
     for j in range(12):
         for i in range(12):
@@ -714,21 +1023,69 @@ def test_pointset_infer_geometry_falls_back_for_curvilinear_mesh_with_topology()
     p.column = col
     p.row = row
 
-    with pytest.warns(UserWarning, match="TriSurface fallback"):
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
         inferred = p.infer_geometry(tolerance=1e-3)
-    assert isinstance(inferred, petekio.TriSurface)
-    assert inferred.kind == "tri_surface"
-    assert inferred.n_points > 0
-    assert inferred.n_triangles > 0
+    assert isinstance(inferred, petekio.StructuredShell)
+    assert inferred.kind == "structured_shell"
+    assert inferred.ncol == 12 and inferred.nrow == 12
     assert inferred.edge.area() > 0.0
-    assert len(inferred.points()) == inferred.n_points
-    assert inferred.xyz() == inferred.points()
-    assert len(inferred.triangles()) == inferred.n_triangles
+    assert len(inferred.x()) == 12
+    assert len(inferred.y()) == 12
+
+    with pytest.raises(TypeError, match="StructuredShell.*to_structured_surface"):
+        p.to_surface(inferred)
 
     # The exact representation still works, and reports no regular geometry.
     mesh = p.to_structured_surface(tolerance=1e-3)
     assert mesh.ncol == 12 and mesh.nrow == 12
     assert mesh.nominal_geometry is None
+
+
+def test_pointset_structured_fallback_honors_edge_mode():
+    # Curvilinear L-shaped topology: regular inference fails, occupied follows
+    # the concavity, and convex_hull spans it. The convenience fallback must use
+    # the same requested boundary as the explicit value-bearing conversion.
+    x, y, z, col, row = [], [], [], [], []
+    for j in range(6):
+        for i in range(6):
+            if i > 2 and j > 2:
+                continue
+            x.append(1000.0 + 40.0 * i * (1.0 + 0.055 * i) + 0.8 * i * j)
+            y.append(2000.0 + 35.0 * j * (1.0 + 0.045 * j) + 0.35 * i * j)
+            z.append(100.0 + i + j)
+            col.append(i + 1)
+            row.append(j + 1)
+    points = petekio.PointSet.from_xyz(x, y, z)
+    points.column = col
+    points.row = row
+
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
+        inferred_occupied = points.infer_geometry(edge="occupied")
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
+        inferred_hull = points.infer_geometry(edge="convex_hull")
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
+        inferred_default = points.infer_geometry()
+    explicit_occupied = points.to_structured_surface(edge="occupied").shell
+    explicit_hull = points.to_structured_surface(edge="convex_hull").shell
+
+    def canonical_rings(polygon):
+        canonical = []
+        for closed in polygon.rings():
+            ring = [tuple(point) for point in closed[:-1]]
+            variants = []
+            for ordered in (ring, list(reversed(ring))):
+                variants.extend(
+                    tuple(ordered[offset:] + ordered[:offset])
+                    for offset in range(len(ordered))
+                )
+            canonical.append(min(variants))
+        return sorted(canonical)
+
+    assert inferred_occupied.edge.area() < inferred_hull.edge.area()
+    assert isinstance(inferred_default, petekio.StructuredShell)
+    assert canonical_rings(inferred_default.edge) == canonical_rings(explicit_occupied.edge)
+    assert canonical_rings(inferred_occupied.edge) == canonical_rings(explicit_occupied.edge)
+    assert canonical_rings(inferred_hull.edge) == canonical_rings(explicit_hull.edge)
 
 
 def test_pointset_infer_geometry_rejects_invalid_tolerance_before_fallback():
@@ -775,14 +1132,18 @@ def test_pointset_to_structured_surface_requires_topology():
         p.to_structured_surface()
 
 
-def test_pointset_infer_geometry_rejects_scattered_points():
+def test_pointset_infer_geometry_falls_back_for_scattered_points():
     p = petekio.PointSet.from_xyz(
         [0.0, 11.0, 3.0, 19.0, 7.0],
         [0.0, 0.2, 8.7, 4.1, 17.3],
         [1.0, 2.0, 3.0, 4.0, 5.0],
     )
-    with pytest.raises(ValueError, match="geometry inference failed"):
-        p.infer_geometry()
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
+        shell = p.infer_geometry()
+    assert shell.kind == "mesh_shell"
+    assert shell.n_nodes == 5
+    assert shell.components == 1
+    assert len(shell.edge.rings()) == 1
 
 
 def test_polygonset_geojson():

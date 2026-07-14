@@ -11,6 +11,7 @@ import petekio
 geo = petekio.GeoData(unit="m")
 
 geo.load_surface("top_res", "surfaces/top_res.irap")
+geo.load_structured_surface("faulted_top", "surfaces/faulted_top.EarthVisionGrid")
 geo.load_well("15/9-A1", files="wells/15_9-A1/")
 geo.load_well_tops("WellTops.tops")
 geo.load_points("picks", "picks.geojson")
@@ -22,13 +23,15 @@ geo.load_polygons("outline", "outline.geojson")
 Each collection is reachable by name:
 
 ```python
-top = geo.surface("top_res")     # owned copy of the surface
+top = geo.surface("top_res")      # project-backed Surface view
+faulted = geo.surface("faulted_top")  # project-backed StructuredMeshSurface view
 w   = geo.well("15/9-A1")         # a view into the project
 pts = geo.points("picks")
 ```
 
-Surfaces are handed back as owned copies; wells, points, and polygons are
-lightweight **views** that re-resolve into the project's collections by name.
+Surfaces, wells, points, and polygons are lightweight **views** that re-resolve
+into the project's collections by name. Regular and structured surfaces share
+one Python namespace and name-uniqueness domain.
 
 ## Broadcasting across wells
 

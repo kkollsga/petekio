@@ -25,9 +25,11 @@ from ._petekio import (
     StructuredMeshSurface,
     StructuredShell,
     Surface,
+    SurfaceIntersection,
     Trajectory,
     TriSurface,
     Well,
+    WellIntersectionSet,
     WellsView,
     __version__,
     canonical_mnemonic,
@@ -43,7 +45,8 @@ from ._viewer import (
     build_well_log_bundle,
     encode_lane,
 )
-from ._project import ImportSettings, Project
+from ._project import BoundTemplate, ImportSettings, Project, WellTopSet
+from ._project_view import ProjectViewSession
 from ._logs import Logs, LogChannel, LogPredicate
 
 # The pure-Python view spec value-objects (WHAT / HOW for well.view()). The
@@ -55,6 +58,7 @@ from ._specs import (
 
 __all__ = [
     "BBox",
+    "BoundTemplate",
     "FormatKind",
     "GeoData",
     "GridGeometry",
@@ -73,16 +77,20 @@ __all__ = [
     "PolygonColumn",
     "PolygonSet",
     "Project",
+    "ProjectViewSession",
     "Sidetrack",
     "Stats",
     "StructuredMeshSurface",
     "StructuredShell",
     "Surface",
+    "SurfaceIntersection",
     "Trajectory",
     "TriSurface",
     "ViewSettings",
     "ViewSpec",
     "Well",
+    "WellIntersectionSet",
+    "WellTopSet",
     "WellsView",
     "__version__",
     "build_well_log_bundle",

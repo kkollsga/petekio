@@ -8,7 +8,7 @@
 //! built; share via `Arc`.
 
 use super::fit::fit_grid_from_indexed;
-use super::mesh::{signed_area2, MeshShell, WalkLabel};
+use super::mesh::{quad_wireframe, signed_area2, MeshShell, WalkLabel};
 use crate::core::PolygonSet;
 use crate::foundation::{BBox, GeoError, GridGeometry, Result};
 use ndarray::Array2;
@@ -199,7 +199,8 @@ impl StructuredShell {
                 "structured shell has no complete cell to triangulate".into(),
             ));
         }
-        MeshShell::from_triangles(nodes, triangles, labels)
+        let wireframe = quad_wireframe(&triangles, &labels);
+        MeshShell::new(nodes, triangles, wireframe, self.edge.clone(), labels)
     }
 
     /// Fit a regular [`GridGeometry`] to the shell's `(i, j)`-indexed nodes

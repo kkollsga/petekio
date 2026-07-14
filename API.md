@@ -38,7 +38,7 @@ pub fn detect(path: impl AsRef<Path>) -> Result<FormatKind>;
 ```rust
 pub enum Unit { Feet, Metres }
 
-pub struct Point3 { pub x: f64, pub y: f64, pub z: f64 }
+pub struct Point3 { pub x: f64, pub y: f64, pub z: f64 } // z = negative-down elevation
 
 pub struct BBox { pub xmin: f64, pub ymin: f64, pub xmax: f64, pub ymax: f64 }
 
@@ -82,6 +82,24 @@ impl Stats {
 ## Surface
 
 ```rust
+pub enum AttributeKind { Continuous, Categorical }
+pub struct CodeRecord { pub label: Option<String>, pub color: Option<String> }
+pub struct AttributeMetadata {
+    pub id: String,
+    pub label: String,
+    pub kind: AttributeKind,
+    pub units: Option<String>,
+    pub codes: Option<IndexMap<String, CodeRecord>>,
+}
+impl CodeRecord {
+    pub fn new(label: Option<String>, color: Option<String>) -> Result<Self>;
+}
+impl AttributeMetadata {
+    pub fn new(id: impl Into<String>, label: impl Into<String>, kind: AttributeKind,
+               units: Option<String>, codes: Option<IndexMap<String, CodeRecord>>) -> Result<Self>;
+    pub fn continuous(id: impl Into<String>) -> Result<Self>;
+    pub fn validate(&self) -> Result<()>;
+}
 pub struct Surface { pub geom: GridGeometry /* values + attributes are private */ }
 
 impl Surface {
@@ -96,7 +114,11 @@ impl Surface {
     pub fn values(&self) -> &Array2<f64>;
     pub fn sample(&self, x: f64, y: f64) -> Option<f64>;     // bilinear (petektools kernel); None outside grid or if NEAREST corner NaN; else renormalized over finite corners. Exact under rotation.
     pub fn attr(&self, name: &str) -> Option<&Array2<f64>>;
+    pub fn attr_metadata(&self, name: &str) -> Option<&AttributeMetadata>;
+    pub fn primary_metadata(&self) -> Option<&AttributeMetadata>;
     pub fn set_attr(&mut self, name: &str, values: Array2<f64>) -> Result<()>;
+    pub fn set_attr_with_metadata(&mut self, name: &str, values: Array2<f64>, metadata: AttributeMetadata) -> Result<()>;
+    pub fn set_attr_metadata(&mut self, name: &str, metadata: AttributeMetadata) -> Result<()>;
     pub fn attr_names(&self) -> Vec<&str>;
     pub fn as_attr_surface(&self, name: &str) -> Option<Surface>;          // promote attr → ops
 
@@ -125,13 +147,15 @@ impl Surface {
     pub fn hypsometry(&self) -> Vec<(f64, f64)>;            // (depth, area) curve
 
     // resample (petektools kernel, Bilinear; one-home). Kernel NaN-corner policy
-    // (see sample). Err(Unsupported) on a ROTATED source/target (axis-aligned kernel
-    // only; yflip OK) pending suite grid-rotation. Was `-> Surface` (infallible)
-    // pre-0.2.9.
+    // (see sample). Source and target rotation/yflip are honoured through exact
+    // world↔intrinsic lattice transforms. Was `-> Surface` (infallible) pre-0.2.9.
     pub fn resample(&self, target: &GridGeometry) -> Result<Surface>;
 
     // filtering + outline
     pub fn smooth(&self, radius: usize) -> Surface;          // NaN-aware moving average; preserves the defined mask
+    pub fn dip_angle(&self) -> Surface;                      // degrees from horizontal; world-frame, NaN-aware differences
+    pub fn dip_azimuth(&self) -> Surface;                    // down-dip degrees clockwise from North; flat = NaN
+    pub fn extrapolate(&self, method: GridMethod) -> Result<Surface>; // fill original NaNs only; finite nodes are controls
     pub fn edge(&self) -> Option<PolygonSet>;                // convex hull of defined nodes; None if <3
 
     // shell lifts (free, lossless; ALL attribute lanes carried 1:1, node identity preserved)
@@ -191,6 +215,14 @@ impl Well {
     pub fn contacts(&self) -> impl Iterator<Item = &FluidContact>;     // non-strat picks on the resolved bore
     pub fn contact(&self, name: &str) -> Option<&FluidContact>;
     pub fn set_strat_order(&mut self, order: &[String]);  // push lithostrat column into every bore
+    pub fn intersections<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Vec<SurfaceIntersection>>;
+    pub fn intersection<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Option<SurfaceIntersection>>; // None=no hit; Err when multiple
+    pub fn tops(&self) -> impl Iterator<Item = &Top>;
+    pub fn add_top(&mut self, name: impl Into<String>, md: f64) -> Result<()>;
+    pub fn replace_top(&mut self, name: impl Into<String>, md: f64) -> Result<()>;
+    pub fn remove_top(&mut self, name: &str) -> Result<Top>;
+    pub fn add_top_from_intersection(&mut self, name: impl Into<String>, hit: &SurfaceIntersection) -> Result<()>;
+    pub fn replace_top_from_intersection(&mut self, name: impl Into<String>, hit: &SurfaceIntersection) -> Result<()>;
 }
 
 pub struct Sidetrack { pub label: String /* trajectories, logs, tops private */ }
@@ -215,6 +247,14 @@ impl Sidetrack {
     pub fn zone_stats(&self, mnemonic: &str) -> Vec<(String, Stats)>;
     pub fn contacts(&self) -> impl Iterator<Item = &FluidContact>;
     pub fn contact(&self, name: &str) -> Option<&FluidContact>;
+    pub fn intersections<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Vec<SurfaceIntersection>>;
+    pub fn intersection<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Option<SurfaceIntersection>>;
+    pub fn tops(&self) -> impl Iterator<Item = &Top>;
+    pub fn add_top(&mut self, name: impl Into<String>, md: f64) -> Result<()>;
+    pub fn replace_top(&mut self, name: impl Into<String>, md: f64) -> Result<()>;
+    pub fn remove_top(&mut self, name: &str) -> Result<Top>;
+    pub fn add_top_from_intersection(&mut self, name: impl Into<String>, hit: &SurfaceIntersection) -> Result<()>;
+    pub fn replace_top_from_intersection(&mut self, name: impl Into<String>, hit: &SurfaceIntersection) -> Result<()>;
 }
 
 pub struct Station { pub md: f64, pub inc_deg: f64, pub azi_deg: f64 }
@@ -233,6 +273,14 @@ impl Trajectory {
     pub fn tvd(&self, md: f64) -> Option<f64>;
     pub fn md_at_tvd(&self, tvd: f64) -> Option<f64>;
     pub fn md_range(&self) -> (f64, f64);
+    pub fn intersections<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Vec<SurfaceIntersection>>;
+    pub fn intersection<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<Option<SurfaceIntersection>>;
+}
+
+pub trait IntersectableSurface { /* Surface + StructuredMeshSurface + TriSurface */ }
+pub struct SurfaceIntersection {
+    pub md: f64, pub xyz: Point3,
+    pub well: Option<String>, pub bore: Option<String>, pub surface: Option<String>,
 }
 
 pub struct Top { pub name: String, pub md: f64 }
@@ -275,7 +323,7 @@ impl PointSet {
     pub fn load_csv(path: impl AsRef<Path>, x: &str, y: &str, z: &str) -> Result<PointSet>;
     pub fn load_geojson(path: impl AsRef<Path>) -> Result<PointSet>;
     pub fn load_irap_points(path: impl AsRef<Path>) -> Result<PointSet>;   // plain X Y Z; header-sniffed (foreign → GeoError::Format)
-    pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<PointSet>;  // EarthVision grid ASCII (null nodes dropped)
+    pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<PointSet>;  // deprecated finite-node compatibility view; prefer StructuredMeshSurface loader
     pub fn len(&self) -> usize;
     pub fn coords(&self) -> &[[f64; 3]];                     // raw [x,y,z] points, load order (read side of from_coords)
     pub fn filter(&self, pred: impl Fn(Point3) -> bool) -> PointSet;
@@ -407,7 +455,11 @@ impl TriSurface {
     pub fn stats(&self) -> Stats;
     // attribute lanes (mirror Surface's; one value per shell node)
     pub fn attr(&self, name: &str) -> Option<&[f64]>;
+    pub fn attr_metadata(&self, name: &str) -> Option<&AttributeMetadata>;
+    pub fn primary_metadata(&self) -> Option<&AttributeMetadata>;
     pub fn set_attr(&mut self, name: &str, values: Vec<f64>) -> Result<()>;
+    pub fn set_attr_with_metadata(&mut self, name: &str, values: Vec<f64>, metadata: AttributeMetadata) -> Result<()>;
+    pub fn set_attr_metadata(&mut self, name: &str, metadata: AttributeMetadata) -> Result<()>;
     pub fn attr_names(&self) -> Vec<&str>;
     pub fn as_attr_surface(&self, name: &str) -> Option<TriSurface>;   // promote lane → primary, SAME shell
     // conversions (down = lossy) + iso/value-layer (same signatures as Surface)
@@ -427,6 +479,7 @@ impl TriSurface {
 /// metadata, never the coordinates.
 pub struct StructuredMeshSurface { /* Arc<StructuredShell> + values + attributes */ }
 impl StructuredMeshSurface {
+    pub fn load_earthvision_grid(path: impl AsRef<Path>) -> Result<Self>;  // canonical EarthVision ingest; null z→NaN, XY/topology retained
     pub fn new(x: Array2<f64>, y: Array2<f64>, values: Array2<f64>,
                nominal_geometry: Option<GridGeometry>, edge: PolygonSet) -> Result<Self>;
     pub fn from_shell(shell: Arc<StructuredShell>, values: Array2<f64>) -> Result<Self>;
@@ -446,7 +499,11 @@ impl StructuredMeshSurface {
     pub fn stats(&self) -> Stats;
     // attribute lanes (mirror Surface's; each shaped (ncol, nrow))
     pub fn attr(&self, name: &str) -> Option<&Array2<f64>>;
+    pub fn attr_metadata(&self, name: &str) -> Option<&AttributeMetadata>;
+    pub fn primary_metadata(&self) -> Option<&AttributeMetadata>;
     pub fn set_attr(&mut self, name: &str, values: Array2<f64>) -> Result<()>;
+    pub fn set_attr_with_metadata(&mut self, name: &str, values: Array2<f64>, metadata: AttributeMetadata) -> Result<()>;
+    pub fn set_attr_metadata(&mut self, name: &str, metadata: AttributeMetadata) -> Result<()>;
     pub fn attr_names(&self) -> Vec<&str>;
     pub fn as_attr_surface(&self, name: &str) -> Option<StructuredMeshSurface>;  // promote lane → primary, SAME shell
     // conversions (up = free/lossless carrying all lanes; down = fit/resample)
@@ -481,7 +538,12 @@ impl PolygonSet {
 pub struct GeoData { pub unit: Unit /* surfaces, wells, points, polygons private */ }
 impl GeoData {
     pub fn new(unit: Unit) -> GeoData;
+    pub fn display_name(&self) -> Option<&str>;
+    pub fn set_display_name(&mut self, display_name: Option<String>) -> Result<()>;
+    pub fn crs(&self) -> Option<&str>;
+    pub fn set_crs(&mut self, crs: Option<String>) -> Result<()>;
     pub fn load_surface(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&Surface>; // content-first detect(); Unknown falls back to extension
+    pub fn load_structured_surface(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&StructuredMeshSurface>; // EarthVision explicit-node grid
     pub fn load_well(&mut self, id: &str, head: (f64,f64), kb: f64,
                      files: impl AsRef<Path>) -> Result<&Well>;  // content-first tree walk: one .wellpath→main bore (co-locates logs/tops), many→one bore each; LAS→logs; .csv→tops; crsmeta.xml→Well::crs label
     pub fn set_curve_aliases(&mut self, aliases: NameMap);  // opt-in STICKY: canonicalize log mnemonics at load (map→table→vintage strip); off by default (raw preserved)
@@ -494,14 +556,26 @@ impl GeoData {
     pub fn load_points(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PointSet>;     // content-first detect(); Unknown falls back to extension
     pub fn load_polygons(&mut self, name: &str, path: impl AsRef<Path>) -> Result<&PolygonSet>; // content-first detect(); Unknown falls back to extension
     pub fn surface(&self, name: &str) -> Option<&Surface>;
+    pub fn structured_surface(&self, name: &str) -> Option<&StructuredMeshSurface>;
+    pub fn tri_surface(&self, name: &str) -> Option<&TriSurface>;
+    pub fn replace_surface(&mut self, name: &str, surface: Surface) -> Result<&Surface>;
+    pub fn replace_structured_surface(&mut self, name: &str, surface: StructuredMeshSurface) -> Result<&StructuredMeshSurface>;
+    pub fn replace_tri_surface(&mut self, name: &str, surface: TriSurface) -> Result<&TriSurface>;
     pub fn well(&self, id: &str) -> Option<&Well>;
     pub fn well_mut(&mut self, id: &str) -> Option<&mut Well>;   // in-place e.g. Well::set_default_bore
     pub fn points(&self, name: &str) -> Option<&PointSet>;
     pub fn polygons(&self, name: &str) -> Option<&PolygonSet>;
     pub fn surfaces(&self) -> impl Iterator<Item = &Surface>;
     pub fn surfaces_named(&self) -> impl Iterator<Item = (&str, &Surface)>;
+    pub fn structured_surfaces(&self) -> impl Iterator<Item = &StructuredMeshSurface>;
+    pub fn structured_surfaces_named(&self) -> impl Iterator<Item = (&str, &StructuredMeshSurface)>;
+    pub fn tri_surfaces_named(&self) -> impl Iterator<Item = (&str, &TriSurface)>;
     pub fn polygons_named(&self) -> impl Iterator<Item = (&str, &PolygonSet)>;
     pub fn wells(&self) -> WellsView;
+    pub fn well_top_names(&self) -> Vec<String>;
+    pub fn well_top_set(&self, name: &str) -> Vec<WellTopRow>;
+    pub fn delete_well_top(&mut self, name: &str) -> usize;
+    pub fn replace_well_top_set(&mut self, name: &str, hits: &[SurfaceIntersection]) -> Result<()>;
 
     /// Model-ready inputs — the consumer contract (see below). Assembles
     /// normalize→validate→interpret→characterise across the project.
@@ -510,7 +584,7 @@ impl GeoData {
 
     // Persistence — a single structured .pproj file (see the persistence design).
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()>;          // atomic whole-project write
-    pub fn open(path: impl AsRef<Path>) -> Result<GeoData>;            // materialize; model/*+unknown kinds skipped
+    pub fn open(path: impl AsRef<Path>) -> Result<GeoData>;            // materialize; opaque model + generic assets retained
     pub fn inspect(path: impl AsRef<Path>) -> Result<ProjectInfo>;     // manifest only (list without loading)
     pub fn split(src: impl AsRef<Path>, dst: impl AsRef<Path>, names: &[&str]) -> Result<()>; // byte-lossless
     pub fn export(src: impl AsRef<Path>, dst: impl AsRef<Path>, tags: &[&str]) -> Result<()>; // tag-filtered subset
@@ -524,20 +598,34 @@ impl GeoData {
     pub fn put_model_section(&mut self, name: impl Into<String>, tags: Vec<String>, version: u32, bytes: Vec<u8>);
     pub fn model_section_names(&self) -> Vec<String>;
     pub fn model_section(&self, name: &str) -> Option<(u32, Vec<u8>)>;
+    // Generic provider-owned assets. Physical names are reserved @asset/<collection>/<logical>.
+    // Add never overwrites; replace requires an existing name; envelope + bytes remain opaque.
+    pub fn add_asset(&mut self, name: impl Into<String>, kind: impl Into<String>, envelope: Vec<u8>, tags: Vec<String>, version: u32, bytes: Vec<u8>) -> Result<()>;
+    pub fn replace_asset(&mut self, name: &str, kind: impl Into<String>, envelope: Vec<u8>, tags: Vec<String>, version: u32, bytes: Vec<u8>) -> Result<()>;
+    pub fn rename_asset(&mut self, old: &str, new: &str) -> Result<()>;
+    pub fn delete_asset(&mut self, name: &str) -> bool;
+    pub fn asset_names(&self) -> Vec<String>;
+    pub fn asset(&self, name: &str) -> Option<ProjectAsset>;
 }
 // Per element: Surface/Well/PointSet/PolygonSet/StructuredMeshSurface/TriSurface each
 // expose `save(path)`/`load(path)` (a standalone one-section .pproj). Level-2/3 surface
 // sections (kinds "structured_mesh"/"tri_surface") store the shell ONCE with N property
-// lanes referencing it; derived walk indexes are never persisted; older .pproj files
-// (which predate these kinds) load unchanged. Human-readable export: PointSet::export_geojson/
+// lanes referencing it; derived walk indexes are never persisted. Element schema v2 adds
+// surface-lane metadata, with exact positional v1 decoders for all three surface levels.
+// Human-readable export: PointSet::export_geojson/
 // export_csv, PolygonSet::export_geojson, Surface::save_irap_classic.
-// ProjectInfo { owner, tags, created, modified, unit, elements: Vec<(kind, name)> }.
+// ProjectInfo { display_name, crs, owner, tags, created, modified, unit, elements: Vec<(kind, name)> }.
 pub struct WellsView<'a> { /* broadcastable, filterable */ }
 impl<'a> WellsView<'a> {
     pub fn filter(&self, pred: impl Fn(&Well) -> bool) -> WellsView<'a>;
     pub fn iter(&self) -> impl Iterator<Item = &Well>;
     pub fn tops(&self, name: &str) -> WellsView<'a>;         // narrow to wells with that top
+    pub fn intersection<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<WellIntersectionSet>;
+    pub fn intersections<S: IntersectableSurface + ?Sized>(&self, surface: &S, tolerance: f64) -> Result<WellIntersectionSet>;
 }
+pub struct IntersectionDiagnostic { pub well: String, pub bore: String, pub reason: String, pub message: String }
+pub struct WellIntersectionSet { pub hits: Vec<SurfaceIntersection>, pub skipped: Vec<IntersectionDiagnostic>, pub failed: Vec<IntersectionDiagnostic> }
+pub struct WellTopRow { pub well: String, pub bore: String, pub md: f64, pub xyz: Option<Point3> }
 ```
 
 ## Model-ready inputs — the consumer contract
@@ -588,7 +676,7 @@ pub struct SummaryInputs {              // scalars in base-SI units, each Uncert
 }
 pub struct SpatialInputs {              // for the 3D grid build + upscaling
     pub boundary: Option<PolygonSet>,
-    pub horizons: Vec<HorizonInput>,    // surface.resample(&GridGeometry)? onto the consumer lattice (Result; Err(Unsupported) if the horizon geometry is rotated)
+    pub horizons: Vec<HorizonInput>,    // surface.resample(&GridGeometry)? onto the consumer lattice, including rotated/y-flipped source and target frames
     pub well_curves: Vec<WellCurveInput>,  // ONE positioned curve-set PER BORE: a multi-sidetrack well emits each bore separately (well_id = "<id> <bore>")
 }
 pub struct HorizonInput { pub name: String, pub surface: Surface, pub provenance: Provenance }
@@ -702,16 +790,38 @@ project.surfaces.all_names()              # canonical names with folders
 project.delete_surface("structure/top dome")
 project.save("field.pproj")               # compact .pproj write
 pproj_project = petekio.Project.load("field.pproj")  # compact .pproj read
+project.display_name = "Field appraisal"  # optional authored title; never path-guessed
+project.crs = "EPSG:23031 / local note"   # optional free-text CRS declaration
+project.unit                              # persisted canonical project unit; padded authoring rejected
 
 geo = petekio.GeoData(unit="ft")
 geo.load_surface("top", "top.irap")       # or top.CPS3grid (CPS-3 grid)
 # real-format dispatch by extension: .CPS3grid→surface, .CPS3lines→polygons,
-# .EarthVisionGrid/.IrapClassicPoints→points. Also as classmethods:
-# Surface.load_cps3_grid, PolygonSet.load_cps3_lines, PointSet.load_earthvision_grid
+# .EarthVisionGrid→StructuredMeshSurface; .IrapClassicPoints→points. Also:
+# StructuredMeshSurface.load_earthvision_grid (canonical);
+# PointSet.load_earthvision_grid remains a deprecated finite-node view.
+geo.load_structured_surface("faulted top", "top.EarthVisionGrid")
 top, base = geo.surface("top"), geo.surface("base")
 
-thick = (base - top).clamp_min(0)        # operator overloads
+thick_via_operator = (base - top).clamp_min(0)
+thick = top.thickness(base, clamp_zero=True)  # normal instance method
+petekio.Surface.thickness(top, base, clamp_zero=True)  # equivalent unbound form
+top.thickness = thick                    # stores a lane; method remains callable
+top.attr["thickness"]                    # assignment stores/replaces an attribute lane
+top.set_attr("facies", facies, metadata={
+    "id": "facies", "label": "Facies", "kind": "categorical",
+    "units": None, "codes": {"1": {"label": "Sand", "color": "#EDA100"}},
+})
+# id/label/units and non-null code labels must already be non-empty + trimmed;
+# padded authoring is rejected rather than silently changing identity.
+top.attr_metadata("facies")              # canonical full descriptor
+top.attr["facies"].primary_metadata      # promotion preserves the descriptor
+project.replace_surface("top", top)      # explicit COW write-back; geometry unchanged
 trend = top.attr["seismic"].ln()
+smoothed = top.smooth(radius=1)          # original NaN mask is preserved
+dip = top.dip_angle()                    # degrees from horizontal
+azi = top.dip_azimuth()                  # down-dip, clockwise from North
+filled = top.extrapolate(method="nearest")  # also "idw" / "min_curvature"
 top.stats.p50                            # Stats fields as attributes
 top.area_below(8240)
 ongrid = top.resample(grid_geom)
@@ -738,6 +848,8 @@ tri.infer_grid(); sm.infer_grid()        # downward fit → GridGeometry (raises
 tri.resample(grid_geom, "nearest")       # downward resample: primary + ALL attr lanes → Surface
 tri.attr("amp"); tri.attr_names()        # attribute lanes on levels 2/3 mirror Surface
 tri2 = tri.set_attr("amp", per_node)     # set_attr returns a NEW object (shell shared)
+# Replacement accepts regular, structured, or triangular detached surfaces.
+project.replace_surface("top", tri2)
 
 geo.load_well("15/9-A1", wellhead=(1200, 1500), kb=82, files="wells/A1/")
 w = geo.well("15/9-A1")
@@ -754,7 +866,7 @@ geo.strat_hint("Base Shale < Upper Sand")    # DEPRECATED (sticky) — use load_
 # Persistence — one .pproj file (splittable/mergeable/tag-filterable):
 geo.set_owner("kk"); geo.set_tags(["field-a"]); geo.set_element_tags("15/9-A1", ["field-a"])
 geo.save("field.pproj")
-info = petekio.GeoData.inspect("field.pproj")     # dict: owner/tags/unit/elements — no decode
+info = petekio.GeoData.inspect("field.pproj")     # display_name/crs/owner/tags/unit/elements — no decode
 geo = petekio.GeoData.open("field.pproj")
 petekio.GeoData.export("field.pproj", "share.pproj", ["field-a"])   # tagged subset, one binary
 petekio.GeoData.split("field.pproj", "wells.pproj", ["15/9-A1"])
@@ -769,6 +881,12 @@ w.is_multibore                           # True → the top-level accessors belo
 w.xyz(2450)                              # ValueError "well '99/9-1' has 3 bores (A, B, ST2) — use .sidetrack(name) or .set_default_bore(name)"
 w.set_default_bore("A"); w.default_bore  # route w.xyz/tvd/log/top through bore A ("A"); clears via load
 bore = w.sidetrack("A")                  # per-bore access is first-class + complete (never needs a default):
+bore.intersections(top, tolerance=1e-3)  # every crossing, MD ordered; pure/no mutation
+hit = bore.intersection(top)              # None=no hit; raises with guidance when multiple
+bore.add_top("Top reservoir", hit)        # explicit persisted Top{name,md}; duplicate errors
+bore.replace_top("Top reservoir", 2412.5)
+bore.remove_top("Top reservoir")
+bore.tops()                               # [(name, md), ...]
 bore.xyz(1200); bore.tvd(1200); bore.md_range()    # positioned by THIS bore's trajectory
 bore.mnemonics(); bore.log_stats("PHIE").mean      # whole-bore curve + stats
 bore.log("PHIE").values(); bore.log("PERM").geomean()   # per-sample view on a named bore; geometric-mean perm
@@ -794,6 +912,48 @@ w.zone_table("PHIE", zones=("Top A","Top B"))         # keep only these zones (c
 w.zone_table("PHIE", cut=petekio.NetSettings(phi_min=0.10))  # net-condition each cell (phi/sw/vsh name the curves; default PHIE/SW/none — inert without cut)
 geo.wells.zone_table("PHIE")                          # multi-well; bore = "<well> <sidetrack>"
 
+# Project-wide report + atomic complete-horizon persistence:
+result = project.wells.intersection(project.surfaces["Top reservoir"])
+result.hits; result.skipped; result.failed; result.summary()
+project.well_tops["Reservoir/Top"] = result
+project.well_tops["Reservoir/Top"].rows      # WellTopSet: well/bore/md/xyz
+del project.well_tops["Reservoir/Top"]
+# project.tops remains the compatible imported source-table inventory.
+
+# Lazy whole-project workspace (petekTools stays optional):
+session = project.view()
+session = project.view(
+    selection={"surfaces": ["Interpretation/"], "wells": True},
+    visible={"map": ["surface:Interpretation/Top%20A"]},
+    property={"surface:Interpretation/Top%20A": "thickness"},
+    logs=petekio.ViewSpec(curves=("PHIE", "SW"), tops=True),
+    template="qc/reservoir",
+    tab="map",
+    lod=True,
+    settings=petekio.ViewSettings(serve=False),
+)
+# With no logs= override, bores advertising mnemonics receive a hidden, lazy
+# Wells resource using all curves + tops; template= also applies to this auto spec.
+session.tree(); session.diagnostics; session.url
+session.resource("surface:Interpretation/Top%20A", "map", detail="full")
+# One shared regular-surface fetch carries depth + every attribute. Geometry,
+# colour-by, 2-D/3-D mode, and selector changes are local viewer state and do
+# not issue selector-driven resource requests.
+# Shared f32 lanes reject finite overflow; categorical codes must round-trip
+# exactly through f32, and continuous ranges describe the transported values.
+# A sparse lane that preview striding would make entirely null forces that
+# preview resource to full sampling, retaining at least one finite value.
+session.refresh().serve()
+session.save("project.html", include="visible")
+# Shared selected export embeds one envelope with N value blocks, never N²
+# attribute×color_by envelopes. Structured/triangular/degenerate fallbacks keep
+# their established separate resources and direct lane compatibility; 1×1,
+# 1×N, and N×1 regular grids materialize with zero triangles.
+
+# Exact generic equivalent through the provider duck:
+from petektools import view as pto_view
+pto_view(project)
+
 # Standalone trajectory from a directional survey (no project needed):
 traj = petekio.Trajectory.from_stations(      # [(md, inc_deg, azi_deg), ...]
     [(0, 0, 145), (1200, 0, 145), (1900, 57, 145)], head=(1000, 2000), kb=27.3)
@@ -817,8 +977,18 @@ w.view(curves=("PHIE","SW"), tops=["Upper Sand"])   # select curves; a subset of
 w.view(spec=petekio.ViewSpec(curves=("PHIE","SW"), tops=["Upper Sand"], cutoff=petekio.NetSettings(phi_min=0.10)))  # declarative WHAT
 w.view(spec=petekio.ViewSpec(...), settings=petekio.ViewSettings(save="well.html"))  # WHAT + HOW; spec XOR legacy WHAT kwargs (loud on both)
 w.view(save="well.html")                 # export one self-contained HTML file instead (legacy)
-sess = w.view(settings=petekio.ViewSettings(serve=False)); sess.bundle()   # build only; inspect the payload dict
+sess = w.view(settings=petekio.ViewSettings(serve=False)); sess.bundle()   # raw WellLogBundle; serve/save wrap it as top-level wells_logs
 geo.wells.view(settings=petekio.ViewSettings(serve=False))   # multi-well logs-only session (same surface)
+
+# Persistent, named correlation layouts (petekTools owns their semantics):
+project.templates.add(template)             # intrinsic template.name; fails if present
+project.templates.replace(updated_template) # fails if absent; no implicit upsert
+bound = project.templates.qc.reservoir       # immutable BoundTemplate snapshot
+bound.to_dict(); bound.materialize()          # materialize imports petektools lazily
+project.wells.view(template=bound, serve=False)
+bound(wells=["A-1", "A-2"], save="correlation.html")
+project.templates.rename("qc/reservoir", "production/reservoir")
+project.templates.delete("production/reservoir")
 # legacy kwargs (spec/settings absent): curves=None, tops=None|True|[names], flatten_default=None,
 #   phie_cutoff=0.08, flags=None, serve=True, save=None.  Standalone bundles carry NO ties.
 petekio.build_well_log_bundle(raws, spec=petekio.ViewSpec(tops=True))   # pure-Python producer (spec= or legacy kwargs; testable)
@@ -834,36 +1004,86 @@ petekio.ViewSettings(serve=True, save=None)                  # HOW view() delive
 ```
 
 Python rules: `Stats` fields exposed as read-only attributes; operators (`+ - * /`)
-on `Surface`; `surface.attr["name"]` indexed access; `surface.edge` and
+on `Surface`; `surface.attr["name"]` indexed access; `surface.attribute_name = rhs`
+delegates to `surface.set_attr("name", rhs)`, where `rhs` must be a `Surface`
+with identical complete `GridGeometry` (origin, increments, counts, rotation,
+and `yflip`). Assignment adds or replaces a copy-on-write lane; it is read back
+through `surface.attr["name"]`, so `surface.thickness = ...` does not shadow the
+instance/unbound `surface.thickness(...)` / `Surface.thickness(...)` operation.
+`surface.edge` and
 `surface.geometry.edge` expose matching `PolygonSet` outlines; `PointSet`
-exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=None, fallback="tri") -> GridGeometry | TriSurface`
+exposes `infer_geometry(tolerance=1e-3, edge="full_rect", max_bridge=3.4, fallback="mesh") -> GridGeometry | StructuredShell | MeshShell`
 and `to_structured_surface(tolerance=1e-3, edge="occupied")`, both taking
 `edge="occupied"|"convex_hull"|"full_rect"`; `detect_topology(nominal_cell=None)`
 returns `(points | None, TopologyReport)` whose `.verified` gates the labels;
-`infer_geometry` preserves strict regular inference; when no regular lattice
-describes the points it delegates to `to_tri_surface(max_link=None,
-max_bridge=...)` **with a `UserWarning`** (`fallback="tri"`, the default) or
-raises a `ValueError` (`fallback="error"`). `max_bridge` (in cells) applies
-**only to the TriSurface fallback** — it closes boundary-fringe/fault-seam/
-data-gap edges up to that length (`None` = strictly lattice-closed) and has no
-effect on an inferred `GridGeometry`. Both possible results carry a
+`infer_geometry` preserves strict regular inference; after that fails it returns
+a `StructuredShell` when explicit `column`/`row` topology validates (honouring
+explicit `occupied`/`convex_hull`; the `full_rect` default remains occupied for
+a curvilinear fallback, which has no nominal rectangle), otherwise
+the `MeshShell` from the existing `to_tri_surface(max_link=None,
+max_bridge=...)` geometry, **with a `UserWarning`**, or raises a `ValueError`
+(`fallback="error"`). `fallback="tri"` remains a deprecated compatibility
+spelling for `fallback="mesh"`; it does not return values. `max_bridge` (in
+cells) applies **only to the MeshShell fallback** — it closes boundary-fringe/
+fault-seam/data-gap edges up to that length (default `3.4`; explicit `None` =
+strictly lattice-closed) and has no effect on an inferred `GridGeometry` or
+`StructuredShell`. Direct
+`to_tri_surface(max_link=None, max_bridge=None)` remains strictly lattice-closed
+by default. All three possible results carry a
 discoverable `.kind` for import-free dispatch — every geometry/surface/point
-object exposes it: `"grid_geometry"` | `"surface"` | `"structured_mesh"` |
-`"tri_surface"` | `"point_set"` | `"polygon_set"`.
+object exposes it: `"grid_geometry"` | `"structured_shell"` | `"mesh_shell"` |
+`"surface"` | `"structured_mesh"` | `"tri_surface"` | `"point_set"` |
+`"polygon_set"`.
 `PointSet.to_surface(geom=None, method="idw", tolerance=1e-3) -> Surface`
 grids z onto `geom`; `geom=None` (default) infers the lattice internally
 (`tolerance` as in `infer_geometry`) and **raises a `ValueError`** when the
 points are not lattice-regular — it never grids onto an arbitrary bounding
 lattice (pass an explicit `GridGeometry` or use `to_tri_surface()`); passing
-the `infer_geometry` TriSurface fallback as `geom` is a `TypeError` pointing
-at `tri_surface.resample(geom, method)`;
+an `infer_geometry` shell as `geom` is a `TypeError` pointing at the explicit
+value-bearing `to_structured_surface()` / `to_tri_surface()` conversion;
 `well.<top>.<log>` resolves via `__getattr__` (top interval → log → `Stats`).
+`Project.view(selection=None, *, visible=None, property=None, logs=None,
+template=None, tab="auto", lod=True, settings=None) -> ProjectViewSession`
+uses canonical role/folder/path selectors. `selection=None` catalogs the whole
+project without materializing heavy values. Defaults show the first selected
+surface in the Map resource (2-D/3-D camera modes for supported regular grids)
+plus every selected bore. Bores with mnemonic metadata gain
+a hidden lazy Wells resource using a deterministic maximum-six selection plus
+tops; `logs=ViewSpec(...)` overrides that selection exactly, while inspectable
+template tracks restrict automatic gathering. `ProjectViewSession` exposes `tree()`, `resource(...)`,
+`manifest()`, `diagnostics`, `url`, `refresh()`, `serve()`, and
+`save(path, include="visible"|"selected")`. `Project.view_catalog()` /
+`Project.view_resource(...)` are the generic provider seam used by petekTools.
+The provider catalog is workspace v2: an authored persisted project title emits
+`project={title,crs,unit}` (an absent title is never path-guessed), and each
+surface view declares ordered canonical attribute descriptors plus independent
+`active_attribute` / `active_color_by`. Categorical colors are canonical
+uppercase `#RRGGBB` at authoring and v2 presentation migration. Supported affine regular surfaces use
+one selector-free shared Map resource with exact `modes=["2d","3d"]`; one
+envelope-level block table carries the shell mask and every ordered attribute
+once. Preview/full detail is the only fetch-multiplication axis. Geometry and
+paint selectors remain independent local state. Its frame preserves the exact
+regular-grid origin, spacing, rotation, `yflip`, authored CRS, and unit; the
+same petekTools lattice transform underlies cursor coordinates, property
+promotion, sampling/resampling, and world-XYZ well overlays. Selected export embeds one
+resource instead of a Cartesian product. Finite continuous values outside f32
+transport range and categorical codes that do not round-trip exactly through
+f32 fail before emission; continuous ranges are derived from transported f32
+values. A strided preview that would omit all finite values from any finite lane
+falls back to full sampling. Structured, triangular, and
+degenerate/non-affine fallbacks retain separate Map/scene3d resources and direct
+`lane=` compatibility; advertised 1×1, 1×N, and N×1 regular resources
+materialize with zero triangles. Map resources carry every finite MD-ordered
+surface-context well intersection, status/cardinality, and a greatest-MD
+singular compatibility echo; this does not alter the public multi-hit error of
+`intersection()`.
 **Dataset names (duck-typed viewer seam):** every project-accessor hand-back
 (`project.points[...]`, `project.surfaces[...]`, `project.polygons[...]`,
 `geo.points(name)`, `geo.surface(name)`, `geo.polygons(name)`, and the
 `load_*` project loaders) carries a read-only `.name` property — the lookup
 key's leaf (`"Surfaces/IrapClassic_points/Top Dome"` → `"Top Dome"`).
-Derived objects propagate it: `infer_geometry`/`surface.geometry`/`infer_grid`
+Derived objects propagate it: `infer_geometry`/surface shells/
+`surface.geometry`/`infer_grid`
 → `"<name> geometry"`; `to_surface`/`to_tri_surface`/`to_structured_surface`/
 `to_structured_mesh`/`to_points`/`resample`/`detect_topology`'s labelled
 points/attr promotion keep `"<name>"`. Anonymous/in-memory objects

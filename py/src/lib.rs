@@ -11,7 +11,9 @@
 //! dependency); attribute layers are returned as promoted `Surface`s and curve
 //! samples as plain `list[float]`.
 
+mod attribute;
 mod geodata;
+mod intersection;
 mod geometry;
 mod detect;
 mod points;
@@ -65,7 +67,7 @@ pub(crate) fn deprecation_warning(py: Python<'_>, msg: &str) -> PyResult<()> {
 
 /// Emit a Python `UserWarning` with `msg` (via the `warnings` module, so it
 /// respects the interpreter's filters). Used to make silent behavioural
-/// fallbacks loud (e.g. `infer_geometry` returning a `TriSurface`).
+/// fallbacks loud (e.g. `infer_geometry` returning a geometry shell).
 pub(crate) fn user_warning(py: Python<'_>, msg: &str) -> PyResult<()> {
     let warnings = py.import("warnings")?;
     let category = py.get_type::<pyo3::exceptions::PyUserWarning>();
@@ -76,7 +78,12 @@ pub(crate) fn user_warning(py: Python<'_>, msg: &str) -> PyResult<()> {
 /// Parse a project length unit from a string (`"ft"`/`"feet"` or
 /// `"m"`/`"metre(s)"`/`"meter(s)"`, case-insensitive).
 pub(crate) fn parse_unit(s: &str) -> PyResult<petekio::Unit> {
-    match s.trim().to_ascii_lowercase().as_str() {
+    if s.is_empty() || s != s.trim() {
+        return Err(PyValueError::new_err(
+            "unit must be a non-empty, trimmed string",
+        ));
+    }
+    match s.to_ascii_lowercase().as_str() {
         "ft" | "feet" | "foot" => Ok(petekio::Unit::Feet),
         "m" | "metre" | "metres" | "meter" | "meters" => Ok(petekio::Unit::Metres),
         other => Err(PyValueError::new_err(format!(
@@ -137,6 +144,8 @@ fn _petekio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<points::PolygonSet>()?;
     m.add_class::<points::PolygonColumn>()?;
     m.add_class::<trajectory::Trajectory>()?;
+    m.add_class::<intersection::SurfaceIntersection>()?;
+    m.add_class::<intersection::WellIntersectionSet>()?;
     m.add_class::<well::Well>()?;
     m.add_class::<well::Sidetrack>()?;
     m.add_class::<well::Interval>()?;

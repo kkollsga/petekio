@@ -62,6 +62,18 @@ fn earthvision_grid_points_dispatch() {
          100.0 200.0 0.5\n110.0 200.0 0.6\n100.0 210.0 1.0e30\n110.0 210.0 0.7\n",
     );
     let mut geo = GeoData::new(Unit::Metres);
+    geo.load_structured_surface("surface", &p).unwrap();
+    let surface = geo.structured_surface("surface").unwrap();
+    assert_eq!((surface.ncol(), surface.nrow()), (2, 2));
+    assert!(surface.z(0, 1).unwrap().is_nan());
+    assert!(geo
+        .load_surface("surface", "tests/fixtures/simple.irap")
+        .err()
+        .expect("cross-kind duplicate surface name must fail")
+        .to_string()
+        .contains("already belongs"));
+
+    // Deprecated compatibility view remains finite scattered nodes only.
     geo.load_points("netsand", &p).unwrap();
     assert_eq!(geo.points("netsand").unwrap().len(), 3); // null node dropped
 }

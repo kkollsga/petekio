@@ -20,6 +20,9 @@
 //! Points are never moved. The walk's `(block, i, j)` labels stay on the shell.
 //! Spec: `surface_tin_fallback_spec` on the planning graph.
 
+use crate::core::attribute::{
+    check_metadata_name, validate_attribute_values, AttributeLane, AttributeMetadata,
+};
 use crate::core::shell::MeshShell;
 use crate::core::topology::GridDetection;
 use crate::core::{PointSet, PolygonSet};
@@ -44,7 +47,9 @@ pub struct TriSurface {
     shell: Arc<MeshShell>,
     /// Primary per-node values — z, in the same order as the shell's nodes.
     values: Vec<f64>,
-    attributes: IndexMap<String, Vec<f64>>,
+    #[serde(default)]
+    primary_metadata: Option<AttributeMetadata>,
+    attributes: IndexMap<String, AttributeLane<Vec<f64>>>,
     #[serde(default)]
     history: OperationHistory,
 }
@@ -56,17 +61,30 @@ struct TriSurfaceData {
     shell: MeshShell,
     values: Vec<f64>,
     #[serde(default)]
-    attributes: IndexMap<String, Vec<f64>>,
+    primary_metadata: Option<AttributeMetadata>,
+    #[serde(default)]
+    attributes: IndexMap<String, AttributeLane<Vec<f64>>>,
     #[serde(default)]
     history: OperationHistory,
 }
 
 impl TryFrom<TriSurfaceData> for TriSurface {
     type Error = GeoError;
-    fn try_from(d: TriSurfaceData) -> Result<TriSurface> {
+    fn try_from(mut d: TriSurfaceData) -> Result<TriSurface> {
+        if let Some(metadata) = &mut d.primary_metadata {
+            metadata.migrate_persisted_text();
+        }
+        for lane in d.attributes.values_mut() {
+            lane.metadata.migrate_persisted_text();
+        }
         let mut out = TriSurface::from_shell(Arc::new(d.shell), d.values)?;
+        if let Some(metadata) = &d.primary_metadata {
+            metadata.validate()?;
+            validate_attribute_values(metadata, out.values.iter())?;
+        }
+        out.primary_metadata = d.primary_metadata;
         for (name, lane) in d.attributes {
-            out.set_attr(&name, lane)?;
+            out.set_attr_with_metadata(&name, lane.values, lane.metadata)?;
         }
         out.history = d.history;
         Ok(out)
@@ -81,6 +99,7 @@ impl TriSurface {
         Ok(TriSurface {
             shell,
             values,
+            primary_metadata: None,
             attributes: IndexMap::new(),
             history: OperationHistory::from_entry("tri_surface.from_shell"),
         })
@@ -114,14 +133,61 @@ impl TriSurface {
 
     /// A named attribute lane, if present.
     pub fn attr(&self, name: &str) -> Option<&[f64]> {
-        self.attributes.get(name).map(Vec::as_slice)
+        self.attributes.get(name).map(|lane| lane.values.as_slice())
+    }
+
+    pub fn attr_metadata(&self, name: &str) -> Option<&AttributeMetadata> {
+        self.attributes.get(name).map(|lane| &lane.metadata)
+    }
+
+    pub fn primary_metadata(&self) -> Option<&AttributeMetadata> {
+        self.primary_metadata.as_ref()
+    }
+
+    pub(crate) fn set_primary_metadata(&mut self, metadata: Option<AttributeMetadata>) {
+        self.primary_metadata = metadata;
     }
 
     /// Set (or replace) a named attribute lane (one value per shell node).
     pub fn set_attr(&mut self, name: &str, values: Vec<f64>) -> Result<()> {
         check_lane(&self.shell, &values, "TriSurface::set_attr")?;
-        self.attributes.insert(name.to_string(), values);
+        if let Some(existing) = self.attributes.get_mut(name) {
+            validate_attribute_values(&existing.metadata, values.iter())?;
+            existing.values = values;
+        } else {
+            self.attributes.insert(
+                name.to_string(),
+                AttributeLane::new(AttributeMetadata::continuous(name)?, values)?,
+            );
+        }
         self.record_history(format!("tri_surface.set_attr(name={name})"));
+        Ok(())
+    }
+
+    pub fn set_attr_with_metadata(
+        &mut self,
+        name: &str,
+        values: Vec<f64>,
+        metadata: AttributeMetadata,
+    ) -> Result<()> {
+        check_lane(&self.shell, &values, "TriSurface::set_attr_with_metadata")?;
+        check_metadata_name(name, &metadata)?;
+        validate_attribute_values(&metadata, values.iter())?;
+        self.attributes
+            .insert(name.to_string(), AttributeLane::new(metadata, values)?);
+        self.record_history(format!("tri_surface.set_attr_with_metadata(name={name})"));
+        Ok(())
+    }
+
+    pub fn set_attr_metadata(&mut self, name: &str, metadata: AttributeMetadata) -> Result<()> {
+        check_metadata_name(name, &metadata)?;
+        let lane = self
+            .attributes
+            .get_mut(name)
+            .ok_or_else(|| GeoError::NotFound(format!("no attribute lane '{name}'")))?;
+        validate_attribute_values(&metadata, lane.values.iter())?;
+        lane.metadata = metadata;
+        self.record_history(format!("tri_surface.set_attr_metadata(name={name})"));
         Ok(())
     }
 
@@ -133,9 +199,10 @@ impl TriSurface {
     /// Promote an attribute lane to a standalone surface (its primary values)
     /// on the **same shared shell** — no geometry is copied.
     pub fn as_attr_surface(&self, name: &str) -> Option<TriSurface> {
-        self.attributes.get(name).map(|a| TriSurface {
+        self.attributes.get(name).map(|lane| TriSurface {
             shell: Arc::clone(&self.shell),
-            values: a.clone(),
+            values: lane.values.clone(),
+            primary_metadata: Some(lane.metadata.clone()),
             attributes: IndexMap::new(),
             history: self
                 .history
@@ -204,6 +271,28 @@ impl TriSurface {
 
     pub(crate) fn set_history(&mut self, history: impl Into<OperationHistory>) {
         self.history = history.into();
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TriSurfaceDataV1 {
+    shell: MeshShell,
+    values: Vec<f64>,
+    #[serde(default)]
+    attributes: IndexMap<String, Vec<f64>>,
+    #[serde(default)]
+    history: OperationHistory,
+}
+
+impl TriSurface {
+    pub(crate) fn from_v1_payload(bytes: &[u8]) -> Result<Self> {
+        let old: TriSurfaceDataV1 = crate::io::serial::from_bytes(bytes)?;
+        let mut out = TriSurface::from_shell(Arc::new(old.shell), old.values)?;
+        for (name, values) in old.attributes {
+            out.set_attr(&name, values)?;
+        }
+        out.history = old.history;
+        Ok(out)
     }
 }
 
@@ -436,6 +525,15 @@ fn drop_small_islands(tris: &[[usize; 3]]) -> Vec<[usize; 3]> {
     for t in tris {
         *size.entry(find(&mut parent, t[0])).or_insert(0) += 1;
     }
+    // `MIN_ISLAND` distinguishes clip-boundary specks from an established surface;
+    // it is not a minimum valid surface size. If the whole triangulation is small,
+    // discarding every component would turn valid three-to-five-point clouds into an
+    // empty mesh and make boundary extraction report the misleading "no boundary".
+    // Preserve all components unless there is a larger surface for tiny islands to be
+    // classified relative to.
+    if !size.values().any(|&n| n >= MIN_ISLAND) {
+        return tris.to_vec();
+    }
     tris.iter()
         .copied()
         .filter(|t| size[&find(&mut parent, t[0])] >= MIN_ISLAND)
@@ -512,6 +610,38 @@ mod tests {
         // The walk labels stay on the shell — one per node.
         assert_eq!(tin.shell().labels().len(), tin.points().len());
         assert!(tin.shell().labels().iter().all(Option::is_some));
+    }
+
+    #[test]
+    fn keeps_complete_small_scattered_surfaces() {
+        let clouds = [
+            vec![
+                [0.0, 0.0, -2600.0],
+                [10.0, 1.0, -2610.0],
+                [2.0, 9.0, -2620.0],
+                [12.0, 11.0, -2630.0],
+                [6.0, 5.0, -2615.0],
+            ],
+            vec![
+                [0.0, 0.0, -2600.0],
+                [10.0, 1.0, -2610.0],
+                [2.0, 9.0, -2620.0],
+                [12.0, 11.0, -2630.0],
+            ],
+        ];
+
+        for coords in clouds {
+            for max_bridge in [None, Some(3.4)] {
+                let tin = PointSet::from_coords(coords.clone())
+                    .to_tri_surface(None, max_bridge)
+                    .unwrap();
+                assert_eq!(tin.points().len(), coords.len());
+                assert!(!tin.triangles().is_empty());
+                assert_eq!(tin.components(), 1);
+                assert_eq!(tin.edge().rings().len(), 1);
+                assert_eq!(tin.shell().labels().len(), coords.len());
+            }
+        }
     }
 
     fn bits(c: &[f64; 3]) -> [u64; 3] {
@@ -763,6 +893,68 @@ mod tests {
         assert_eq!(back.wireframe_edges(None), tin.wireframe_edges(None));
         assert_eq!(back.attr("amp").unwrap(), tin.attr("amp").unwrap());
         assert_eq!(back.shell().labels(), tin.shell().labels());
+    }
+
+    #[test]
+    fn positional_v1_payload_migrates_attribute_metadata() {
+        let tin = PointSet::from_coords(lattice(5, 4, 50.0, 50.0, 0.0))
+            .to_tri_surface(None, None)
+            .unwrap();
+        let mut attributes = IndexMap::new();
+        attributes.insert("legacy".into(), vec![2.0; tin.values().len()]);
+        let old = TriSurfaceDataV1 {
+            shell: (**tin.shell()).clone(),
+            values: tin.values().to_vec(),
+            attributes,
+            history: OperationHistory::from_entry("v1.fixture"),
+        };
+        let bytes = crate::io::serial::to_bytes(&old).unwrap();
+        let migrated = TriSurface::from_v1_payload(&bytes).unwrap();
+        assert_eq!(
+            migrated.attr_metadata("legacy"),
+            Some(&AttributeMetadata::continuous("legacy").unwrap())
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_invalid_primary_metadata() {
+        let tin = PointSet::from_coords(lattice(5, 4, 50.0, 50.0, 0.0))
+            .to_tri_surface(None, None)
+            .unwrap();
+        let bad = TriSurfaceData {
+            shell: (**tin.shell()).clone(),
+            values: tin.values().to_vec(),
+            primary_metadata: Some(AttributeMetadata {
+                id: "depth".into(),
+                label: "\t".into(),
+                kind: crate::AttributeKind::Continuous,
+                units: None,
+                codes: None,
+            }),
+            attributes: IndexMap::new(),
+            history: OperationHistory::new(),
+        };
+        let bytes = crate::io::serial::to_bytes(&bad).unwrap();
+        assert!(crate::io::serial::from_bytes::<TriSurface>(&bytes).is_err());
+
+        let fractional_categorical = TriSurfaceData {
+            shell: (**tin.shell()).clone(),
+            values: vec![1.5; tin.values().len()],
+            primary_metadata: Some(
+                AttributeMetadata::new(
+                    "facies",
+                    "Facies",
+                    crate::AttributeKind::Categorical,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            ),
+            attributes: IndexMap::new(),
+            history: OperationHistory::new(),
+        };
+        let bytes = crate::io::serial::to_bytes(&fractional_categorical).unwrap();
+        assert!(crate::io::serial::from_bytes::<TriSurface>(&bytes).is_err());
     }
 
     #[test]

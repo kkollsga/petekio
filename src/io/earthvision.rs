@@ -1,14 +1,13 @@
-//! EarthVision (Dynamic Graphics) grid ASCII reader — a **scattered `x y z`**
-//! export with a directive/comment header.
+//! EarthVision (Dynamic Graphics) grid ASCII reader.
 //!
 //! The body is one `x y z` node per line; Petrel exports often add `column` and
 //! `row` as fields 4 and 5, which the point-set loader preserves as attributes.
 //! The header is `#`-prefixed directive lines; the null sentinel comes
 //! from a `# Null_value: <v>` directive (default `1.0e30`), and any `|z| ≥ 1e29`
-//! is also treated as null. Null nodes are **dropped** (an undefined grid node
-//! contributes no scattered point). Returns coordinates; `core::PointSet` builds
-//! the domain object. Imports only from `foundation` (+ the io Latin-1 decoder
-//! and the shared null-sentinel test).
+//! is also treated as null. The canonical parse preserves every logical node:
+//! null z becomes `NaN`, while finite XY and optional column/row topology remain.
+//! `StructuredMeshSurface` consumes that lossless parse. The legacy point view
+//! filters null-z rows after parsing.
 //!
 //! Handing such a file to the plain IRAP-points reader silently mis-parses the
 //! header into coordinates (weakness W5); this reader — and the header sniff in
@@ -19,17 +18,63 @@ use crate::io::{is_null_sentinel, PointData, DEFAULT_NULL_1E30};
 use indexmap::IndexMap;
 use std::path::Path;
 
+#[derive(Debug, Clone)]
+pub(crate) struct EarthVisionNode {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) z: f64,
+    pub(crate) column: Option<f64>,
+    pub(crate) row: Option<f64>,
+}
+
+#[derive(Debug)]
+pub(crate) struct EarthVisionGridData {
+    pub(crate) nodes: Vec<EarthVisionNode>,
+    pub(crate) grid_size: Option<(usize, usize)>,
+}
+
+impl EarthVisionGridData {
+    fn finite_point_data(&self) -> Result<PointData> {
+        let indexed = self
+            .nodes
+            .iter()
+            .any(|node| node.column.is_some() || node.row.is_some());
+        let mut coords = Vec::new();
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+        for node in &self.nodes {
+            if !node.z.is_finite() {
+                continue;
+            }
+            coords.push([node.x, node.y, node.z]);
+            if indexed {
+                columns.push(node.column.unwrap_or(f64::NAN));
+                rows.push(node.row.unwrap_or(f64::NAN));
+            }
+        }
+        let mut attrs = IndexMap::new();
+        if indexed {
+            attrs.insert("column".to_string(), columns);
+            attrs.insert("row".to_string(), rows);
+        }
+        PointData::new(coords, attrs)
+    }
+}
+
 /// Read an EarthVision grid ASCII file into scattered `[x, y, z]` coordinates,
 /// preserving optional Petrel `column`/`row` fields as point attributes when
 /// the export carries them.
 pub fn load_earthvision_grid(path: &Path) -> Result<PointData> {
+    load_earthvision_grid_all(path)?.finite_point_data()
+}
+
+/// Parse every EarthVision logical node, retaining null z as `NaN`.
+pub(crate) fn load_earthvision_grid_all(path: &Path) -> Result<EarthVisionGridData> {
     let text = crate::io::decode_latin1(&std::fs::read(path)?);
     let mut null = DEFAULT_NULL_1E30;
-    let mut out: Vec<[f64; 3]> = Vec::new();
-    let mut columns: Vec<f64> = Vec::new();
-    let mut rows: Vec<f64> = Vec::new();
+    let mut nodes = Vec::new();
+    let mut grid_size = None;
     let mut saw_marker = false;
-    let mut saw_index_columns = false;
 
     for line in text.lines() {
         let s = line.trim();
@@ -44,6 +89,16 @@ pub fn load_earthvision_grid(path: &Path) -> Result<PointData> {
                 || up.contains("FIELD:")
             {
                 saw_marker = true;
+            }
+            if up.contains("GRID_SIZE") {
+                let sizes: Vec<usize> = comment
+                    .split(|c: char| !c.is_ascii_digit())
+                    .filter(|token| !token.is_empty())
+                    .filter_map(|token| token.parse().ok())
+                    .collect();
+                if sizes.len() >= 2 {
+                    grid_size = Some((sizes[0], sizes[1]));
+                }
             }
             if up.contains("NULL") {
                 // `# Null_value: 1.0e30` (or `Null: …`) — take the last number.
@@ -65,31 +120,26 @@ pub fn load_earthvision_grid(path: &Path) -> Result<PointData> {
         if nums.len() < 3 {
             continue;
         }
-        let z = nums[2];
-        if !is_null_sentinel(z, null) {
-            out.push([nums[0], nums[1], z]);
-            if nums.len() >= 5 {
-                columns.push(nums[3]);
-                rows.push(nums[4]);
-                saw_index_columns = true;
-            } else {
-                columns.push(f64::NAN);
-                rows.push(f64::NAN);
-            }
-        }
+        let z = if is_null_sentinel(nums[2], null) {
+            f64::NAN
+        } else {
+            nums[2]
+        };
+        nodes.push(EarthVisionNode {
+            x: nums[0],
+            y: nums[1],
+            z,
+            column: nums.get(3).copied(),
+            row: nums.get(4).copied(),
+        });
     }
 
-    if !saw_marker && out.is_empty() {
+    if !saw_marker && nodes.is_empty() {
         return Err(GeoError::Format(
             "EarthVision grid: no header markers and no data rows".into(),
         ));
     }
-    let mut attrs = IndexMap::new();
-    if saw_index_columns && columns.len() == out.len() && rows.len() == out.len() {
-        attrs.insert("column".to_string(), columns);
-        attrs.insert("row".to_string(), rows);
-    }
-    PointData::new(out, attrs)
+    Ok(EarthVisionGridData { nodes, grid_size })
 }
 
 #[cfg(test)]
@@ -117,7 +167,12 @@ mod tests {
             .unwrap()
             .write_all(body.as_bytes())
             .unwrap();
-        let (pts, attrs) = load_earthvision_grid(&p).unwrap().into_parts();
+        let all = load_earthvision_grid_all(&p).unwrap();
+        assert_eq!(all.nodes.len(), 4);
+        assert!(all.nodes[2].z.is_nan());
+        assert_eq!((all.nodes[2].x, all.nodes[2].y), (100.0, 210.0));
+        assert_eq!(all.grid_size, Some((2, 2)));
+        let (pts, attrs) = all.finite_point_data().unwrap().into_parts();
         assert_eq!(pts.len(), 3); // the 1.0e30 node dropped
         assert_eq!(pts[0], [100.0, 200.0, -50.0]);
         assert_eq!(pts[2], [110.0, 210.0, -52.5]);

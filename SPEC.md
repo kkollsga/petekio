@@ -129,7 +129,7 @@ pub struct GridGeometry {           // regular, rotatable
 pub struct Surface {
     pub geom: GridGeometry,
     values: Array2<f64>,                       // primary (e.g. depth); NaN = undefined
-    attributes: IndexMap<String, Array2<f64>>, // thickness, seismic_amp, twt, ...
+    attributes: IndexMap<String, AttributeLane<Array2<f64>>>,
 }
 ```
 
@@ -137,7 +137,14 @@ pub struct Surface {
 - **Load:** `Surface::load_irap_classic(path)` — **FIRST format to implement.**
   (Then `load_irap_binary`, `load_zmap`, `load_xyz_csv`.)
 - **Attributes:** `surface.attr("thickness") -> &Array2` ; `set_attr(name, arr)` ;
-  `as_attr_surface("seismic") -> Surface` (promote an attribute for ops).
+  `as_attr_surface("seismic") -> Surface` (promote an attribute for ops). Each
+  lane durably carries `{id,label,kind,units,codes}` metadata. Values-only
+  replacement preserves existing metadata; a new legacy lane defaults honestly
+  to continuous, its lane name as id/label, and null units/codes. Explicit
+  metadata replaces the descriptor, and promotion carries it onto the primary
+  lane. New descriptor IDs, labels, units, and categorical code labels must
+  already be canonical non-empty trimmed strings (nullable fields may remain
+  null); authoring rejects padding rather than silently changing identity.
 - **Scalar arithmetic + math:** operator overloads (`&s + 100.0`, `&a * &b`) and
   methods on the active layer: `.ln() .log10() .exp() .powf(n) .sqrt() .abs()
   .clamp_min(x) .clamp(lo,hi)`. Each returns a new `Surface`.
@@ -145,23 +152,44 @@ pub struct Surface {
   (else `GeoError::GeometryMismatch` — caller resamples first). Convenience:
   `Surface::thickness(top, base, clamp_zero: bool) -> Surface`.
 - **Statistics:** `surface.stats() -> Stats` (over defined nodes).
+- **Interpret / repair:** `smooth(radius)` is a NaN-mask-preserving moving
+  average; `dip_angle()` and `dip_azimuth()` use NaN-aware finite differences
+  transformed from lattice axes into world East/North; `extrapolate(method)`
+  fills only original NaNs from finite nodes through the shared nearest, IDW,
+  or minimum-curvature grid kernel. These return same-geometry, primary-only
+  surfaces and append operation history.
 - **Area / volume:** `surface.area_below(depth) -> f64` (areal extent of nodes
   with value ≤ depth × cell area — the GRV-style query); `area_above`,
   `volume_between(&other) -> f64`, `hypsometry()` (area-vs-depth curve).
-- **Resample (native):** `surface.resample(&target: GridGeometry) -> Surface`
-  (bilinear; NaN-aware). `target` may come from another surface or a grid's areal
-  geometry. Also `sample(x, y) -> Option<f64>` (point query, bilinear).
+- **Resample (native):** `surface.resample(&target: GridGeometry) -> Result<Surface>`
+  (bilinear; NaN-aware). Source and target rotation/`yflip` are mapped through
+  petekTools' exact world↔intrinsic lattice transforms; `target` may come from
+  another surface or a grid's areal geometry. Also `sample(x, y) -> Option<f64>`
+  (point query, bilinear, same transform seam).
 
 Python ergonomics:
 ```python
 top  = geo.load_surface("top.irap")
 base = geo.load_surface("base.irap")
-thick = petekio.Surface.thickness(top, base, clamp_zero=True)   # or (base - top).clamp_min(0)
+thick = top.thickness(base, clamp_zero=True)                    # normal instance form
+petekio.Surface.thickness(top, base, clamp_zero=True)           # equivalent unbound form
+top.thickness = thick                    # assignment sugar for top.set_attr("thickness", thick)
+top.attr["thickness"]                    # promoted attribute Surface; exact geometry required
 trend = top.attr("seismic").ln()
+top.smooth(radius=1)                     # preserves the original NaN mask
+top.dip_angle(); top.dip_azimuth()       # degrees; azimuth clockwise from North
+top.extrapolate(method="nearest")        # fills NaNs only; idw/min_curvature too
 top.stats.p50
 top.area_below(8240)                 # ft² below the OWC
 ongrid = top.resample(grid_geom)     # bilinear onto a target geometry
 ```
+
+Python `Surface` attribute assignment is typed: the right-hand side must be a
+`Surface` with identical complete `GridGeometry` (origin, increments, node
+counts, rotation, and `yflip`). Assignment adds or replaces a copy-on-write
+attribute lane; read it through `surface.attr[name]`, so a lane named
+`thickness` does not shadow either the normal `surface.thickness(base)` instance
+form or the equivalent unbound `Surface.thickness(surface, base)` form.
 
 ### Geometry shells — the three-level system (level 2/3 surfaces)
 
@@ -189,6 +217,21 @@ walkability (the `MeshShell` corner table) is lazy and never serialized.
 Every level exposes `iso_lines` (NaN-aware marching triangles; holes break
 lines, never bend them) and `value_layer` (the viewer's trimesh bundle).
 `.pproj` stores a level-2/3 surface's shell once with N property lanes.
+Element schema v2 stores the same canonical descriptor beside regular,
+structured, and triangular attribute values. Exact positional v1 DTO decoders
+migrate old values-only lanes to the legacy defaults; standalone and whole-project
+loads route by each section's version.
+
+Python `PointSet.infer_geometry(...)` returns **only empty geometry roles**:
+`GridGeometry` when the points fit one affine lattice; `StructuredShell` when
+validated explicit `column`/`row` topology describes a curvilinear mesh; or
+`MeshShell` when the existing fault-aware triangulation is required. It never
+returns `Surface`, `StructuredMeshSurface`, or `TriSurface`; values remain on
+the `PointSet` until an explicit `to_surface`, `to_structured_surface`, or
+`to_tri_surface` call. Mesh fallback retains `max_bridge=3.4` by default and
+strict `None`; `fallback="error"` remains fatal. `fallback="tri"` is a
+deprecated compatibility spelling of `fallback="mesh"`, not a request for a
+value-bearing `TriSurface`.
 
 ### `Well` → `Sidetrack` → `Trajectory` (+ tops + logs)
 ```rust
@@ -228,6 +271,17 @@ pub struct Log { pub mnemonic: String, md: Array1<f64>, values: Array1<f64>, uni
 - **Interpolation (native):** on the active trajectory, exposed on the well:
   `well.xyz(md) -> [f64;3]`, `well.tvd(md) -> f64`, `well.position_at(md)`,
   `well.md_at_tvd(tvd)`. Arc/linear interpolation between stations.
+- **Surface intersections (native):** `Trajectory`/`Sidetrack`/resolved `Well`
+  intersect regular, structured, and triangulated surfaces through one canonical
+  triangle kernel. It spatially narrows candidates, adaptively subdivides the
+  actual minimum-curvature path, refines roots/tangencies, de-duplicates shared
+  edges, skips null holes/outside geometry, and rejects coplanar overlap loudly.
+  `intersections` returns every MD-ordered hit; `intersection` returns `None` for
+  no hit and errors with guidance if more than one exists. Computation is pure.
+- **Explicit persistent picks:** a bore/resolved well may add, replace, or remove
+  a top from an MD or typed intersection. Duplicate/missing/ambiguous legacy
+  names fail; hit well/bore identity and recomputed XYZ must match. Persistence
+  remains exactly `Top { name, md }` inside the owning Well.
 - **Logs (native):** `well.log("PHIE")` → a `LogView` with `.filter(pred)`,
   `.resample(step)`, `.stats() -> Stats`, `.values()`, `.at_md(md)`. Positioned in
   3-D via the active trajectory (`.xyz()`).
@@ -323,15 +377,116 @@ Surface`, `cube.stats()`, `cube.resample(&CubeGeometry)`.
 Load everything once; named + collection access; views; broadcast.
 ```rust
 pub struct GeoData { unit: Unit, surfaces: IndexMap<String, Surface>,
+                     structured_surfaces: IndexMap<String, StructuredMeshSurface>,
                      wells: IndexMap<String, Well>, points: ..., polygons: ... }
 impl GeoData {
     pub fn load_surface(&mut self, path) -> Result<&Surface>;     // fluent (returns ref / self)
+    pub fn load_structured_surface(&mut self, path) -> Result<&StructuredMeshSurface>; // EarthVision, null-preserving
     pub fn load_well(&mut self, dir_or_files, head, kb) -> Result<&Well>;
     pub fn surface(&self, name) -> Option<&Surface>;
     pub fn well(&self, id) -> Option<&Well>;
     pub fn wells(&self) -> WellsView;            // broadcastable + filterable
 }
 ```
+
+The project manifest also persists an optional authored display name, optional
+free-text CRS declaration, and the existing canonical `Unit`. Missing title/CRS
+in v1 manifests remains `None`; neither is inferred from a file path. New
+display-name/CRS/unit authoring requires canonical trimmed text. Existing v2
+files created before that rule safely trim presentation labels, units, title,
+and CRS on load/inspect and re-save; attribute IDs remain semantic and are never
+rewritten, so a padded persisted ID is rejected.
+
+Regular and structured surfaces have separate typed Rust collections so the
+existing `Surface` API remains exact, but share one name-uniqueness domain and
+one Python `project.surfaces` namespace. Whole-project `.pproj` persistence
+stores structured entries with the existing `structured_mesh` element kind.
+Triangulated replacements use the existing `tri_surface` element kind in that
+same namespace. Project-backed handles stay cheap/read-only or copy-on-write;
+only explicit `replace_surface(name, detached_surface)` writes regular,
+structured, or triangular edits back after exact geometry/topology validation.
+`model_inputs()` must fail loudly while its horizon contract cannot represent
+them; it must never silently omit a structured horizon.
+
+The Python `project.well_tops` mapping is a live, folder-aware aggregation of
+actual per-bore `Top` records (unlike `project.tops`, the imported source-table
+inventory). Assigning a complete `project.wells` intersection report validates
+every hit and diagnostic before mutation, then atomically creates/replaces the
+whole horizon and removes stale same-name picks. Outside/no-hit skips are
+allowed; failures block assignment.
+
+Provider-owned project values are separate generic `.pproj` `asset` sections,
+never model/domain elements. Their collision-safe physical names live below
+`@asset/<collection>/`; a versioned binary frame retains the exact canonical
+JSON envelope and exact provider bytes. The envelope declares asset type,
+provider, codec, and schema version. petekIO validates framing and paths but
+does not interpret provider semantics, and unknown asset types/fields survive
+open/save byte-for-byte. Correlation templates use `@asset/templates/<name>`;
+Python exposes them as immutable, folder-aware `project.templates` snapshots
+whose petekTools materialization remains lazy and optional.
+
+`Project` implements petekTools' generic workspace provider duck:
+`view_catalog()` returns a workspace-v2 envelope whose ordered metadata-only
+tree declares persisted `{title,crs,unit}` project identity when an authored
+title exists. Surface views declare the primary descriptor first, followed by
+named attributes in durable insertion order; every descriptor is the canonical
+`{id,label,kind,units,codes}` shape with independent `active_attribute` and
+`active_color_by` selectors. Missing CRS/units/code labels remain null, and only
+an ordinary primary/depth descriptor may inherit the project unit. Categorical
+`#RRGGBB` colors are uppercase-canonical at authoring and when legacy v2
+presentation text is migrated, so catalog and resource descriptors stay equal.
+For affine regular surfaces of at least 2×2 nodes,
+`view_resource(item_id, "map", detail)` materializes one explicit workspace-v2
+shared resource keyed only by item/Map/detail. The catalog declares exact
+`transport="shared"`, `modes=["2d","3d"]`, ordered descriptors, and local
+active geometry/paint defaults. Its single envelope block table carries one
+shell mask and every declared row-major f32 attribute exactly once under
+`payload.map.surface_grid`; there is no selector echo, nested block table,
+duplicate regular surface, or sibling scene3d payload. Geometry, colour-by, and
+camera mode changes are local viewer state; preview/full detail is the only
+resource multiplication axis. Selected export is therefore O(N) blocks for N
+attributes, never N² selector envelopes. Frame CRS/unit fields use only authored
+project facts; `positive="up"` declares petekIO's negative-down elevation
+storage without transforming values. The frame origin, increments, rotation,
+and `yflip` are derived from the same `GridGeometry`/petekTools lattice mapping
+used by `sample` and `resample`; viewer cursor inversion, promoted-property
+resources, and world-XYZ well intersections therefore stay co-located without
+an implicit reprojection. The f32 wire lane is authoritative:
+continuous ranges are computed from the transported f32 values, any finite f64
+outside the f32 range fails before resource emission, and every categorical
+value must round-trip f64→f32→f64 exactly so a code is never silently remapped.
+If strided preview would omit every finite value from any otherwise finite
+declared lane, that resource falls back to full sampling rather than emitting an
+all-null block against a finite stable range.
+Categorical lanes retain integral values plus durable code tables. Structured,
+triangular, degenerate, and other unsupported fallback
+shapes retain the Phase-5 separate Map/scene3d and direct `lane=` compatibility
+path. Degenerate 1×1, 1×N, and N×1 regular grids materialize both advertised
+fallback resources with zero triangles. Preview sampling preserves the complete
+world footprint.
+`project.view()` adds petekIO-native role/folder selection, surface-property
+defaults, automatic metadata-only per-bore correlation discovery, optional
+per-bore `ViewSpec` overrides, and stored-template resolution. Correlation
+resources start hidden and gather samples only when selected. Automatic curves
+are a deterministic project-wide intent of at most six tracks: one available
+source mnemonic per gamma, shale-volume, porosity, water-saturation,
+permeability, and deep-resistivity family, with safe continuous fallbacks to a
+practical minimum. Coordinate/discrete curves are excluded. Explicit
+`ViewSpec` remains exact; inspectable template layers restrict gathering and
+remain layout-authoritative. Equal-TVD picks
+retain stable stratigraphic identity and represent zero-thickness intervals;
+only decreasing stacks fail.
+Surface Map resources also carry surface-context `well_overlays`: petekIO runs
+the canonical exact intersection kernel and emits every finite crossing in
+stable MD order with status/cardinality. The singular compatibility echo and
+display clipping endpoint use the greatest-MD hit; no-hit keeps the full path,
+and failures remain explicit diagnostics with no fabricated crossing. This
+display choice does not change public `intersection()` ambiguity semantics.
+Stable IDs use canonical full paths with every segment percent-encoded; wells
+add an explicit bore segment. Surface primary/attribute values remain selectors
+of one item. Catalog building never calls `value_layer`, trajectory sampling, top
+positioning, or log gathering. Unknown provider assets remain byte-preserved
+and appear as disabled diagnostic leaves.
 ```python
 geo = petekio.GeoData(unit="ft")
 geo.load_surface("top.irap"); geo.load_well("wells/A1/", wellhead=(x,y), kb=82)

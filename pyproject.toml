@@ -30,7 +30,7 @@ pandas = ["pandas"]
 # The Rust extension already contains the petekTools kernels it uses. The
 # Python package is only needed for the optional viewer and accelerated
 # pure-Python interpolation path; both have a documented lazy fallback.
-toolkit = ["petektools>=0.2.7,<0.3"]
+toolkit = ["petektools>=0.2.15,<0.3"]
 
 [project.urls]
 # The petekSuite site is the canonical docs home for the whole family.

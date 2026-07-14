@@ -1,7 +1,209 @@
+import math
+import builtins
+import json
 from pathlib import Path
 
 import petekio
 import pytest
+
+
+def _correlation_template_dict(name: str = "reservoir", **extra):
+    return {
+        "spec": "CorrelationTemplate",
+        "schema_version": 1,
+        "name": name,
+        "tracks": [],
+        **extra,
+    }
+
+
+def test_project_display_metadata_round_trips(tmp_path):
+    project = petekio.Project(
+        petekio.GeoData(unit="m"),
+        display_name="Synthetic appraisal",
+        crs="EPSG:23031 / local datum note",
+    )
+    path = tmp_path / "metadata.pproj"
+    project.save(path)
+
+    info = petekio.GeoData.inspect(str(path))
+    assert info["display_name"] == "Synthetic appraisal"
+    assert info["crs"] == "EPSG:23031 / local datum note"
+    assert info["unit"] == "Metres"
+
+    reopened = petekio.Project.load(path)
+    assert reopened.display_name == "Synthetic appraisal"
+    assert reopened.crs == "EPSG:23031 / local datum note"
+    assert reopened.unit == "m"
+    assert reopened.inventory()["crs"] == "EPSG:23031 / local datum note"
+
+
+def test_project_rotated_surface_frame_survives_authoring_conversion_and_reload(tmp_path):
+    root = tmp_path / "Data"
+    root.mkdir()
+    geometry = petekio.GridGeometry(
+        431_000.0,
+        6_521_000.0,
+        25.0,
+        40.0,
+        4,
+        3,
+        rotation_deg=30.0,
+        yflip=True,
+    )
+    source = petekio.Surface.constant(geometry, -1800.0)
+    source.save_irap_classic(str(root / "Rotated top.irap"))
+    project = petekio.Project.import_data(
+        root,
+        display_name="Synthetic rotated appraisal",
+        settings=petekio.ImportSettings(crs="Synthetic local grid", unit="m"),
+    )
+    detached = project.surface("Rotated top")
+    detached.set_attr("facies", petekio.Surface.constant(detached.geometry, 1.0))
+    project.replace_surface("Rotated top", detached)
+
+    path = tmp_path / "rotated.pproj"
+    project.save(path)
+    reopened = petekio.Project.load(path)
+    assert reopened.crs == "Synthetic local grid"
+    persisted = reopened.surface("Rotated top")
+    actual = persisted.geometry
+    assert (
+        actual.xori,
+        actual.yori,
+        actual.xinc,
+        actual.yinc,
+        actual.ncol,
+        actual.nrow,
+        actual.rotation_deg,
+        actual.yflip,
+    ) == (431_000.0, 6_521_000.0, 25.0, 40.0, 4, 3, 30.0, True)
+    assert persisted.attr["facies"].geometry.rotation_deg == 30.0
+    assert persisted.attr["facies"].geometry.yflip is True
+
+    nominal = persisted.to_structured_mesh().nominal_geometry
+    assert nominal.rotation_deg == 30.0 and nominal.yflip is True
+    inferred = persisted.to_tri_surface().infer_grid()
+    assert inferred.rotation_deg == pytest.approx(30.0, abs=1e-9)
+    assert inferred.yflip is True
+    assert inferred.node_xy(3, 2) == pytest.approx(actual.node_xy(3, 2), abs=1e-8)
+
+
+def test_project_display_metadata_rejects_noncanonical_strings():
+    project = petekio.Project(petekio.GeoData(unit="m"))
+    with pytest.raises(ValueError, match="non-empty, trimmed string"):
+        project.display_name = " \t"
+    with pytest.raises(ValueError, match="non-empty, trimmed string"):
+        project.crs = "\n"
+    with pytest.raises(ValueError, match="non-empty, trimmed string"):
+        project.display_name = " Authored title "
+    with pytest.raises(ValueError, match="non-empty, trimmed string"):
+        project.crs = " Local CRS "
+    with pytest.raises(ValueError, match="non-empty, trimmed string"):
+        petekio.GeoData(unit=" m ")
+
+
+def test_project_template_library_snapshots_and_mutates_explicitly(tmp_path, monkeypatch):
+    project = petekio.Project(petekio.GeoData(unit="m"))
+    source = _correlation_template_dict("qc/default", note={"threshold": 0.2})
+    bound = project.templates.add(source, tags=["qc"])
+    source["note"]["threshold"] = 999
+
+    assert isinstance(bound, petekio.BoundTemplate)
+    assert (bound.name, bound.kind, bound.schema_version) == (
+        "qc/default",
+        "CorrelationTemplate",
+        1,
+    )
+    assert bound.to_dict()["note"] == {"threshold": 0.2}
+    assert project.templates == ["qc/"]
+    assert project.templates.qc.default.name == "qc/default"
+    assert project.templates["qc/default"].to_dict() == bound.to_dict()
+
+    with pytest.raises(ValueError, match="already exists"):
+        project.templates.add(_correlation_template_dict("qc/default"))
+    with pytest.raises(KeyError):
+        project.templates.replace(_correlation_template_dict("missing"))
+
+    replaced = project.templates.replace(
+        _correlation_template_dict("qc/default", note={"threshold": 0.3})
+    )
+    assert replaced.to_dict()["note"]["threshold"] == 0.3
+    renamed = project.templates.rename("qc/default", "production/reservoir")
+    assert renamed.name == renamed.to_dict()["name"] == "production/reservoir"
+    assert project.templates.production.reservoir.name == "production/reservoir"
+
+    path = tmp_path / "templates.pproj"
+    project.save(path)
+    info = petekio.GeoData.inspect(str(path))
+    assert ("asset", "@asset/templates/production/reservoir") in info["elements"]
+    reopened = petekio.Project.load(path)
+    assert reopened.templates.production.reservoir.to_dict() == renamed.to_dict()
+    assert reopened.inventory()["templates"] == ["production/reservoir"]
+
+    real_import = builtins.__import__
+
+    def without_petektools(name, *args, **kwargs):
+        if name == "petektools" or name.startswith("petektools."):
+            raise ImportError("blocked for optional-dependency test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_petektools)
+    # Persistence/listing remains provider-free; only materialization is loud.
+    assert reopened.templates.production.reservoir.name == "production/reservoir"
+    with pytest.raises(ImportError, match="Install or upgrade"):
+        reopened.templates.production.reservoir.materialize()
+
+    reopened.templates.delete("production/reservoir")
+    assert reopened.templates == []
+    with pytest.raises(KeyError):
+        reopened.templates.delete("production/reservoir")
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../escape", "folder/../escape", "/absolute", "folder//name", "folder\\name"],
+)
+def test_project_template_names_reject_traversal(name):
+    project = petekio.Project(petekio.GeoData(unit="m"))
+    with pytest.raises((TypeError, ValueError)):
+        project.templates.add(_correlation_template_dict(name))
+
+
+def test_generic_unknown_asset_round_trips_without_provider(tmp_path):
+    geo = petekio.GeoData(unit="m")
+    envelope = json.dumps(
+        {
+            "asset_type": "future-value",
+            "codec": "application/octet-stream",
+            "future": {"untouched": True},
+            "provider": "example.Future",
+            "schema_version": 42,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    payload = b"\x00\xfffuture\x00"
+    geo.add_asset(
+        "@asset/future/example",
+        "future-value",
+        envelope,
+        ["keep"],
+        1,
+        payload,
+    )
+    first = tmp_path / "first.pproj"
+    second = tmp_path / "second.pproj"
+    geo.save(str(first))
+    reopened = petekio.GeoData.open(str(first))
+    asset = reopened.asset("@asset/future/example")
+    assert asset["envelope"] == envelope
+    assert asset["bytes"] == payload
+    reopened.rename_asset("@asset/future/example", "@asset/future/renamed")
+    reopened.save(str(second))
+    twice = petekio.GeoData.open(str(second)).asset("@asset/future/renamed")
+    assert twice["envelope"] == envelope
+    assert twice["bytes"] == payload
 
 
 def _write(path: Path, text: str) -> Path:
@@ -303,10 +505,11 @@ def test_project_import_enriches_irap_points_from_matching_earthvision_topology(
 # Field: 4 column
 # Field: 5 row
 # Grid_size: 3 x 2
+# Null_value: 1.0e30
 # End:
 100.0 200.0 -50.0 1 1
 110.0 200.0 -51.0 2 1
-110.0 200.0 -51.0 3 1
+120.0 200.0 1.0e30 3 1
 100.0 210.0 -52.0 1 2
 110.0 210.0 -53.0 2 2
 120.0 210.0 -54.0 3 2
@@ -324,7 +527,12 @@ def test_project_import_enriches_irap_points_from_matching_earthvision_topology(
 
     project = petekio.Project.import_data(root)
     pts = project.points["Surfaces/IrapClassic_points/Top Dome"]
+    surface = project.surfaces["Surfaces/EarthVision_grid/Top Dome"]
 
+    assert isinstance(surface, petekio.StructuredMeshSurface)
+    assert (surface.ncol, surface.nrow) == (3, 2)
+    assert surface.node_xy(2, 0) == (120.0, 200.0)
+    assert math.isnan(surface.z(2, 0))
     assert pts.attr("column") == [1.0, 2.0, 1.0, 2.0, 3.0]
     assert pts.attr("row") == [1.0, 1.0, 2.0, 2.0, 2.0]
     assert project.points.Surfaces.IrapClassic_points.top_dome.attr("row") == [
@@ -337,6 +545,39 @@ def test_project_import_enriches_irap_points_from_matching_earthvision_topology(
     geom = pts.infer_geometry(tolerance=1e-3, edge="convex_hull")
     assert geom.ncol == 3
     assert geom.nrow == 2
+
+    saved = tmp_path / "field.pproj"
+    project.save(saved)
+    reopened = petekio.Project.load(saved)
+    restored = reopened.surfaces["Surfaces/EarthVision_grid/Top Dome"]
+    assert isinstance(restored, petekio.StructuredMeshSurface)
+    assert math.isnan(restored.z(2, 0))
+
+
+def test_ambiguous_earthvision_stems_do_not_guess_irap_topology(tmp_path):
+    root = tmp_path / "Data"
+    grid = """# Type: scattered data
+# Grid_size: 2 x 2
+# End:
+0 0 10 1 1
+10 0 11 2 1
+0 10 12 1 2
+10 10 13 2 2
+"""
+    _write(root / "A" / "Top.EarthVisionGrid", grid)
+    _write(root / "B" / "Top.EarthVisionGrid", grid)
+    _write(root / "Points" / "Top.IrapClassicPoints", "0 0 10\n10 0 11\n")
+
+    project = petekio.Project.import_data(root)
+
+    assert project.surfaces.all_names() == ["A/Top", "B/Top"]
+    assert all(
+        isinstance(project.surface(name), petekio.StructuredMeshSurface)
+        for name in project.surfaces.all_names()
+    )
+    points = project.points["Points/Top"]
+    assert "column" not in points.attr_names()
+    assert "row" not in points.attr_names()
 
 
 def _top_dome_tree(tmp_path: Path) -> Path:
@@ -406,6 +647,41 @@ def test_dataset_name_propagates_to_derived_objects(tmp_path):
     assert labelled.name == "Top Dome"
 
 
+def test_project_point_geometry_shells_propagate_name_and_kind(tmp_path):
+    root = tmp_path / "Data"
+    curved_rows = ["x,y,z,column,row"]
+    for j in range(5):
+        for i in range(5):
+            curved_rows.append(
+                f"{10 * i * (1 + 0.08 * i)},{10 * j * (1 + 0.05 * j)},1,{i + 1},{j + 1}"
+            )
+    _write(root / "Points" / "Curved.csv", "\n".join(curved_rows) + "\n")
+
+    fault_rows = ["x,y,z"]
+    for j in range(6):
+        for i in range(4):
+            fault_rows.append(f"{50 * i},{50 * j},-1")
+        for i in range(6, 10):
+            fault_rows.append(f"{50 * i + 20},{50 * j + 25},-2")
+    _write(root / "Points" / "Fault.csv", "\n".join(fault_rows) + "\n")
+
+    project = petekio.Project.import_data(root)
+    curved = project.points["Curved"]
+    with pytest.warns(UserWarning, match="StructuredShell geometry"):
+        structured = curved.infer_geometry()
+    assert structured.kind == "structured_shell"
+    assert structured.name == "Curved geometry"
+    assert structured.to_mesh_shell().name == "Curved geometry"
+    assert curved.to_structured_surface().shell.name == "Curved geometry"
+
+    fault = project.points["Fault"]
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
+        mesh = fault.infer_geometry(max_bridge=None)
+    assert mesh.kind == "mesh_shell"
+    assert mesh.name == "Fault geometry"
+    assert fault.to_tri_surface().shell.name == "Fault geometry"
+
+
 def test_project_load_pproj_delegates_to_geodata_open(tmp_path):
     geo = petekio.GeoData(unit="m")
     geo.load_surface("top", str(_write(tmp_path / "top.irap", _irap())))
@@ -450,6 +726,120 @@ def test_project_save_writes_compact_project(tmp_path):
 
     with pytest.raises(ValueError, match=".pproj"):
         project.save(tmp_path / "field")
+
+
+def test_project_replace_surface_is_explicit_cow_and_persists_all_levels(tmp_path):
+    root = tmp_path / "Data"
+    _write(root / "Surfaces" / "Top reservoir.irap", _irap())
+    _write(root / "Surfaces" / "ZZ Base reservoir.irap", _irap())
+    project = petekio.Project.import_data(root)
+    original_order = project.inventory()["surfaces"]
+    surface = project.surface("Top reservoir")
+    values = surface * 0.0 + 1.0
+    metadata = {
+        "id": "facies",
+        "label": "Facies",
+        "kind": "categorical",
+        "units": None,
+        "codes": {"1": {"label": "Sand", "color": "#EDA100"}},
+    }
+    surface.set_attr("facies", values, metadata=metadata)
+    assert project.surface("Top reservoir").attr_names() == []
+
+    project.replace_surface("Top reservoir", surface)
+    assert project.surface("Top reservoir").attr_metadata("facies") == metadata
+
+    structured = project.surface("Top reservoir").to_structured_mesh()
+    project.replace_surface("Top reservoir", structured)
+    assert project.surface("Top reservoir").kind == "structured_mesh"
+
+    tri = project.surface("Top reservoir").to_tri_surface()
+    project.replace_surface("Top reservoir", tri)
+    assert project.surface("Top reservoir").kind == "tri_surface"
+
+    wrong = petekio.Surface.constant(
+        petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 2, 2), 1.0
+    )
+    with pytest.raises(ValueError, match="geometry/topology differs"):
+        project.replace_surface("Top reservoir", wrong)
+
+    pproj = tmp_path / "replaced.pproj"
+    project.save(pproj)
+    reopened = petekio.Project.load(pproj)
+    assert reopened.inventory()["surfaces"] == original_order
+    persisted = reopened.surface("Top reservoir")
+    assert persisted.kind == "tri_surface"
+    assert persisted.attr_metadata("facies") == metadata
+
+
+@pytest.mark.parametrize("ncol,nrow", [(1, 1), (1, 4), (4, 1)])
+def test_degenerate_surface_replacement_and_persistence(tmp_path, ncol, nrow):
+    source = petekio.Surface.constant(
+        petekio.GridGeometry(
+            100.0, 200.0, 10.0, 20.0, ncol, nrow, rotation_deg=15.0
+        ),
+        -1800.0,
+    )
+    irap = tmp_path / f"degenerate_{ncol}x{nrow}.irap"
+    source.save_irap_classic(str(irap))
+
+    geo = petekio.GeoData(unit="m")
+    geo.load_surface("top", str(irap))
+    imported = tmp_path / f"imported_{ncol}x{nrow}.pproj"
+    geo.save(str(imported))
+    project = petekio.Project.load(imported)
+    project.replace_surface("top", project.surface("top"))
+
+    structured = project.surface("top").to_structured_mesh()
+    project.replace_surface("top", structured)
+    project.replace_surface("top", project.surface("top"))
+
+    pproj = tmp_path / f"degenerate_{ncol}x{nrow}.pproj"
+    project.save(pproj)
+    reopened = petekio.Project.load(pproj)
+    persisted = reopened.surface("top")
+    assert persisted.kind == "structured_mesh"
+    assert (persisted.ncol, persisted.nrow) == (ncol, nrow)
+    reopened.replace_surface("top", persisted)
+
+
+def test_surface_replacement_preserves_structured_boundary(tmp_path):
+    geometry = petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 4, 4)
+    irap = tmp_path / "boundary.irap"
+    petekio.Surface.constant(geometry, 100.0).save_irap_classic(str(irap))
+    geo = petekio.GeoData(unit="m")
+    geo.load_surface("top", str(irap))
+    imported = tmp_path / "boundary-imported.pproj"
+    geo.save(str(imported))
+    project = petekio.Project.load(imported)
+
+    x, y, z, column, row = [], [], [], [], []
+    for j in range(4):
+        for i in range(4):
+            x.append(float(i))
+            y.append(float(j))
+            z.append(math.nan if i > 1 and j > 1 else 100.0 + i + j)
+            column.append(i + 1)
+            row.append(j + 1)
+    points = petekio.PointSet.from_xyz(x, y, z)
+    points.column = column
+    points.row = row
+    occupied = points.to_structured_surface(edge="occupied")
+    full_rect = points.to_structured_surface(edge="full_rect")
+    assert occupied.edge.area() < full_rect.edge.area()
+
+    with pytest.raises(ValueError, match="geometry/topology differs"):
+        project.replace_surface("top", occupied)
+    project.replace_surface("top", full_rect)
+    with pytest.raises(ValueError, match="geometry/topology differs"):
+        project.replace_surface("top", occupied)
+
+    project.replace_surface("top", full_rect.to_tri_surface())
+    persisted_path = tmp_path / "boundary-persisted.pproj"
+    project.save(persisted_path)
+    persisted = petekio.Project.load(persisted_path).surface("top")
+    assert persisted.kind == "tri_surface"
+    assert math.isclose(persisted.edge.area(), full_rect.edge.area())
 
 
 def test_project_folder_navigation_and_object_management(tmp_path):

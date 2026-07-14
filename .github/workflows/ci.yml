@@ -89,6 +89,6 @@ jobs:
         with:
           name: ci-abi3-wheel
           path: dist
-      - run: pip install pytest "petektools>=0.2.7,<0.3"
+      - run: pip install pytest "petektools>=0.2.14,<0.3"
       - run: pip install --no-deps dist/*.whl
-      - run: pytest python/tests/test_wells_view.py python/tests/test_log_expressions.py -q
+      - run: pytest python/tests/test_project_view.py python/tests/test_wells_view.py python/tests/test_log_expressions.py -q

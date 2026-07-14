@@ -140,6 +140,31 @@ def test_set_attr_returns_a_new_object():
     assert sm2.attr("copy").values() == rows
 
 
+def test_attribute_metadata_carries_across_all_surface_levels():
+    metadata = {
+        "id": "facies",
+        "label": "Facies",
+        "kind": "categorical",
+        "units": None,
+        "codes": {
+            "1": {"label": "Sand", "color": "#EDA100"},
+            "2": {"label": "Shale", "color": None},
+        },
+    }
+    regular = plane_surface()
+    regular.set_attr("facies", regular * 0.0 + 1.0, metadata=metadata)
+    structured = regular.to_structured_mesh()
+    tri = regular.to_tri_surface()
+    for surface in (regular, structured, tri):
+        assert surface.attr_metadata("facies") == metadata
+        assert surface.attr("facies").primary_metadata == metadata
+
+    replaced = structured.set_attr("facies", structured.values())
+    assert replaced.attr_metadata("facies") == metadata
+    replaced_tri = tri.set_attr("facies", [2.0] * tri.n_points)
+    assert replaced_tri.attr_metadata("facies") == metadata
+
+
 # ---- shells ------------------------------------------------------------------
 
 
@@ -147,12 +172,14 @@ def test_shell_accessors():
     s = plane_surface()
     sm = s.to_structured_mesh()
     shell2 = sm.shell
+    assert shell2.kind == "structured_shell"
     assert (shell2.ncol, shell2.nrow) == (11, 5)
     assert shell2.node_xy(3, 2) == (30.0, 20.0)
     assert shell2.nominal_geometry is not None
 
     tri = s.to_tri_surface()
     shell3 = tri.shell
+    assert shell3.kind == "mesh_shell"
     assert shell3.n_nodes == tri.n_points
     assert shell3.n_triangles == tri.n_triangles
     assert shell3.components == 1
@@ -214,13 +241,13 @@ def test_tri_surface_legacy_methods_unchanged():
     assert isinstance(tin.history(), list)
 
 
-def test_infer_geometry_still_returns_grid_or_tri_surface():
+def test_infer_geometry_returns_grid_or_empty_mesh_shell():
     # A regular lattice → GridGeometry.
     p = lattice_points()
     g = p.infer_geometry(tolerance=1e-3)
     assert isinstance(g, petekio.GridGeometry)
 
-    # A fault-cut cloud → TriSurface fallback, exactly as before.
+    # A fault-cut cloud → geometry-only MeshShell fallback.
     xs, ys, zs = [], [], []
     for j in range(9):
         for i in range(6):
@@ -233,14 +260,19 @@ def test_infer_geometry_still_returns_grid_or_tri_surface():
             ys.append(50.0 * j + 25.0)
             zs.append(-1900.0)
     p = petekio.PointSet.from_xyz(xs, ys, zs)
-    with pytest.warns(UserWarning, match="TriSurface fallback"):
-        t = p.infer_geometry(tolerance=1e-3)
-    assert isinstance(t, petekio.TriSurface)
-    assert t.components == 2  # the fault is honoured, not bridged
+    with pytest.warns(UserWarning, match="MeshShell fallback"):
+        shell = p.infer_geometry(tolerance=1e-3, max_bridge=None)
+    assert isinstance(shell, petekio.MeshShell)
+    assert shell.kind == "mesh_shell"
+    assert shell.components == 2  # the fault is honoured, not bridged
+    assert shell.n_nodes > 0 and shell.n_triangles > 0
+    assert shell.edge.area() > 0.0
+    assert len(shell.labels()) == shell.n_nodes
+    assert len(shell.wireframe_edges()) > 0
 
 
 def faulted_points():
-    """Two fault blocks pulled apart — the TriSurface fallback (2 components)."""
+    """Two fault blocks pulled apart — the MeshShell fallback (2 components)."""
     xs, ys, zs = [], [], []
     for j in range(12):
         for i in range(8):

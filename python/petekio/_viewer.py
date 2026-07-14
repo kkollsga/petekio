@@ -3,7 +3,9 @@ the well-correlation seam).
 
 This is petekio's **producer** for the fourth viewer view (well correlation): it
 turns a petekio well's own logs + trajectory + tops into a ``WellLogBundle``
-(``kind: "wells_logs"``, ``schema_version: 4``) and hands it to the viewer unit.
+(``kind: "wells_logs"``, ``schema_version: 4``). ``LogSession.bundle()`` exposes
+that raw producer value; serve/save nest it under the generic viewer root's
+``wells_logs`` field before handing it to the viewer unit.
 It is the *viewer-unit second-consumer proof* — the same bundle the reference
 fixture (``petektools/viewer/_wells.py``) emits, produced from real petekio data.
 
@@ -35,6 +37,7 @@ import math
 import struct
 import sys
 from array import array
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union
 
 from ._specs import phie_cutoff_value
@@ -133,9 +136,11 @@ def _build_tops(
     picks): ``None``/``False`` → omit; ``True`` → all the well's zone tops;
     a list of horizon names → only those (case-insensitive, well order preserved).
     Picks + zone bands are emitted top→down in the well's zone order; the pick
-    TVDs are validated **strictly increasing** (loud error on an out-of-order /
-    overturned stack). A well simply missing a formation contributes no pick for
-    it (missing-pick passthrough) rather than failing.
+    TVDs are validated non-decreasing (loud error on an out-of-order / overturned
+    stack). Distinct coincident picks retain producer order and form valid
+    zero-thickness zones; coordinates are never jittered. A well simply missing
+    a formation contributes no pick for it (missing-pick passthrough) rather than
+    failing.
     """
     if tops is None or tops is False:
         return None, None
@@ -155,12 +160,12 @@ def _build_tops(
         zones.append({"name": name, "top_tvd_m": top_tvd, "base_tvd_m": base_tvd})
 
     for a, b in zip(picks, picks[1:]):
-        if not (b["tvd_m"] > a["tvd_m"]):
+        if b["tvd_m"] < a["tvd_m"]:
             raise ValueError(
                 "well tops are not sorted top->down by TVD: "
                 f"'{a['horizon']}' @ {a['tvd_m']} m then "
-                f"'{b['horizon']}' @ {b['tvd_m']} m (a pick must lie strictly "
-                "below the one above it)"
+                f"'{b['horizon']}' @ {b['tvd_m']} m (a pick must not lie above "
+                "the one before it)"
             )
     return picks, zones
 
@@ -295,6 +300,30 @@ class LogSession:
         """The raw ``WellLogBundle`` dict (for inspection / round-trip tests)."""
         return self.payload
 
+    def _viewer_payload(self) -> Dict[str, Any]:
+        """Wrap the raw bundle in petekTools' documented generic envelope.
+
+        The raw producer contract remains :meth:`bundle`; only the renderer
+        boundary gets the top-level tab slots its browser boot logic expects.
+        With every geometry/analytics tab empty, the viewer selects Wells.
+        """
+
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "wells",
+            "property": "",
+            "properties": [],
+            "summary": None,
+            "map": None,
+            "volume": None,
+            "scene3d": None,
+            "sections": [],
+            "section_labels": [],
+            "wells": [],
+            "wells_logs": self.payload,
+            "charts": [],
+        }
+
     @staticmethod
     def _viewer():
         try:
@@ -309,14 +338,14 @@ class LogSession:
         return viewer
 
     def serve(self, **kwargs: Any):
-        """Serve the bundle on a non-blocking local viewer server (returns the
+        """Serve the logs through the generic viewer envelope (returns the
         server handle / URL from ``petektools.viewer.serve``)."""
-        return self._viewer().serve(self.payload, **kwargs)
+        return self._viewer().serve(self._viewer_payload(), **kwargs)
 
     def save(self, path: str, **kwargs: Any) -> str:
         """Write one self-contained HTML file (``petektools.viewer.save_view``)
         and return ``path``."""
-        self._viewer().save_view(self.payload, path, **kwargs)
+        self._viewer().save_view(self._viewer_payload(), path, **kwargs)
         return path
 
 
@@ -325,6 +354,7 @@ def render(
     *,
     spec: Optional["ViewSpec"] = None,
     settings: Optional["ViewSettings"] = None,
+    template: Any = None,
     tops: Union[None, bool, Sequence[str]] = None,
     flatten_default: Optional[str] = None,
     phie_cutoff: Optional[float] = 0.08,
@@ -355,9 +385,52 @@ def render(
         phie_cutoff=phie_cutoff,
         flags=flags,
     )
+    if template is not None:
+        payload = _materialize_template(template).apply(payload)
     session = LogSession(payload)
     if save is not None:
         session.save(save)
     elif serve:
         session.serve()
     return session
+
+
+def _materialize_template(template: Any) -> Any:
+    """Resolve a plain/bound template through its optional semantic provider."""
+
+    materialize = getattr(template, "materialize", None)
+    if callable(materialize):
+        return materialize()
+
+    if isinstance(template, Mapping):
+        data = dict(template)
+    else:
+        to_dict = getattr(template, "to_dict", None)
+        if not callable(to_dict):
+            raise TypeError("template= requires a mapping or an object exposing to_dict()")
+        data = to_dict()
+        if not isinstance(data, Mapping):
+            raise TypeError("template.to_dict() must return a mapping")
+        apply = getattr(template, "apply", None)
+        if callable(apply):
+            return template
+        data = dict(data)
+
+    kind = data.get("spec")
+    if not isinstance(kind, str) or not kind:
+        raise ValueError("template dictionary is missing non-empty 'spec'")
+    try:
+        from petektools import viewer
+    except (ImportError, AttributeError) as exc:
+        raise ImportError(_template_provider_error(kind)) from exc
+    template_type = getattr(viewer, kind, None)
+    if template_type is None or not callable(getattr(template_type, "from_dict", None)):
+        raise ImportError(_template_provider_error(kind))
+    return template_type.from_dict(data)
+
+
+def _template_provider_error(kind: str) -> str:
+    return (
+        f"rendering/materializing {kind} requires a compatible petektools.viewer. "
+        "Install or upgrade it with `pip install -U 'petekio[toolkit]'`."
+    )

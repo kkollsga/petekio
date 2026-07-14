@@ -228,9 +228,8 @@ impl Surface {
     /// treated as zero). This CHANGED at the centralization: petekIO previously
     /// hard-holed on ANY undefined corner. See the crate CHANGELOG.
     ///
-    /// A rotated/`yflip`ed source is honoured exactly here — a point query is a
-    /// single world→index map, valid under rotation even though grid
-    /// [`resample`](Self::resample) gates it.
+    /// A rotated/`yflip`ed source is honoured exactly here through the same
+    /// world→intrinsic transform used by [`resample`](Self::resample).
     pub fn sample(&self, x: f64, y: f64) -> Option<f64> {
         let src = self.geom.to_lattice();
         // 1×1 target lattice at the query point; spacing is irrelevant (single
@@ -253,20 +252,10 @@ impl Surface {
     /// NaN-corner policy applies (nearest corner `NaN` → `NaN`, else renormalized
     /// over the finite corners — see [`sample`](Self::sample) and the CHANGELOG).
     ///
-    /// **Rotation guard.** The shared kernel is **axis-aligned-only**. If either
-    /// this surface's or the target's geometry is rotated (`rotation_deg != 0`),
-    /// this returns [`GeoError::Unsupported`] rather than a silent wrong answer,
-    /// until the kernel gains rotation support (suite task_suite_grid_rotation).
-    /// `yflip` is fully supported.
+    /// Source and target may carry independent intrinsic rotation and `yflip`;
+    /// the shared kernel maps target nodes through world coordinates into the
+    /// source's intrinsic index frame before interpolation.
     pub fn resample(&self, target: &GridGeometry) -> Result<Surface> {
-        if !self.geom.is_axis_aligned() || !target.is_axis_aligned() {
-            return Err(GeoError::Unsupported(format!(
-                "resample: rotated grid geometry is not supported by the shared \
-                 axis-aligned resample kernel (source rotation_deg={}, target \
-                 rotation_deg={}); axis-aligned + yflip only",
-                self.geom.rotation_deg, target.rotation_deg
-            )));
-        }
         let method = match self.primary_metadata.as_ref().map(|meta| meta.kind) {
             Some(crate::AttributeKind::Categorical) => petektools::ResampleMethod::Nearest,
             _ => petektools::ResampleMethod::Bilinear,
@@ -474,24 +463,91 @@ mod tests {
         }
     }
 
-    /// Rotation guard: a rotated source OR target is a typed `Unsupported`
-    /// error, never a silent wrong answer (the kernel is axis-aligned-only).
+    /// Rotated source and target share one exact world frame with the
+    /// petekTools lattice seam. Bilinear interpolation reproduces an affine
+    /// world field exactly.
     #[test]
-    fn resample_rotated_is_unsupported() {
-        let s = ramp();
-        let mut rotated = geom();
-        rotated.rotation_deg = 30.0;
-        // rotated TARGET
-        assert!(matches!(
-            s.resample(&rotated),
-            Err(GeoError::Unsupported(_))
-        ));
-        // rotated SOURCE
-        let s_rot = Surface::new(rotated.clone(), Array2::zeros((2, 2))).unwrap();
-        assert!(matches!(
-            s_rot.resample(&geom()),
-            Err(GeoError::Unsupported(_))
-        ));
+    fn resample_rotated_affine_world_field_is_exact() {
+        let field = |x: f64, y: f64| 3.0 + 0.5 * (x - 431_000.0) - 0.25 * (y - 6_521_000.0);
+        let source = GridGeometry {
+            xori: 431_000.0,
+            yori: 6_521_000.0,
+            xinc: 10.0,
+            yinc: 12.0,
+            ncol: 5,
+            nrow: 5,
+            rotation_deg: 30.0,
+            yflip: true,
+        };
+        let values = Array2::from_shape_fn((source.ncol, source.nrow), |(i, j)| {
+            let (x, y) = source.node_xy(i, j);
+            field(x, y)
+        });
+        let surface = Surface::new(source.clone(), values).unwrap();
+        let target = GridGeometry {
+            xinc: 5.0,
+            yinc: 6.0,
+            ncol: 9,
+            nrow: 9,
+            ..source
+        };
+        let out = surface.resample(&target).unwrap();
+        for j in 0..target.nrow {
+            for i in 0..target.ncol {
+                let (x, y) = target.node_xy(i, j);
+                assert_relative_eq!(out.values()[[i, j]], field(x, y), epsilon = 1e-8);
+                assert_relative_eq!(surface.sample(x, y).unwrap(), field(x, y), epsilon = 1e-8);
+            }
+        }
+    }
+
+    #[test]
+    fn promoted_categorical_rotated_resample_uses_nearest() {
+        let source = GridGeometry {
+            xori: 431_000.0,
+            yori: 6_521_000.0,
+            xinc: 10.0,
+            yinc: 12.0,
+            ncol: 3,
+            nrow: 3,
+            rotation_deg: 30.0,
+            yflip: true,
+        };
+        let mut surface = Surface::constant(source.clone(), -1800.0);
+        let facies = Array2::from_shape_fn((3, 3), |(i, j)| (i + 10 * j) as f64);
+        surface
+            .set_attr_with_metadata(
+                "facies",
+                facies.clone(),
+                AttributeMetadata::new(
+                    "facies",
+                    "Facies",
+                    crate::AttributeKind::Categorical,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let promoted = surface.as_attr_surface("facies").unwrap();
+        let target = GridGeometry {
+            xinc: 4.0,
+            yinc: 4.8,
+            ncol: 6,
+            nrow: 6,
+            ..source
+        };
+        let out = promoted.resample(&target).unwrap();
+        assert_eq!(out.primary_metadata(), promoted.primary_metadata());
+        for j in 0..target.nrow {
+            for i in 0..target.ncol {
+                let expected = facies[[
+                    (i as f64 * 0.4).round() as usize,
+                    (j as f64 * 0.4).round() as usize,
+                ]];
+                assert_eq!(out.values()[[i, j]], expected);
+            }
+        }
     }
 
     fn geom() -> GridGeometry {

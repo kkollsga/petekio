@@ -59,10 +59,7 @@ impl GridGeometry {
         }
     }
 
-    /// `true` when the lattice is axis-aligned (`rotation_deg == 0`). The shared
-    /// resample kernel is axis-aligned-only, so rotated grids are gated at the
-    /// resample seam (see [`Surface::resample`](crate::Surface::resample)).
-    /// `yflip` does not break alignment — the kernel honours it.
+    /// `true` when the lattice is axis-aligned (`rotation_deg == 0`).
     pub fn is_axis_aligned(&self) -> bool {
         self.rotation_deg == 0.0
     }
@@ -84,52 +81,24 @@ impl GridGeometry {
 
     /// World `(x, y)` of node `(i, j)`. `node_xy(0, 0) == (xori, yori)`.
     pub fn node_xy(&self, i: usize, j: usize) -> (f64, f64) {
-        let (s, c) = self.rotation_deg.to_radians().sin_cos();
-        let di = i as f64 * self.xinc;
-        let dj = j as f64 * self.yinc * self.yflip_factor();
-        (self.xori + di * c - dj * s, self.yori + di * s + dj * c)
+        self.to_lattice().node_xy(i, j)
     }
 
     /// Fractional node coordinates `(fi, fj)` for world `(x, y)` — the inverse
     /// of [`node_xy`](Self::node_xy). `None` for a degenerate (zero-spacing)
     /// geometry. The result may lie outside `[0, ncol-1] × [0, nrow-1]`.
     pub fn xy_to_ij(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        if self.xinc == 0.0 || self.yinc == 0.0 {
-            return None;
-        }
-        let (s, c) = self.rotation_deg.to_radians().sin_cos();
-        let dx = x - self.xori;
-        let dy = y - self.yori;
-        let u = dx * c + dy * s; // along x axis  = i * xinc
-        let v = -dx * s + dy * c; // along y axis = j * yinc * yflip
-        Some((u / self.xinc, v / (self.yinc * self.yflip_factor())))
+        self.to_lattice().xy_to_ij(x, y)
     }
 
     /// Axis-aligned bounding box of all nodes.
     pub fn bbox(&self) -> BBox {
-        let ni = self.ncol.saturating_sub(1);
-        let nj = self.nrow.saturating_sub(1);
-        let corners = [
-            self.node_xy(0, 0),
-            self.node_xy(ni, 0),
-            self.node_xy(0, nj),
-            self.node_xy(ni, nj),
-        ];
-        let xmin = corners.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
-        let xmax = corners
-            .iter()
-            .map(|p| p.0)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let ymin = corners.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
-        let ymax = corners
-            .iter()
-            .map(|p| p.1)
-            .fold(f64::NEG_INFINITY, f64::max);
+        let bbox = self.to_lattice().bbox();
         BBox {
-            xmin,
-            ymin,
-            xmax,
-            ymax,
+            xmin: bbox.xmin,
+            ymin: bbox.ymin,
+            xmax: bbox.xmax,
+            ymax: bbox.ymax,
         }
     }
 }
@@ -180,6 +149,37 @@ mod tests {
             assert_relative_eq!(fi, i as f64, epsilon = 1e-9);
             assert_relative_eq!(fj, j as f64, epsilon = 1e-9);
         }
+    }
+
+    #[test]
+    fn fractional_world_cell_roundtrip_matches_tools_lattice() {
+        let g = geom(30.0, true);
+        let lattice = g.to_lattice();
+        for &(i, j) in &[(0, 0), (2, 0), (0, 3), (1, 2)] {
+            assert_eq!(g.node_xy(i, j), lattice.node_xy(i, j));
+        }
+        let (origin_x, origin_y) = g.node_xy(0, 0);
+        let (i_x, i_y) = g.node_xy(1, 0);
+        let (j_x, j_y) = g.node_xy(0, 1);
+        let (fi, fj) = (1.25, 2.5);
+        let world = (
+            origin_x + fi * (i_x - origin_x) + fj * (j_x - origin_x),
+            origin_y + fi * (i_y - origin_y) + fj * (j_y - origin_y),
+        );
+        let own = g.xy_to_ij(world.0, world.1).unwrap();
+        let tools = lattice.xy_to_ij(world.0, world.1).unwrap();
+        assert_eq!(own, tools);
+        assert_relative_eq!(own.0, fi, epsilon = 1e-10);
+        assert_relative_eq!(own.1, fj, epsilon = 1e-10);
+        assert_eq!(g.bbox().xmin, lattice.bbox().xmin);
+        assert_eq!(g.bbox().ymax, lattice.bbox().ymax);
+    }
+
+    #[test]
+    fn zero_rotation_delegation_is_bit_compatible() {
+        let g = geom(0.0, false);
+        assert_eq!(g.node_xy(2, 3), (1100.0, 2075.0));
+        assert_eq!(g.xy_to_ij(1025.0, 2037.5), Some((0.5, 1.5)));
     }
 
     #[test]

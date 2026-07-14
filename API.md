@@ -147,9 +147,8 @@ impl Surface {
     pub fn hypsometry(&self) -> Vec<(f64, f64)>;            // (depth, area) curve
 
     // resample (petektools kernel, Bilinear; one-home). Kernel NaN-corner policy
-    // (see sample). Err(Unsupported) on a ROTATED source/target (axis-aligned kernel
-    // only; yflip OK) pending suite grid-rotation. Was `-> Surface` (infallible)
-    // pre-0.2.9.
+    // (see sample). Source and target rotation/yflip are honoured through exact
+    // world↔intrinsic lattice transforms. Was `-> Surface` (infallible) pre-0.2.9.
     pub fn resample(&self, target: &GridGeometry) -> Result<Surface>;
 
     // filtering + outline
@@ -677,7 +676,7 @@ pub struct SummaryInputs {              // scalars in base-SI units, each Uncert
 }
 pub struct SpatialInputs {              // for the 3D grid build + upscaling
     pub boundary: Option<PolygonSet>,
-    pub horizons: Vec<HorizonInput>,    // surface.resample(&GridGeometry)? onto the consumer lattice (Result; Err(Unsupported) if the horizon geometry is rotated)
+    pub horizons: Vec<HorizonInput>,    // surface.resample(&GridGeometry)? onto the consumer lattice, including rotated/y-flipped source and target frames
     pub well_curves: Vec<WellCurveInput>,  // ONE positioned curve-set PER BORE: a multi-sidetrack well emits each bore separately (well_id = "<id> <bore>")
 }
 pub struct HorizonInput { pub name: String, pub surface: Surface, pub provenance: Provenance }
@@ -1063,7 +1062,10 @@ uppercase `#RRGGBB` at authoring and v2 presentation migration. Supported affine
 one selector-free shared Map resource with exact `modes=["2d","3d"]`; one
 envelope-level block table carries the shell mask and every ordered attribute
 once. Preview/full detail is the only fetch-multiplication axis. Geometry and
-paint selectors remain independent local state, and selected export embeds one
+paint selectors remain independent local state. Its frame preserves the exact
+regular-grid origin, spacing, rotation, `yflip`, authored CRS, and unit; the
+same petekTools lattice transform underlies cursor coordinates, property
+promotion, sampling/resampling, and world-XYZ well overlays. Selected export embeds one
 resource instead of a Cartesian product. Finite continuous values outside f32
 transport range and categorical codes that do not round-trip exactly through
 f32 fail before emission; continuous ranges are derived from transported f32

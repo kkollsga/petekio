@@ -168,15 +168,16 @@ def test_surface_volumetrics():
     assert h[-1][1] == 400.0
 
 
-def test_surface_resample_rotated_is_unsupported():
-    # The committed IRAP fixture is rotated (rotation_deg == 30). The shared
-    # resample kernel is axis-aligned-only, so resampling a rotated geometry
-    # raises LOUDLY rather than returning a silently-untested answer (pending
-    # suite task_suite_grid_rotation). Real IRAP/RMS exports CAN be rotated.
+def test_surface_resample_rotated_identity_uses_world_frame():
+    # The committed IRAP fixture is rotated 30 degrees. Identity resampling and
+    # point sampling now share petekTools' exact world↔intrinsic transform.
     s = petekio.Surface.load_irap_classic(IRAP)
     assert s.geometry.rotation_deg == 30.0
-    with pytest.raises(ValueError):
-        s.resample(s.geometry)
+    resampled = s.resample(s.geometry)
+    assert resampled.geometry.rotation_deg == 30.0
+    for i, j in ((0, 0), (2, 0), (0, 3), (2, 3), (1, 2)):
+        x, y = s.geometry.node_xy(i, j)
+        assert resampled.sample(x, y) == s.sample(x, y)
 
 
 def test_surface_resample_axis_aligned():

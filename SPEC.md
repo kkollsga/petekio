@@ -161,9 +161,11 @@ pub struct Surface {
 - **Area / volume:** `surface.area_below(depth) -> f64` (areal extent of nodes
   with value ≤ depth × cell area — the GRV-style query); `area_above`,
   `volume_between(&other) -> f64`, `hypsometry()` (area-vs-depth curve).
-- **Resample (native):** `surface.resample(&target: GridGeometry) -> Surface`
-  (bilinear; NaN-aware). `target` may come from another surface or a grid's areal
-  geometry. Also `sample(x, y) -> Option<f64>` (point query, bilinear).
+- **Resample (native):** `surface.resample(&target: GridGeometry) -> Result<Surface>`
+  (bilinear; NaN-aware). Source and target rotation/`yflip` are mapped through
+  petekTools' exact world↔intrinsic lattice transforms; `target` may come from
+  another surface or a grid's areal geometry. Also `sample(x, y) -> Option<f64>`
+  (point query, bilinear, same transform seam).
 
 Python ergonomics:
 ```python
@@ -445,7 +447,11 @@ camera mode changes are local viewer state; preview/full detail is the only
 resource multiplication axis. Selected export is therefore O(N) blocks for N
 attributes, never N² selector envelopes. Frame CRS/unit fields use only authored
 project facts; `positive="up"` declares petekIO's negative-down elevation
-storage without transforming values. The f32 wire lane is authoritative:
+storage without transforming values. The frame origin, increments, rotation,
+and `yflip` are derived from the same `GridGeometry`/petekTools lattice mapping
+used by `sample` and `resample`; viewer cursor inversion, promoted-property
+resources, and world-XYZ well intersections therefore stay co-located without
+an implicit reprojection. The f32 wire lane is authoritative:
 continuous ranges are computed from the transported f32 values, any finite f64
 outside the f32 range fails before resource emission, and every categorical
 value must round-trip f64→f32→f64 exactly so a code is never silently remapped.

@@ -37,10 +37,9 @@ pub enum GeoError {
     #[error("out of range: {0}")]
     OutOfRange(String),
 
-    /// A well-formed request for a capability petekIO does not (yet) support —
-    /// e.g. resampling a **rotated** grid geometry, which the shared axis-aligned
-    /// resample kernel does not handle. Loud and typed so the caller gets a clear
-    /// "not supported" instead of a silent wrong answer.
+    /// A well-formed request for a capability petekIO does not (yet) support.
+    /// Loud and typed so the caller gets a clear "not supported" instead of a
+    /// silent wrong answer.
     #[error("unsupported: {0}")]
     Unsupported(String),
 

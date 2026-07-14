@@ -7,6 +7,18 @@ All notable changes to petekIO are recorded here. The format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Rotated regular-surface sampling and resampling.** `GridGeometry` now maps
+  node/world/index transforms through petekTools' field-identical rotated
+  `Lattice`, and `Surface::sample`/`resample` share its single world-frame
+  resampler. Rotated and independently y-flipped source/target grids are now
+  supported; affine continuous fields remain exact and promoted categorical
+  lanes retain nearest-neighbour semantics. This retires the prior explicit
+  rotated-resample rejection without changing the public API or zero-rotation
+  results. Project resources, promoted properties, cursor transforms, and real
+  trajectory intersections preserve the same rotation/`yflip`/CRS/unit world
+  frame through authoring, replacement, conversion, and `.pproj` reload.
+  Verification used the exact petekTools rotated foundation at
+  `5d029dd26252c41eacc68ef89715ffd7aa6e38a7`.
 - **Durable viewer-ready surface and project metadata.** Regular, structured,
   and triangular surface attributes now persist canonical
   `{id,label,kind,units,codes}` descriptors through replacement, promotion,

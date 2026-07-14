@@ -15,6 +15,7 @@ from petekio._project_view_curves import select_auto_curves
 
 
 viewer = pytest.importorskip("petektools.viewer")
+petektools = pytest.importorskip("petektools")
 
 
 class _Names:
@@ -111,6 +112,30 @@ class _OverlayWell(_WellSpy):
     def __init__(self, hits):
         self._bores = [""]
         self._items = {"": _OverlayBore(hits)}
+
+
+class _TrajectoryBore(_BoreSpy):
+    """Well duck backed by the real petekIO intersection implementation."""
+
+    def __init__(self, trajectory):
+        super().__init__(mnemonics=())
+        self.trajectory = trajectory
+
+    def md_range(self):
+        return self.trajectory.md_range()
+
+    def xyz(self, md):
+        return self.trajectory.xyz(md)
+
+    def intersections(self, surface):
+        return self.trajectory.intersections(surface)
+
+
+class _TrajectoryWell(_WellSpy):
+    def __init__(self, trajectory):
+        self.head = tuple(trajectory.xyz(0.0)[:2])
+        self._bores = [""]
+        self._items = {"": _TrajectoryBore(trajectory)}
 
 
 class _SurfaceSpy:
@@ -629,6 +654,110 @@ def test_regular_surface_map_is_native_affine_row_major_and_nan_exact():
     assert values[5] != values[5]
     assert set(_shared_block_values(depth, grid["mask"], "B")) == {1}
     assert set(_shared_block_values(depth, grid["attributes"][1]["values"], "f")) == {7.0}
+
+
+def test_rotated_resource_cursor_promoted_property_and_real_well_share_world_frame():
+    geometry = petekio.GridGeometry(
+        431000.0,
+        6521000.0,
+        25.0,
+        40.0,
+        5,
+        4,
+        rotation_deg=30.0,
+        yflip=True,
+    )
+    surface = petekio.Surface.constant(geometry, -5.0)
+    metadata = {
+        "id": "facies",
+        "label": "Facies",
+        "kind": "categorical",
+        "units": None,
+        "codes": {"1": {"label": "Sand", "color": "#EDA100"}},
+    }
+    surface.set_attr(
+        "facies", petekio.Surface.constant(geometry, 1.0), metadata=metadata
+    )
+    head = geometry.node_xy(2, 1)
+    trajectory = petekio.Trajectory.from_stations(
+        [(0.0, 0.0, 0.0), (20.0, 0.0, 0.0)], head=head, kb=0.0
+    )
+    project = _FakeProject(
+        {"Rotated": surface},
+        wells={"W1": _TrajectoryWell(trajectory)},
+        crs="EPSG:32631",
+        unit="m",
+    )
+    resource = viewer.view(
+        ProjectViewProvider(project, lod=False), serve=False
+    ).resource("surface:Rotated", "map", detail="full")
+    grid = resource["payload"]["map"]["surface_grid"]
+    frame = grid["frame"]
+    assert {
+        key: frame[key]
+        for key in (
+            "origin_x",
+            "origin_y",
+            "spacing_x",
+            "spacing_y",
+            "ncol",
+            "nrow",
+            "rotation_deg",
+        )
+    } == pytest.approx(
+        {
+            "origin_x": 431000.0,
+            "origin_y": 6521000.0,
+            "spacing_x": 25.0,
+            "spacing_y": 40.0,
+            "ncol": 5,
+            "nrow": 4,
+            "rotation_deg": 30.0,
+        }
+    )
+    assert frame["yflip"] is True
+    assert frame["crs"] == "EPSG:32631" and frame["units"] == "m"
+
+    lattice = petektools.Lattice(
+        frame["origin_x"],
+        frame["origin_y"],
+        frame["spacing_x"],
+        frame["spacing_y"],
+        frame["ncol"],
+        frame["nrow"],
+        rotation_deg=frame["rotation_deg"],
+        yflip=frame["yflip"],
+    )
+    for fi, fj in ((0.0, 0.0), (2.0, 1.0), (1.25, 2.5)):
+        world = lattice.intrinsic_to_world(fi, fj)
+        assert geometry.xy_to_ij(*world) == pytest.approx((fi, fj), abs=1e-9)
+        assert lattice.world_to_intrinsic(*world) == pytest.approx((fi, fj), abs=1e-9)
+        assert surface.sample(*world) == pytest.approx(-5.0)
+    assert lattice.node_xy(2, 1) == pytest.approx(head, abs=1e-9)
+
+    values = _shared_block_values(resource, grid["attributes"][0]["values"], "f")
+    assert set(values) == {-5.0}
+    overlay = resource["payload"]["map"]["well_overlays"][0]
+    assert overlay["status"] == "hit"
+    assert overlay["intersection"]["md"] == pytest.approx(5.0, abs=1e-3)
+    assert overlay["intersection"]["xyz"] == pytest.approx([*head, -5.0], abs=1e-3)
+    assert overlay["trajectory"][-1] == pytest.approx([*head, -5.0], abs=1e-3)
+
+    promoted = surface.attr["facies"]
+    promoted_resource = viewer.view(
+        ProjectViewProvider(
+            _FakeProject({"Facies": promoted}, crs="EPSG:32631", unit="m")
+        ),
+        serve=False,
+    ).resource("surface:Facies", "map", detail="full")
+    promoted_grid = promoted_resource["payload"]["map"]["surface_grid"]
+    assert promoted_grid["frame"] == frame
+    assert promoted_grid["attributes"][0]["kind"] == "categorical"
+    assert set(
+        _shared_block_values(
+            promoted_resource, promoted_grid["attributes"][0]["values"], "f"
+        )
+    ) == {1.0}
 
 
 def test_regular_surface_scene_has_progressive_compact_detail():

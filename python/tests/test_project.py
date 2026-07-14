@@ -38,6 +38,57 @@ def test_project_display_metadata_round_trips(tmp_path):
     assert reopened.inventory()["crs"] == "EPSG:23031 / local datum note"
 
 
+def test_project_rotated_surface_frame_survives_authoring_conversion_and_reload(tmp_path):
+    root = tmp_path / "Data"
+    root.mkdir()
+    geometry = petekio.GridGeometry(
+        431_000.0,
+        6_521_000.0,
+        25.0,
+        40.0,
+        4,
+        3,
+        rotation_deg=30.0,
+        yflip=True,
+    )
+    source = petekio.Surface.constant(geometry, -1800.0)
+    source.save_irap_classic(str(root / "Rotated top.irap"))
+    project = petekio.Project.import_data(
+        root,
+        display_name="Synthetic rotated appraisal",
+        settings=petekio.ImportSettings(crs="Synthetic local grid", unit="m"),
+    )
+    detached = project.surface("Rotated top")
+    detached.set_attr("facies", petekio.Surface.constant(detached.geometry, 1.0))
+    project.replace_surface("Rotated top", detached)
+
+    path = tmp_path / "rotated.pproj"
+    project.save(path)
+    reopened = petekio.Project.load(path)
+    assert reopened.crs == "Synthetic local grid"
+    persisted = reopened.surface("Rotated top")
+    actual = persisted.geometry
+    assert (
+        actual.xori,
+        actual.yori,
+        actual.xinc,
+        actual.yinc,
+        actual.ncol,
+        actual.nrow,
+        actual.rotation_deg,
+        actual.yflip,
+    ) == (431_000.0, 6_521_000.0, 25.0, 40.0, 4, 3, 30.0, True)
+    assert persisted.attr["facies"].geometry.rotation_deg == 30.0
+    assert persisted.attr["facies"].geometry.yflip is True
+
+    nominal = persisted.to_structured_mesh().nominal_geometry
+    assert nominal.rotation_deg == 30.0 and nominal.yflip is True
+    inferred = persisted.to_tri_surface().infer_grid()
+    assert inferred.rotation_deg == pytest.approx(30.0, abs=1e-9)
+    assert inferred.yflip is True
+    assert inferred.node_xy(3, 2) == pytest.approx(actual.node_xy(3, 2), abs=1e-8)
+
+
 def test_project_display_metadata_rejects_noncanonical_strings():
     project = petekio.Project(petekio.GeoData(unit="m"))
     with pytest.raises(ValueError, match="non-empty, trimmed string"):

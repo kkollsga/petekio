@@ -425,6 +425,33 @@ def test_v2_catalog_uses_persisted_project_and_attribute_metadata(tmp_path):
         )
 
 
+def test_lowercase_categorical_color_is_canonical_at_exact_tools_seam():
+    geometry = petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 2, 2)
+    surface = petekio.Surface.constant(geometry, -1800.0)
+    surface.set_attr(
+        "facies",
+        petekio.Surface.constant(geometry, 1.0),
+        metadata={
+            "id": "facies",
+            "label": "Facies",
+            "kind": "categorical",
+            "units": None,
+            "codes": {"1": {"label": "Sand", "color": "#eda100"}},
+        },
+    )
+    assert surface.attr_metadata("facies")["codes"]["1"]["color"] == "#EDA100"
+
+    session = viewer.view(
+        ProjectViewProvider(_FakeProject({"Top": surface})), serve=False
+    )
+    spec = next(_walk(session.manifest()["workspace"]["tree"]))["resources"]["map"]
+    descriptor = next(item for item in spec["attributes"] if item["id"] == "facies")
+    assert descriptor["codes"]["1"]["color"] == "#EDA100"
+    resource = session.resource("surface:Top", "map", detail="full")
+    fetched = resource["payload"]["map"]["surface_grid"]["attributes"][1]
+    assert {key: fetched[key] for key in descriptor} == descriptor
+
+
 def test_bore_ids_are_typed_and_log_gathering_is_never_catalog_work():
     well = _WellSpy(("", "ST 2"))
     provider = ProjectViewProvider(
@@ -533,16 +560,37 @@ def test_regular_structured_and_tri_surface_resources_share_the_lane_seam(tmp_pa
             assert not hasattr(surface, "_view_regular_grid")
 
 
-def test_degenerate_regular_surface_keeps_legacy_catalog_fallback():
+@pytest.mark.parametrize("ncol,nrow", [(1, 1), (1, 4), (4, 1)])
+def test_degenerate_regular_surface_legacy_views_materialize(ncol, nrow):
     surface = petekio.Surface.constant(
-        petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 1, 1), 10.0
+        petekio.GridGeometry(
+            100.0,
+            200.0,
+            10.0,
+            20.0,
+            ncol,
+            nrow,
+            rotation_deg=15.0,
+            yflip=True,
+        ),
+        10.0,
     )
-    leaf = next(
-        _walk(_provider_tree(ProjectViewProvider(_FakeProject({"One": surface}))))
-    )
+    provider = ProjectViewProvider(_FakeProject({"Degenerate": surface}))
+    leaf = next(_walk(_provider_tree(provider)))
     assert set(leaf["views"]) == {"map", "scene3d"}
     assert "transport" not in leaf["views"]["map"]
     assert leaf["visible"] == {"map": True, "scene3d": True}
+
+    session = viewer.view(provider, serve=False)
+    workspace_leaf = next(_walk(session.manifest()["workspace"]["tree"]))
+    assert set(workspace_leaf["resources"]) == {"map", "scene3d"}
+    mapped = session.resource("surface:Degenerate", "map")
+    fill = mapped["payload"]["map"]["fills"][0]
+    assert fill["regular_grid"]["dimensions"] == [ncol, nrow]
+    scene = session.resource("surface:Degenerate", "scene3d", detail="preview")
+    regular = scene["payload"]["scene3d"]["meshes"][0]["regular_surface"]
+    assert regular["dimensions"] == [ncol, nrow]
+    assert regular["triangle_count"] == 0
 
 
 def _block_values(payload, marker, code):
@@ -630,6 +678,44 @@ def test_regular_surface_scene_has_progressive_compact_detail():
     assert map_seconds < 0.5
 
 
+def test_sparse_shared_preview_retains_a_finite_sample_and_stable_range(tmp_path):
+    ncol = nrow = 500
+    values = ["9999900.0"] * (ncol * nrow)
+    values[ncol + 1] = "7.0"
+    path = tmp_path / "sparse.irap"
+    path.write_text(
+        "\n".join(
+            [
+                f"-996 {nrow} 1 1",
+                f"0 {ncol - 1} 0 {nrow - 1}",
+                f"{ncol} 0 0 0",
+                "0 0 0 0 0 0 0",
+                " ".join(values),
+            ]
+        )
+        + "\n"
+    )
+    surface = petekio.Surface.load_irap_classic(str(path))
+    session = viewer.view(
+        ProjectViewProvider(_FakeProject({"Sparse": surface})), serve=False
+    )
+
+    preview = session.resource("surface:Sparse", "map", detail="preview")
+    full = session.resource("surface:Sparse", "map", detail="full")
+    preview_grid = preview["payload"]["map"]["surface_grid"]
+    full_grid = full["payload"]["map"]["surface_grid"]
+    assert [preview_grid["frame"]["ncol"], preview_grid["frame"]["nrow"]] == [
+        ncol,
+        nrow,
+    ]
+    assert preview_grid["attributes"][0]["range"] == [7.0, 7.0]
+    assert preview_grid["attributes"][0]["range"] == full_grid["attributes"][0]["range"]
+    preview_values = _shared_block_values(
+        preview, preview_grid["attributes"][0]["values"], "f"
+    )
+    assert [value for value in preview_values if value == value] == [7.0]
+
+
 def test_native_regular_resources_never_call_full_mesh_duck():
     surface = _NativeSurfaceSpy("Native")
     provider = ProjectViewProvider(_FakeProject({"Native": surface}))
@@ -713,6 +799,77 @@ def test_promoted_categorical_primary_is_shared_geometry():
     )
     attribute = resource["payload"]["map"]["surface_grid"]["attributes"][0]
     assert attribute["kind"] == "categorical" and attribute["range"] is None
+
+
+def test_shared_categorical_transport_requires_exact_f32_codes():
+    geometry = petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 2, 2)
+
+    def promoted(code):
+        source = petekio.Surface.constant(geometry, 0.0)
+        metadata = {
+            "id": "facies",
+            "label": "Facies",
+            "kind": "categorical",
+            "units": None,
+            "codes": {str(code): {"label": "Boundary", "color": None}},
+        }
+        source.set_attr(
+            "facies", petekio.Surface.constant(geometry, float(code)), metadata=metadata
+        )
+        return source.attr["facies"]
+
+    exact_code = 2**24
+    exact = viewer.view(
+        ProjectViewProvider(_FakeProject({"Facies": promoted(exact_code)})),
+        serve=False,
+    ).resource("surface:Facies", "map", detail="full")
+    grid = exact["payload"]["map"]["surface_grid"]
+    attribute = grid["attributes"][0]
+    assert attribute["codes"] == {
+        str(exact_code): {"label": "Boundary", "color": None}
+    }
+    assert set(_shared_block_values(exact, attribute["values"], "f")) == {
+        float(exact_code)
+    }
+
+    inexact_code = 2**24 + 1
+    rejected = viewer.view(
+        ProjectViewProvider(_FakeProject({"Facies": promoted(inexact_code)})),
+        serve=False,
+    )
+    with pytest.raises(ValueError, match="not exactly representable as f32"):
+        rejected.resource("surface:Facies", "map", detail="full")
+
+
+def test_shared_continuous_transport_range_matches_f32_and_overflow_is_loud():
+    geometry = petekio.GridGeometry(0.0, 0.0, 1.0, 1.0, 2, 2)
+    f32_max = float.fromhex("0x1.fffffep+127")
+    for index, source_value in enumerate((0.1, f32_max)):
+        transported = struct.unpack("<f", struct.pack("<f", source_value))[0]
+        resource = viewer.view(
+            ProjectViewProvider(
+                _FakeProject(
+                    {f"Continuous {index}": petekio.Surface.constant(geometry, source_value)}
+                )
+            ),
+            serve=False,
+        ).resource(f"surface:Continuous%20{index}", "map", detail="full")
+        attribute = resource["payload"]["map"]["surface_grid"]["attributes"][0]
+        assert attribute["range"] == [transported, transported]
+        assert set(_shared_block_values(resource, attribute["values"], "f")) == {
+            transported
+        }
+
+    overflow = viewer.view(
+        ProjectViewProvider(
+            _FakeProject(
+                {"Overflow": petekio.Surface.constant(geometry, float.fromhex("0x1p+128"))}
+            )
+        ),
+        serve=False,
+    )
+    with pytest.raises(ValueError, match="outside the f32 transport range"):
+        overflow.resource("surface:Overflow", "map", detail="full")
 
 
 def test_shared_surface_detail_missing_and_malformed_data_are_local():

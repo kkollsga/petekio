@@ -20,7 +20,10 @@ pub struct CodeRecord {
 
 impl CodeRecord {
     pub fn new(label: Option<String>, color: Option<String>) -> Result<Self> {
-        let out = Self { label, color };
+        let mut out = Self { label, color };
+        if let Some(color) = &mut out.color {
+            color.make_ascii_uppercase();
+        }
         out.validate()?;
         Ok(out)
     }
@@ -138,6 +141,9 @@ impl AttributeMetadata {
                 if let Some(label) = &mut record.label {
                     *label = label.trim().to_string();
                 }
+                if let Some(color) = &mut record.color {
+                    color.make_ascii_uppercase();
+                }
             }
         }
     }
@@ -195,8 +201,9 @@ mod tests {
         let mut codes = IndexMap::new();
         codes.insert(
             "1".into(),
-            CodeRecord::new(Some("Sand".into()), Some("#EDA100".into())).unwrap(),
+            CodeRecord::new(Some("Sand".into()), Some("#eda100".into())).unwrap(),
         );
+        assert_eq!(codes["1"].color.as_deref(), Some("#EDA100"));
         assert!(AttributeMetadata::new(
             "facies",
             "Facies",

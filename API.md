@@ -940,11 +940,16 @@ session.resource("surface:Interpretation/Top%20A", "map", detail="full")
 # One shared regular-surface fetch carries depth + every attribute. Geometry,
 # colour-by, 2-D/3-D mode, and selector changes are local viewer state and do
 # not issue selector-driven resource requests.
+# Shared f32 lanes reject finite overflow; categorical codes must round-trip
+# exactly through f32, and continuous ranges describe the transported values.
+# A sparse lane that preview striding would make entirely null forces that
+# preview resource to full sampling, retaining at least one finite value.
 session.refresh().serve()
 session.save("project.html", include="visible")
 # Shared selected export embeds one envelope with N value blocks, never N²
 # attribute×color_by envelopes. Structured/triangular/degenerate fallbacks keep
-# their established separate resources and direct lane compatibility.
+# their established separate resources and direct lane compatibility; 1×1,
+# 1×N, and N×1 regular grids materialize with zero triangles.
 
 # Exact generic equivalent through the provider duck:
 from petektools import view as pto_view
@@ -1053,14 +1058,20 @@ template tracks restrict automatic gathering. `ProjectViewSession` exposes `tree
 The provider catalog is workspace v2: an authored persisted project title emits
 `project={title,crs,unit}` (an absent title is never path-guessed), and each
 surface view declares ordered canonical attribute descriptors plus independent
-`active_attribute` / `active_color_by`. Supported affine regular surfaces use
+`active_attribute` / `active_color_by`. Categorical colors are canonical
+uppercase `#RRGGBB` at authoring and v2 presentation migration. Supported affine regular surfaces use
 one selector-free shared Map resource with exact `modes=["2d","3d"]`; one
 envelope-level block table carries the shell mask and every ordered attribute
 once. Preview/full detail is the only fetch-multiplication axis. Geometry and
 paint selectors remain independent local state, and selected export embeds one
-resource instead of a Cartesian product. Structured, triangular, and
+resource instead of a Cartesian product. Finite continuous values outside f32
+transport range and categorical codes that do not round-trip exactly through
+f32 fail before emission; continuous ranges are derived from transported f32
+values. A strided preview that would omit all finite values from any finite lane
+falls back to full sampling. Structured, triangular, and
 degenerate/non-affine fallbacks retain separate Map/scene3d resources and direct
-`lane=` compatibility. Map resources carry every finite MD-ordered
+`lane=` compatibility; advertised 1×1, 1×N, and N×1 regular resources
+materialize with zero triangles. Map resources carry every finite MD-ordered
 surface-context well intersection, status/cardinality, and a greatest-MD
 singular compatibility echo; this does not alter the public multi-hit error of
 `intersection()`.

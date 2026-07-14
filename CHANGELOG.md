@@ -26,6 +26,16 @@ All notable changes to petekIO are recorded here. The format loosely follows
   selector-free shared Map resource for exact 2-D/3-D modes: one envelope block
   table carries the mask and every ordered continuous/categorical attribute
   once, while geometry and colour-by selection remain local client state.
+  The f32 wire boundary now rejects finite overflow and categorical values that
+  cannot round-trip exactly, and continuous ranges describe the transported f32
+  values, preventing silent category remapping or incoherent range metadata.
+  Sparse previews fall back to full sampling when striding would omit every
+  finite value from any declared finite lane, preserving stable ranges without
+  emitting an invalid all-null preview block.
+  Degenerate 1×1, 1×N, and N×1 regular grids keep the separate fallback catalog
+  and now materialize both advertised Map and scene3d resources with zero
+  triangles. Categorical colors canonicalize to uppercase `#RRGGBB` at
+  authoring and v2 migration so exact catalog/resource descriptors cannot drift.
   Preview/full detail is the only fetch axis, so selected export is O(N) blocks
   rather than N² selector envelopes. Surface well overlays now carry every
   finite MD-ordered crossing with cardinality status and greatest-MD singular

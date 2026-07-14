@@ -22,7 +22,7 @@ use crate::geometry::{BBox, GridGeometry};
 use crate::points::PolygonSet;
 use crate::stats::Stats;
 use crate::{parse_grid_method, to_pyerr};
-use petekio::{GeoError, PolygonSet as RsPolygonSet, Surface as RsSurface};
+use petekio::{AttributeKind, GeoError, PolygonSet as RsPolygonSet, Surface as RsSurface};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -42,6 +42,24 @@ enum SurfaceBacking {
 pub struct Surface {
     backing: SurfaceBacking,
     name: Option<String>,
+}
+
+fn encode_shared_value(value: f64, kind: AttributeKind, name: &str) -> PyResult<f32> {
+    if !value.is_finite() {
+        return Ok(f32::from_bits(0x7fc0_0000));
+    }
+    let encoded = value as f32;
+    if !encoded.is_finite() {
+        return Err(PyValueError::new_err(format!(
+            "shared surface lane '{name}' contains finite value {value} outside the f32 transport range"
+        )));
+    }
+    if kind == AttributeKind::Categorical && f64::from(encoded) != value {
+        return Err(PyValueError::new_err(format!(
+            "shared categorical surface lane '{name}' value {value} is not exactly representable as f32"
+        )));
+    }
+    Ok(encoded)
 }
 
 impl Surface {
@@ -492,10 +510,25 @@ impl Surface {
             let lanes = attrs
                 .iter()
                 .map(|attr| match attr {
-                    Some(name) => surface.attr(name).ok_or_else(|| {
-                        PyValueError::new_err(format!("no attribute layer '{name}'"))
-                    }),
-                    None => Ok(surface.values()),
+                    Some(name) => surface
+                        .attr(name)
+                        .map(|lane| {
+                            let kind = surface
+                                .attr_metadata(name)
+                                .expect("listed attribute lane has metadata")
+                                .kind;
+                            (lane, kind, name.as_str())
+                        })
+                        .ok_or_else(|| {
+                            PyValueError::new_err(format!("no attribute layer '{name}'"))
+                        }),
+                    None => Ok((
+                        surface.values(),
+                        surface
+                            .primary_metadata()
+                            .map_or(AttributeKind::Continuous, |metadata| metadata.kind),
+                        "primary",
+                    )),
                 })
                 .collect::<PyResult<Vec<_>>>()?;
             let geom = &surface.geom;
@@ -504,15 +537,16 @@ impl Surface {
                     "Surface._view_shared_regular_grid: affine shared transport requires at least 2x2 nodes",
                 ));
             }
-            let effective_stride = stride
+            let mut effective_stride = stride
                 .min(geom.ncol.saturating_sub(1).max(1))
                 .min(geom.nrow.saturating_sub(1).max(1));
-            let ncol = geom.ncol.saturating_sub(1).div_ceil(effective_stride) + 1;
-            let nrow = geom.nrow.saturating_sub(1).div_ceil(effective_stride) + 1;
+            let mut ncol = geom.ncol.saturating_sub(1).div_ceil(effective_stride) + 1;
+            let mut nrow = geom.nrow.saturating_sub(1).div_ceil(effective_stride) + 1;
             let mut values = (0..lanes.len())
                 .map(|_| Vec::with_capacity(ncol * nrow * 4))
                 .collect::<Vec<_>>();
             let mut ranges: Vec<Option<(f64, f64)>> = vec![None; lanes.len()];
+            let mut sampled_finite = vec![false; lanes.len()];
             let mut sampled_i = vec![false; geom.ncol];
             let mut sampled_j = vec![false; geom.nrow];
             for oi in 0..ncol {
@@ -523,20 +557,41 @@ impl Surface {
             }
             for j in 0..geom.nrow {
                 for i in 0..geom.ncol {
-                    for (index, lane) in lanes.iter().enumerate() {
+                    for (index, (lane, kind, name)) in lanes.iter().enumerate() {
                         let value = lane[[i, j]];
-                        if value.is_finite() {
+                        let encoded = encode_shared_value(value, *kind, name)?;
+                        if encoded.is_finite() {
+                            let transported = f64::from(encoded);
                             ranges[index] = Some(match ranges[index] {
-                                None => (value, value),
-                                Some((lo, hi)) => (lo.min(value), hi.max(value)),
+                                None => (transported, transported),
+                                Some((lo, hi)) => {
+                                    (lo.min(transported), hi.max(transported))
+                                }
                             });
                         }
                         if sampled_i[i] && sampled_j[j] {
-                            let encoded = if value.is_finite() {
-                                value as f32
-                            } else {
-                                f32::from_bits(0x7fc0_0000)
-                            };
+                            sampled_finite[index] |= encoded.is_finite();
+                            values[index].extend_from_slice(&encoded.to_le_bytes());
+                        }
+                    }
+                }
+            }
+            if effective_stride > 1
+                && ranges
+                    .iter()
+                    .zip(&sampled_finite)
+                    .any(|(range, sampled)| range.is_some() && !sampled)
+            {
+                effective_stride = 1;
+                ncol = geom.ncol;
+                nrow = geom.nrow;
+                values = (0..lanes.len())
+                    .map(|_| Vec::with_capacity(ncol * nrow * 4))
+                    .collect();
+                for j in 0..geom.nrow {
+                    for i in 0..geom.ncol {
+                        for (index, (lane, kind, name)) in lanes.iter().enumerate() {
+                            let encoded = encode_shared_value(lane[[i, j]], *kind, name)?;
                             values[index].extend_from_slice(&encoded.to_le_bytes());
                         }
                     }
@@ -606,35 +661,48 @@ impl Surface {
         }
         let transport = self.with(py, |surface| {
             let selected = match attr {
-                Some(name) => surface.attr(name).ok_or_else(|| {
-                    PyValueError::new_err(format!("no attribute layer '{name}'"))
-                })?,
+                Some(name) => surface
+                    .attr(name)
+                    .ok_or_else(|| PyValueError::new_err(format!("no attribute layer '{name}'")))?,
                 None => surface.values(),
             };
             let geom = &surface.geom;
-            if geom.ncol < 2 || geom.nrow < 2 {
-                return Err(PyValueError::new_err(
-                    "Surface._view_regular_grid: affine viewer transport requires at least 2x2 nodes",
-                ));
-            }
-            let effective_stride = stride
-                .min(geom.ncol.saturating_sub(1).max(1))
-                .min(geom.nrow.saturating_sub(1).max(1));
+            let effective_stride = stride.min(
+                geom.ncol
+                    .saturating_sub(1)
+                    .max(geom.nrow.saturating_sub(1))
+                    .max(1),
+            );
             // Preview dimensions use ceil division and then sample evenly from
             // first through last source node. That preserves the complete
             // world footprint even when `(n-1)` is not divisible by stride,
             // so the later full-detail swap cannot change camera framing.
-            let ncol = geom.ncol.saturating_sub(1).div_ceil(effective_stride) + 1;
-            let nrow = geom.nrow.saturating_sub(1).div_ceil(effective_stride) + 1;
+            let sampled_count = |count: usize| {
+                if count == 1 {
+                    1
+                } else {
+                    count.saturating_sub(1).div_ceil(effective_stride) + 1
+                }
+            };
+            let ncol = sampled_count(geom.ncol);
+            let nrow = sampled_count(geom.nrow);
             let mut elevations = Vec::with_capacity(ncol * nrow * 4);
             let mut values = Vec::with_capacity(ncol * nrow * 4);
             let mut elevation_mask = Vec::with_capacity(ncol * nrow);
             let mut value_mask = Vec::with_capacity(ncol * nrow);
             let mut sampled_elevation_mask = Vec::with_capacity(ncol * nrow);
             for oj in 0..nrow {
-                let j = (oj * (geom.nrow - 1) + (nrow - 1) / 2) / (nrow - 1);
+                let j = if nrow == 1 {
+                    0
+                } else {
+                    (oj * (geom.nrow - 1) + (nrow - 1) / 2) / (nrow - 1)
+                };
                 for oi in 0..ncol {
-                    let i = (oi * (geom.ncol - 1) + (ncol - 1) / 2) / (ncol - 1);
+                    let i = if ncol == 1 {
+                        0
+                    } else {
+                        (oi * (geom.ncol - 1) + (ncol - 1) / 2) / (ncol - 1)
+                    };
                     let elevation = surface.values()[[i, j]];
                     let value = selected[[i, j]];
                     let elevation_finite = elevation.is_finite();
@@ -686,18 +754,28 @@ impl Surface {
             let origin = geom.node_xy(0, 0);
             let end_i = geom.node_xy(geom.ncol - 1, 0);
             let end_j = geom.node_xy(0, geom.nrow - 1);
+            let unit_i = geom.node_xy(1, 0);
+            let unit_j = geom.node_xy(0, 1);
             Ok::<_, PyErr>((
                 ncol,
                 nrow,
                 origin,
-                [
-                    (end_i.0 - origin.0) / (ncol - 1) as f64,
-                    (end_i.1 - origin.1) / (ncol - 1) as f64,
-                ],
-                [
-                    (end_j.0 - origin.0) / (nrow - 1) as f64,
-                    (end_j.1 - origin.1) / (nrow - 1) as f64,
-                ],
+                if ncol == 1 {
+                    [unit_i.0 - origin.0, unit_i.1 - origin.1]
+                } else {
+                    [
+                        (end_i.0 - origin.0) / (ncol - 1) as f64,
+                        (end_i.1 - origin.1) / (ncol - 1) as f64,
+                    ]
+                },
+                if nrow == 1 {
+                    [unit_j.0 - origin.0, unit_j.1 - origin.1]
+                } else {
+                    [
+                        (end_j.0 - origin.0) / (nrow - 1) as f64,
+                        (end_j.1 - origin.1) / (nrow - 1) as f64,
+                    ]
+                },
                 elevations,
                 values,
                 elevation_mask,

@@ -353,7 +353,7 @@ mod tests {
                 "1".into(),
                 CodeRecord {
                     label: Some(" Sand ".into()),
-                    color: Some("#EDA100".into()),
+                    color: Some("#eda100".into()),
                 },
             )])),
         };
@@ -404,6 +404,24 @@ mod tests {
             metadata.codes.as_ref().unwrap()["1"].label.as_deref(),
             Some("Sand")
         );
+        assert_eq!(
+            metadata.codes.as_ref().unwrap()["1"].color.as_deref(),
+            Some("#EDA100")
+        );
+        let migrated_path = tmp("v2_migrated_surface");
+        opened.surface("top").unwrap().save(&migrated_path).unwrap();
+        let migrated = Surface::load(&migrated_path).unwrap();
+        assert_eq!(
+            migrated
+                .attr_metadata("facies")
+                .unwrap()
+                .codes
+                .as_ref()
+                .unwrap()["1"]
+                .color
+                .as_deref(),
+            Some("#EDA100")
+        );
 
         let invalid_id = SurfaceV2Fixture {
             geom: geom(),
@@ -451,6 +469,7 @@ mod tests {
         let bytes = crate::io::serial::to_bytes(&invalid_primary).unwrap();
         assert!(<Surface as Persistable>::from_payload(DATA_VERSION, &bytes).is_err());
         std::fs::remove_file(&p).ok();
+        std::fs::remove_file(&migrated_path).ok();
         std::fs::remove_file(&invalid_path).ok();
     }
 

@@ -430,7 +430,9 @@ title exists. Surface views declare the primary descriptor first, followed by
 named attributes in durable insertion order; every descriptor is the canonical
 `{id,label,kind,units,codes}` shape with independent `active_attribute` and
 `active_color_by` selectors. Missing CRS/units/code labels remain null, and only
-an ordinary primary/depth descriptor may inherit the project unit.
+an ordinary primary/depth descriptor may inherit the project unit. Categorical
+`#RRGGBB` colors are uppercase-canonical at authoring and when legacy v2
+presentation text is migrated, so catalog and resource descriptors stay equal.
 For affine regular surfaces of at least 2×2 nodes,
 `view_resource(item_id, "map", detail)` materializes one explicit workspace-v2
 shared resource keyed only by item/Map/detail. The catalog declares exact
@@ -443,10 +445,19 @@ camera mode changes are local viewer state; preview/full detail is the only
 resource multiplication axis. Selected export is therefore O(N) blocks for N
 attributes, never N² selector envelopes. Frame CRS/unit fields use only authored
 project facts; `positive="up"` declares petekIO's negative-down elevation
-storage without transforming values. Categorical lanes retain integral values plus durable code
-tables. Structured, triangular, degenerate, and other unsupported fallback
+storage without transforming values. The f32 wire lane is authoritative:
+continuous ranges are computed from the transported f32 values, any finite f64
+outside the f32 range fails before resource emission, and every categorical
+value must round-trip f64→f32→f64 exactly so a code is never silently remapped.
+If strided preview would omit every finite value from any otherwise finite
+declared lane, that resource falls back to full sampling rather than emitting an
+all-null block against a finite stable range.
+Categorical lanes retain integral values plus durable code tables. Structured,
+triangular, degenerate, and other unsupported fallback
 shapes retain the Phase-5 separate Map/scene3d and direct `lane=` compatibility
-path. Preview sampling preserves the complete world footprint.
+path. Degenerate 1×1, 1×N, and N×1 regular grids materialize both advertised
+fallback resources with zero triangles. Preview sampling preserves the complete
+world footprint.
 `project.view()` adds petekIO-native role/folder selection, surface-property
 defaults, automatic metadata-only per-bore correlation discovery, optional
 per-bore `ViewSpec` overrides, and stored-template resolution. Correlation
@@ -460,10 +471,11 @@ remain layout-authoritative. Equal-TVD picks
 retain stable stratigraphic identity and represent zero-thickness intervals;
 only decreasing stacks fail.
 Surface Map resources also carry surface-context `well_overlays`: petekIO runs
-the canonical exact intersection kernel, clips display geometry at the first
-MD-ordered crossing, and includes the exact MD/XYZ endpoint. No-hit keeps the
-full path and failures remain explicit diagnostics. This display choice does
-not change public `intersection()` ambiguity semantics.
+the canonical exact intersection kernel and emits every finite crossing in
+stable MD order with status/cardinality. The singular compatibility echo and
+display clipping endpoint use the greatest-MD hit; no-hit keeps the full path,
+and failures remain explicit diagnostics with no fabricated crossing. This
+display choice does not change public `intersection()` ambiguity semantics.
 Stable IDs use canonical full paths with every segment percent-encoded; wells
 add an explicit bore segment. Surface primary/attribute values remain selectors
 of one item. Catalog building never calls `value_layer`, trajectory sampling, top

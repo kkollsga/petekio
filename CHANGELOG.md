@@ -6,56 +6,28 @@ All notable changes to petekIO are recorded here. The format loosely follows
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-07-14
+
 ### Added
 - **Rotated regular-surface sampling and resampling.** `GridGeometry` now maps
-  node/world/index transforms through petekTools' field-identical rotated
-  `Lattice`, and `Surface::sample`/`resample` share its single world-frame
-  resampler. Rotated and independently y-flipped source/target grids are now
-  supported; affine continuous fields remain exact and promoted categorical
-  lanes retain nearest-neighbour semantics. This retires the prior explicit
-  rotated-resample rejection without changing the public API or zero-rotation
-  results. Project resources, promoted properties, cursor transforms, and real
-  trajectory intersections preserve the same rotation/`yflip`/CRS/unit world
-  frame through authoring, replacement, conversion, and `.pproj` reload.
-  Verification used the exact petekTools rotated foundation at
-  `5d029dd26252c41eacc68ef89715ffd7aa6e38a7`.
+  node/world/index transforms through the shared petekTools lattice. Rotated
+  and independently y-flipped source/target grids are supported without
+  changing the public API or zero-rotation results. Continuous lanes remain
+  bilinear, categorical lanes use nearest-neighbour, and project resources,
+  cursor transforms, and trajectory intersections retain one world frame.
 - **Durable viewer-ready surface and project metadata.** Regular, structured,
   and triangular surface attributes now persist canonical
   `{id,label,kind,units,codes}` descriptors through replacement, promotion,
-  conversion, copy-on-write, and `.pproj` save/load. Values-only authoring keeps
-  compatible honest defaults, while explicit Python/Rust APIs can author
-  continuous or categorical metadata. `.pproj` element schema v2 includes exact
-  positional v1 migration, and project manifests now retain an optional authored
-  display name and free-text CRS beside the existing unit. Explicit
-  `Project.replace_surface(...)`/`GeoData` replacement APIs persist detached
-  copy-on-write edits across regular, structured, and triangular surface levels
-  without weakening project view isolation. Categorical lanes always use nearest
-  during downward resampling, while continuous lanes retain the requested method.
-  Project workspace catalogs now emit the persisted project identity and ordered
-  metadata-rich attribute descriptors through petekTools workspace v2. The
-  Phase-5 transitional resource path remains as the structured/triangular and
-  unsupported-shape fallback. Supported affine regular surfaces now use one
-  selector-free shared Map resource for exact 2-D/3-D modes: one envelope block
-  table carries the mask and every ordered continuous/categorical attribute
-  once, while geometry and colour-by selection remain local client state.
-  The f32 wire boundary now rejects finite overflow and categorical values that
-  cannot round-trip exactly, and continuous ranges describe the transported f32
-  values, preventing silent category remapping or incoherent range metadata.
-  Sparse previews fall back to full sampling when striding would omit every
-  finite value from any declared finite lane, preserving stable ranges without
-  emitting an invalid all-null preview block.
-  Degenerate 1×1, 1×N, and N×1 regular grids keep the separate fallback catalog
-  and now materialize both advertised Map and scene3d resources with zero
-  triangles. Categorical colors canonicalize to uppercase `#RRGGBB` at
-  authoring and v2 migration so exact catalog/resource descriptors cannot drift.
-  Preview/full detail is the only fetch axis, so selected export is O(N) blocks
-  rather than N² selector envelopes. Surface well overlays now carry every
-  finite MD-ordered crossing with cardinality status and greatest-MD singular
-  compatibility echo. New viewer/project metadata authoring now
-  rejects padded IDs, labels, units, code labels, display names, and CRS strings
-  at the source boundary. Existing v2 presentation text is trimmed on load and
-  re-save for compatibility, while persisted semantic attribute IDs are never
-  rewritten and remain a loud error when non-canonical.
+  conversion, copy-on-write, and `.pproj` save/load. Element schema v2 migrates
+  v1 projects positionally, while project manifests can retain an authored name
+  and CRS. Existing values-only APIs remain compatible; explicit Rust and
+  Python APIs add validated continuous/categorical descriptors.
+- **Workspace-v2 project resources.** Project catalogs expose persisted project
+  identity and ordered attribute metadata. Supported regular surfaces share one
+  selector-free Map/3-D resource containing geometry, mask, and all properties;
+  structured, triangular, and degenerate surfaces retain compatible fallback
+  resources. Preview/full detail remains the only fetch axis, sparse previews
+  remain valid, and well overlays retain all finite MD-ordered crossings.
 
 ### Fixed
 - **Degenerate project surfaces replace without forced triangulation.** Exact

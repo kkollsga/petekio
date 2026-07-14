@@ -141,7 +141,10 @@ pub struct Surface {
   lane durably carries `{id,label,kind,units,codes}` metadata. Values-only
   replacement preserves existing metadata; a new legacy lane defaults honestly
   to continuous, its lane name as id/label, and null units/codes. Explicit
-  metadata replaces the descriptor, and promotion carries it onto the primary lane.
+  metadata replaces the descriptor, and promotion carries it onto the primary
+  lane. New descriptor IDs, labels, units, and categorical code labels must
+  already be canonical non-empty trimmed strings (nullable fields may remain
+  null); authoring rejects padding rather than silently changing identity.
 - **Scalar arithmetic + math:** operator overloads (`&s + 100.0`, `&a * &b`) and
   methods on the active layer: `.ln() .log10() .exp() .powf(n) .sqrt() .abs()
   .clamp_min(x) .clamp(lo,hi)`. Each returns a new `Surface`.
@@ -386,7 +389,11 @@ impl GeoData {
 
 The project manifest also persists an optional authored display name, optional
 free-text CRS declaration, and the existing canonical `Unit`. Missing title/CRS
-in v1 manifests remains `None`; neither is inferred from a file path.
+in v1 manifests remains `None`; neither is inferred from a file path. New
+display-name/CRS/unit authoring requires canonical trimmed text. Existing v2
+files created before that rule safely trim presentation labels, units, title,
+and CRS on load/inspect and re-save; attribute IDs remain semantic and are never
+rewritten, so a padded persisted ID is rejected.
 
 Regular and structured surfaces have separate typed Rust collections so the
 existing `Surface` API remains exact, but share one name-uniqueness domain and

@@ -4,7 +4,9 @@
 //! This module covers construction, IO, and access. Math/sampling/statistics
 //! land in later phases.
 
-use crate::core::attribute::{check_metadata_name, AttributeLane, AttributeMetadata};
+use crate::core::attribute::{
+    check_metadata_name, validate_attribute_values, AttributeLane, AttributeMetadata,
+};
 use crate::foundation::{GeoError, GridGeometry, HasHistory, OperationHistory, Result};
 use crate::io::SurfaceData;
 use indexmap::IndexMap;
@@ -141,6 +143,7 @@ impl Surface {
     pub fn set_attr(&mut self, name: &str, values: Array2<f64>) -> Result<()> {
         check_shape(&self.geom, &values, "Surface::set_attr")?;
         if let Some(existing) = self.attributes.get_mut(name) {
+            validate_attribute_values(&existing.metadata, values.iter())?;
             existing.values = values;
         } else {
             let metadata = AttributeMetadata::continuous(name)?;
@@ -160,6 +163,7 @@ impl Surface {
     ) -> Result<()> {
         check_shape(&self.geom, &values, "Surface::set_attr_with_metadata")?;
         check_metadata_name(name, &metadata)?;
+        validate_attribute_values(&metadata, values.iter())?;
         self.attributes
             .insert(name.to_string(), AttributeLane::new(metadata, values)?);
         self.record_history(format!("surface.set_attr_with_metadata(name={name})"));
@@ -173,6 +177,7 @@ impl Surface {
             .attributes
             .get_mut(name)
             .ok_or_else(|| GeoError::NotFound(format!("no attribute layer '{name}'")))?;
+        validate_attribute_values(&metadata, lane.values.iter())?;
         lane.metadata = metadata;
         self.record_history(format!("surface.set_attr_metadata(name={name})"));
         Ok(())
@@ -310,11 +315,22 @@ impl Surface {
     pub(crate) fn validate_metadata(&self) -> Result<()> {
         if let Some(metadata) = &self.primary_metadata {
             metadata.validate()?;
+            validate_attribute_values(metadata, self.values.iter())?;
         }
         for (name, lane) in &self.attributes {
             check_metadata_name(name, &lane.metadata)?;
+            validate_attribute_values(&lane.metadata, lane.values.iter())?;
         }
         Ok(())
+    }
+
+    pub(crate) fn migrate_persisted_metadata_text(&mut self) {
+        if let Some(metadata) = &mut self.primary_metadata {
+            metadata.migrate_persisted_text();
+        }
+        for lane in self.attributes.values_mut() {
+            lane.metadata.migrate_persisted_text();
+        }
     }
 }
 
@@ -535,6 +551,61 @@ mod tests {
         let bytes = crate::io::serial::to_bytes(&s).unwrap();
         let back: Surface = crate::io::serial::from_bytes(&bytes).unwrap();
         assert_eq!(back.attr_metadata("porosity"), Some(&metadata));
+    }
+
+    #[test]
+    fn categorical_values_must_be_integral_on_authoring_and_replacement() {
+        let mut s = Surface::constant(geom(), 1.0);
+        let categorical = AttributeMetadata::new(
+            "facies",
+            "Facies",
+            crate::AttributeKind::Categorical,
+            None,
+            None,
+        )
+        .unwrap();
+        let valid = ndarray::array![[1.0, f64::NAN], [2.0, 3.0]];
+        s.set_attr_with_metadata("facies", valid.clone(), categorical.clone())
+            .unwrap();
+
+        assert!(s
+            .set_attr("facies", Array2::from_elem((2, 2), 1.5))
+            .is_err());
+        let preserved = s.attr("facies").unwrap();
+        assert_eq!(preserved[[0, 0]], 1.0);
+        assert!(preserved[[0, 1]].is_nan());
+        assert_eq!(preserved[[1, 0]], 2.0);
+        assert_eq!(preserved[[1, 1]], 3.0);
+        assert!(s
+            .set_attr_with_metadata(
+                "fractional",
+                Array2::from_elem((2, 2), 1.5),
+                AttributeMetadata::new(
+                    "fractional",
+                    "Fractional",
+                    crate::AttributeKind::Categorical,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            )
+            .is_err());
+
+        s.set_attr("continuous", Array2::from_elem((2, 2), 1.5))
+            .unwrap();
+        assert!(s
+            .set_attr_metadata(
+                "continuous",
+                AttributeMetadata::new(
+                    "continuous",
+                    "Continuous",
+                    crate::AttributeKind::Categorical,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            )
+            .is_err());
     }
 
     #[test]

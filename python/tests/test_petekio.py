@@ -233,9 +233,22 @@ def test_surface_attribute_metadata_is_canonical_and_preserved_on_replace():
         {"id": " "},
         {"id": "porosity", "label": "\t"},
         {"id": "porosity", "units": " \n"},
+        {"id": " porosity", "label": "Porosity"},
+        {"id": "porosity", "label": " Porosity "},
+        {"id": "porosity", "label": "Porosity", "units": " m "},
     ):
-        with pytest.raises(ValueError, match="non-empty after trimming"):
+        with pytest.raises(ValueError, match="non-empty, trimmed string"):
             s.set_attr("porosity", values, metadata=invalid)
+    with pytest.raises(ValueError, match="code label.*non-empty, trimmed string"):
+        s.set_attr(
+            "facies",
+            values,
+            metadata={
+                "id": "facies",
+                "kind": "categorical",
+                "codes": {"1": {"label": " Sand ", "color": "#EDA100"}},
+            },
+        )
     with pytest.raises(TypeError, match="unknown attribute metadata key 'unit'"):
         s.set_attr("porosity", values, metadata={"id": "porosity", "unit": "v/v"})
     with pytest.raises(TypeError, match="unknown attribute code record key 'colour'"):
@@ -248,6 +261,28 @@ def test_surface_attribute_metadata_is_canonical_and_preserved_on_replace():
                 "codes": {"1": {"colour": "#EDA100"}},
             },
         )
+
+    categorical = {
+        "id": "facies",
+        "label": "Facies",
+        "kind": "categorical",
+        "units": None,
+        "codes": None,
+    }
+    with pytest.raises(ValueError, match="integers or NaN"):
+        s.set_attr(
+            "facies", petekio.Surface.constant(g, 1.5), metadata=categorical
+        )
+    s.set_attr("facies", petekio.Surface.constant(g, 1.0), metadata=categorical)
+    with pytest.raises(ValueError, match="integers or NaN"):
+        s.set_attr("facies", petekio.Surface.constant(g, 1.5))
+
+    structured = s.to_structured_mesh()
+    with pytest.raises(ValueError, match="integers or NaN"):
+        structured.set_attr("facies", [[1.5, 1.5], [1.5, 1.5]])
+    tri = s.to_tri_surface()
+    with pytest.raises(ValueError, match="integers or NaN"):
+        tri.set_attr("facies", [1.5] * tri.n_points)
 
 
 def test_surface_smooth_dip_and_extrapolate(tmp_path):

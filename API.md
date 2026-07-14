@@ -793,7 +793,7 @@ project.save("field.pproj")               # compact .pproj write
 pproj_project = petekio.Project.load("field.pproj")  # compact .pproj read
 project.display_name = "Field appraisal"  # optional authored title; never path-guessed
 project.crs = "EPSG:23031 / local note"   # optional free-text CRS declaration
-project.unit                              # persisted canonical project unit
+project.unit                              # persisted canonical project unit; padded authoring rejected
 
 geo = petekio.GeoData(unit="ft")
 geo.load_surface("top", "top.irap")       # or top.CPS3grid (CPS-3 grid)
@@ -813,6 +813,8 @@ top.set_attr("facies", facies, metadata={
     "id": "facies", "label": "Facies", "kind": "categorical",
     "units": None, "codes": {"1": {"label": "Sand", "color": "#EDA100"}},
 })
+# id/label/units and non-null code labels must already be non-empty + trimmed;
+# padded authoring is rejected rather than silently changing identity.
 top.attr_metadata("facies")              # canonical full descriptor
 top.attr["facies"].primary_metadata      # promotion preserves the descriptor
 project.replace_surface("top", top)      # explicit COW write-back; geometry unchanged

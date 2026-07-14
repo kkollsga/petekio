@@ -316,6 +316,10 @@ def test_v2_catalog_uses_persisted_project_and_attribute_metadata(tmp_path):
     assert workspace["schema_version"] == 2
     assert workspace["title"] == "Field model"
     assert workspace["project"] == catalog["project"]
+    normalized_leaf = next(_walk(workspace["tree"]))
+    assert normalized_leaf["views"] == ["map", "scene3d"]
+    assert set(normalized_leaf["resources"]) == {"map", "scene3d"}
+    assert session.diagnostics == ()
     resource = session.resource(leaf["id"], "map", lane="facies")
     assert resource["schema_version"] == 2
     assert resource["attribute"] == resource["color_by"] == "facies"

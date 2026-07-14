@@ -58,7 +58,8 @@ impl Persistable for Surface {
         match version {
             1 => Surface::from_v1_payload(bytes),
             DATA_VERSION => {
-                let surface: Surface = serial::from_bytes(bytes)?;
+                let mut surface: Surface = serial::from_bytes(bytes)?;
+                surface.migrate_persisted_metadata_text();
                 surface.validate_metadata()?;
                 Ok(surface)
             }
@@ -235,6 +236,8 @@ impl PolygonSet {
 
 #[cfg(test)]
 mod tests {
+    use super::{Persistable, DATA_VERSION};
+    use crate::core::attribute::AttributeLane;
     use crate::core::log::Log;
     use crate::core::tops::Top;
     use crate::core::trajectory::{Station, TrajectoryInput};
@@ -287,6 +290,15 @@ mod tests {
         history: OperationHistory,
     }
 
+    #[derive(serde::Serialize)]
+    struct SurfaceV2Fixture {
+        geom: GridGeometry,
+        values: Array2<f64>,
+        primary_metadata: Option<AttributeMetadata>,
+        attributes: IndexMap<String, AttributeLane<Array2<f64>>>,
+        history: OperationHistory,
+    }
+
     #[test]
     fn v1_surface_section_routes_through_standalone_and_project_loaders() {
         let mut attributes = IndexMap::new();
@@ -328,6 +340,118 @@ mod tests {
             Some(&AttributeMetadata::continuous("legacy").unwrap())
         );
         std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn v2_persisted_presentation_text_migrates_but_ids_never_do() {
+        let padded = AttributeMetadata {
+            id: "facies".into(),
+            label: " Facies ".into(),
+            kind: AttributeKind::Categorical,
+            units: Some(" code ".into()),
+            codes: Some(IndexMap::from([(
+                "1".into(),
+                CodeRecord {
+                    label: Some(" Sand ".into()),
+                    color: Some("#EDA100".into()),
+                },
+            )])),
+        };
+        let fixture = SurfaceV2Fixture {
+            geom: geom(),
+            values: Array2::from_elem((3, 2), 2.0),
+            primary_metadata: None,
+            attributes: IndexMap::from([(
+                "facies".into(),
+                AttributeLane {
+                    metadata: padded,
+                    values: Array2::from_elem((3, 2), 1.0),
+                },
+            )]),
+            history: OperationHistory::from_entry("v2.padded_fixture"),
+        };
+        let section = Section {
+            kind: "surface".into(),
+            name: "top".into(),
+            tags: Vec::new(),
+            version: DATA_VERSION,
+            payload: crate::io::serial::to_bytes(&fixture).unwrap(),
+        };
+        let p = tmp("v2_padded_surface");
+        container::write(
+            &p,
+            &serde_json::json!({
+                "unit": " Metres ",
+                "display_name": " Field model ",
+                "crs": " Local CRS ",
+            }),
+            DATA_VERSION,
+            &[section],
+        )
+        .unwrap();
+
+        let opened = crate::GeoData::open(&p).unwrap();
+        assert_eq!(opened.display_name(), Some("Field model"));
+        assert_eq!(opened.crs(), Some("Local CRS"));
+        let metadata = opened
+            .surface("top")
+            .unwrap()
+            .attr_metadata("facies")
+            .unwrap();
+        assert_eq!(metadata.label, "Facies");
+        assert_eq!(metadata.units.as_deref(), Some("code"));
+        assert_eq!(
+            metadata.codes.as_ref().unwrap()["1"].label.as_deref(),
+            Some("Sand")
+        );
+
+        let invalid_id = SurfaceV2Fixture {
+            geom: geom(),
+            values: Array2::from_elem((3, 2), 2.0),
+            primary_metadata: None,
+            attributes: IndexMap::from([(
+                "facies".into(),
+                AttributeLane {
+                    metadata: AttributeMetadata {
+                        id: " facies ".into(),
+                        label: "Facies".into(),
+                        kind: AttributeKind::Continuous,
+                        units: None,
+                        codes: None,
+                    },
+                    values: Array2::from_elem((3, 2), 1.0),
+                },
+            )]),
+            history: OperationHistory::from_entry("v2.padded_id_fixture"),
+        };
+        let invalid = Section {
+            kind: "surface".into(),
+            name: "top".into(),
+            tags: Vec::new(),
+            version: DATA_VERSION,
+            payload: crate::io::serial::to_bytes(&invalid_id).unwrap(),
+        };
+        let invalid_path = tmp("v2_padded_id");
+        container::write(
+            &invalid_path,
+            &serde_json::json!({"unit": "Metres"}),
+            DATA_VERSION,
+            &[invalid],
+        )
+        .unwrap();
+        assert!(crate::GeoData::open(&invalid_path).is_err());
+
+        let invalid_primary = SurfaceV2Fixture {
+            geom: geom(),
+            values: Array2::from_elem((3, 2), 1.5),
+            primary_metadata: Some(facies_metadata()),
+            attributes: IndexMap::new(),
+            history: OperationHistory::from_entry("v2.fractional_categorical_primary"),
+        };
+        let bytes = crate::io::serial::to_bytes(&invalid_primary).unwrap();
+        assert!(<Surface as Persistable>::from_payload(DATA_VERSION, &bytes).is_err());
+        std::fs::remove_file(&p).ok();
+        std::fs::remove_file(&invalid_path).ok();
     }
 
     #[test]

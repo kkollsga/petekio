@@ -20,7 +20,9 @@
 //! Points are never moved. The walk's `(block, i, j)` labels stay on the shell.
 //! Spec: `surface_tin_fallback_spec` on the planning graph.
 
-use crate::core::attribute::{check_metadata_name, AttributeLane, AttributeMetadata};
+use crate::core::attribute::{
+    check_metadata_name, validate_attribute_values, AttributeLane, AttributeMetadata,
+};
 use crate::core::shell::MeshShell;
 use crate::core::topology::GridDetection;
 use crate::core::{PointSet, PolygonSet};
@@ -68,10 +70,17 @@ struct TriSurfaceData {
 
 impl TryFrom<TriSurfaceData> for TriSurface {
     type Error = GeoError;
-    fn try_from(d: TriSurfaceData) -> Result<TriSurface> {
+    fn try_from(mut d: TriSurfaceData) -> Result<TriSurface> {
+        if let Some(metadata) = &mut d.primary_metadata {
+            metadata.migrate_persisted_text();
+        }
+        for lane in d.attributes.values_mut() {
+            lane.metadata.migrate_persisted_text();
+        }
         let mut out = TriSurface::from_shell(Arc::new(d.shell), d.values)?;
         if let Some(metadata) = &d.primary_metadata {
             metadata.validate()?;
+            validate_attribute_values(metadata, out.values.iter())?;
         }
         out.primary_metadata = d.primary_metadata;
         for (name, lane) in d.attributes {
@@ -143,6 +152,7 @@ impl TriSurface {
     pub fn set_attr(&mut self, name: &str, values: Vec<f64>) -> Result<()> {
         check_lane(&self.shell, &values, "TriSurface::set_attr")?;
         if let Some(existing) = self.attributes.get_mut(name) {
+            validate_attribute_values(&existing.metadata, values.iter())?;
             existing.values = values;
         } else {
             self.attributes.insert(
@@ -162,6 +172,7 @@ impl TriSurface {
     ) -> Result<()> {
         check_lane(&self.shell, &values, "TriSurface::set_attr_with_metadata")?;
         check_metadata_name(name, &metadata)?;
+        validate_attribute_values(&metadata, values.iter())?;
         self.attributes
             .insert(name.to_string(), AttributeLane::new(metadata, values)?);
         self.record_history(format!("tri_surface.set_attr_with_metadata(name={name})"));
@@ -174,6 +185,7 @@ impl TriSurface {
             .attributes
             .get_mut(name)
             .ok_or_else(|| GeoError::NotFound(format!("no attribute lane '{name}'")))?;
+        validate_attribute_values(&metadata, lane.values.iter())?;
         lane.metadata = metadata;
         self.record_history(format!("tri_surface.set_attr_metadata(name={name})"));
         Ok(())
@@ -923,6 +935,25 @@ mod tests {
             history: OperationHistory::new(),
         };
         let bytes = crate::io::serial::to_bytes(&bad).unwrap();
+        assert!(crate::io::serial::from_bytes::<TriSurface>(&bytes).is_err());
+
+        let fractional_categorical = TriSurfaceData {
+            shell: (**tin.shell()).clone(),
+            values: vec![1.5; tin.values().len()],
+            primary_metadata: Some(
+                AttributeMetadata::new(
+                    "facies",
+                    "Facies",
+                    crate::AttributeKind::Categorical,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            ),
+            attributes: IndexMap::new(),
+            history: OperationHistory::new(),
+        };
+        let bytes = crate::io::serial::to_bytes(&fractional_categorical).unwrap();
         assert!(crate::io::serial::from_bytes::<TriSurface>(&bytes).is_err());
     }
 

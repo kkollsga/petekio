@@ -38,16 +38,18 @@ def test_project_display_metadata_round_trips(tmp_path):
     assert reopened.inventory()["crs"] == "EPSG:23031 / local datum note"
 
 
-def test_project_display_metadata_rejects_whitespace_only():
+def test_project_display_metadata_rejects_noncanonical_strings():
     project = petekio.Project(petekio.GeoData(unit="m"))
-    with pytest.raises(ValueError, match="non-empty after trimming"):
+    with pytest.raises(ValueError, match="non-empty, trimmed string"):
         project.display_name = " \t"
-    with pytest.raises(ValueError, match="non-empty after trimming"):
+    with pytest.raises(ValueError, match="non-empty, trimmed string"):
         project.crs = "\n"
-    project.display_name = " Authored title "
-    project.crs = " Local CRS "
-    assert project.display_name == " Authored title "
-    assert project.crs == " Local CRS "
+    with pytest.raises(ValueError, match="non-empty, trimmed string"):
+        project.display_name = " Authored title "
+    with pytest.raises(ValueError, match="non-empty, trimmed string"):
+        project.crs = " Local CRS "
+    with pytest.raises(ValueError, match="non-empty, trimmed string"):
+        petekio.GeoData(unit=" m ")
 
 
 def test_project_template_library_snapshots_and_mutates_explicitly(tmp_path, monkeypatch):

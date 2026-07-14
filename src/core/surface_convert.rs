@@ -284,6 +284,33 @@ mod tests {
     }
 
     #[test]
+    fn lifted_categorical_lanes_reject_fractional_value_replacement() {
+        let mut s = surface();
+        s.set_attr_with_metadata(
+            "facies",
+            Array2::from_elem((geom().ncol, geom().nrow), 1.0),
+            crate::AttributeMetadata::new(
+                "facies",
+                "Facies",
+                crate::AttributeKind::Categorical,
+                None,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut structured = s.to_structured_mesh().unwrap();
+        assert!(structured
+            .set_attr("facies", Array2::from_elem((geom().ncol, geom().nrow), 1.5),)
+            .is_err());
+        let mut tri = s.to_tri_surface().unwrap();
+        assert!(tri
+            .set_attr("facies", vec![1.5; tri.shell().n_nodes()])
+            .is_err());
+    }
+
+    #[test]
     fn downward_resample_carries_primary_and_attributes() {
         let s = surface();
         // A sub-lattice of the source: every target node coincides with a data

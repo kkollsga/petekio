@@ -24,7 +24,11 @@ All notable changes to petekIO are recorded here. The format loosely follows
   Phase-5 transitional resource path retains `lane=` compatibility, accepts equal
   geometry/paint selectors, and rejects multi-attribute selected export before
   any attribute×colour Cartesian materialization; shared transport and true
-  dual-axis resources remain deferred.
+  dual-axis resources remain deferred. New viewer/project metadata authoring now
+  rejects padded IDs, labels, units, code labels, display names, and CRS strings
+  at the source boundary. Existing v2 presentation text is trimmed on load and
+  re-save for compatibility, while persisted semantic attribute IDs are never
+  rewritten and remain a loud error when non-canonical.
 
 ## [0.3.14] - 2026-07-14
 

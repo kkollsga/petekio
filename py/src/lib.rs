@@ -78,7 +78,12 @@ pub(crate) fn user_warning(py: Python<'_>, msg: &str) -> PyResult<()> {
 /// Parse a project length unit from a string (`"ft"`/`"feet"` or
 /// `"m"`/`"metre(s)"`/`"meter(s)"`, case-insensitive).
 pub(crate) fn parse_unit(s: &str) -> PyResult<petekio::Unit> {
-    match s.trim().to_ascii_lowercase().as_str() {
+    if s.is_empty() || s != s.trim() {
+        return Err(PyValueError::new_err(
+            "unit must be a non-empty, trimmed string",
+        ));
+    }
+    match s.to_ascii_lowercase().as_str() {
         "ft" | "feet" | "foot" => Ok(petekio::Unit::Feet),
         "m" | "metre" | "metres" | "meter" | "meters" => Ok(petekio::Unit::Metres),
         other => Err(PyValueError::new_err(format!(

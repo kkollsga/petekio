@@ -343,11 +343,7 @@ impl GeoData {
         let mut r = container::open(path.as_ref())?;
         migrate_gate(r.data_version())?;
         let app = r.app().clone();
-        let unit: Unit = app
-            .get("unit")
-            .cloned()
-            .and_then(|v| serde_json::from_value(v).ok())
-            .ok_or_else(|| GeoError::Parse(".pproj manifest missing/invalid unit".into()))?;
+        let unit = project_unit_from_json(&app)?;
         let mut geo = GeoData::new(unit);
         geo.set_display_name(project_text_from_json(
             &app,
@@ -520,7 +516,7 @@ impl GeoData {
             tags: from_json(app, "tags"),
             created: app.get("created").and_then(Value::as_u64),
             modified: app.get("modified").and_then(Value::as_u64),
-            unit: app.get("unit").and_then(|v| v.as_str()).map(String::from),
+            unit: project_unit_text_from_json(app)?,
             elements: r
                 .entries()
                 .iter()
@@ -554,9 +550,12 @@ fn validate_asset_name(name: &str) -> Result<()> {
 }
 
 fn validate_optional_project_text(value: Option<String>, field: &str) -> Result<Option<String>> {
-    if value.as_deref().is_some_and(|text| text.trim().is_empty()) {
+    if value
+        .as_deref()
+        .is_some_and(|text| text.is_empty() || text != text.trim())
+    {
         return Err(GeoError::Parse(format!(
-            "project {field} must be non-empty after trimming or null"
+            "project {field} must be null or a non-empty, trimmed string"
         )));
     }
     Ok(value)
@@ -572,7 +571,38 @@ fn project_text_from_json(app: &Value, key: &str, field: &str) -> Result<Option<
             )))
         }
     };
-    validate_optional_project_text(value, field)
+    match value {
+        None => Ok(None),
+        Some(value) => {
+            let migrated = value.trim().to_string();
+            validate_optional_project_text(Some(migrated), field)
+        }
+    }
+}
+
+fn project_unit_text_from_json(app: &Value) -> Result<Option<String>> {
+    match app.get("unit") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            let migrated = value.trim().to_string();
+            if migrated.is_empty() {
+                return Err(GeoError::Parse(
+                    ".pproj manifest unit must be a non-empty, trimmed string".into(),
+                ));
+            }
+            Ok(Some(migrated))
+        }
+        Some(_) => Err(GeoError::Parse(
+            ".pproj manifest unit must be a string".into(),
+        )),
+    }
+}
+
+fn project_unit_from_json(app: &Value) -> Result<Unit> {
+    let unit = project_unit_text_from_json(app)?
+        .ok_or_else(|| GeoError::Parse(".pproj manifest missing/invalid unit".into()))?;
+    serde_json::from_value(Value::String(unit))
+        .map_err(|_| GeoError::Parse(".pproj manifest missing/invalid unit".into()))
 }
 
 fn validate_new_asset(kind: &str, envelope: &[u8], version: u32) -> Result<()> {
@@ -744,15 +774,39 @@ mod tests {
     }
 
     #[test]
-    fn project_display_metadata_rejects_whitespace_only_strings() {
+    fn project_display_metadata_rejects_noncanonical_strings() {
         let mut geo = GeoData::new(Unit::Metres);
         assert!(geo.set_display_name(Some(" \t".into())).is_err());
         assert!(geo.set_crs(Some("\n".into())).is_err());
-        geo.set_display_name(Some(" Authored title ".into()))
-            .unwrap();
-        geo.set_crs(Some(" Local CRS ".into())).unwrap();
-        assert_eq!(geo.display_name(), Some(" Authored title "));
-        assert_eq!(geo.crs(), Some(" Local CRS "));
+        assert!(geo
+            .set_display_name(Some(" Authored title ".into()))
+            .is_err());
+        assert!(geo.set_crs(Some(" Local CRS ".into())).is_err());
+    }
+
+    #[test]
+    fn persisted_project_text_is_trimmed_during_open_and_inspect() {
+        let p = tmp("padded_project_text");
+        container::write(
+            &p,
+            &json!({
+                "unit": " Metres ",
+                "display_name": " Authored title ",
+                "crs": " Local CRS ",
+            }),
+            DATA_VERSION,
+            &[],
+        )
+        .unwrap();
+        let info = GeoData::inspect(&p).unwrap();
+        assert_eq!(info.display_name.as_deref(), Some("Authored title"));
+        assert_eq!(info.crs.as_deref(), Some("Local CRS"));
+        assert_eq!(info.unit.as_deref(), Some("Metres"));
+        let opened = GeoData::open(&p).unwrap();
+        assert_eq!(opened.display_name(), Some("Authored title"));
+        assert_eq!(opened.crs(), Some("Local CRS"));
+        assert_eq!(opened.unit, Unit::Metres);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]

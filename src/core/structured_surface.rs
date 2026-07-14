@@ -9,7 +9,9 @@
 //! [`TriSurface`](crate::TriSurface). The shell is immutable and shared — N
 //! properties/clones never repeat the geometry in memory.
 
-use crate::core::attribute::{check_metadata_name, AttributeLane, AttributeMetadata};
+use crate::core::attribute::{
+    check_metadata_name, validate_attribute_values, AttributeLane, AttributeMetadata,
+};
 use crate::core::points::structured_edge;
 use crate::core::shell::StructuredShell;
 use crate::core::{GeometryEdge, PointSet, PolygonSet};
@@ -51,10 +53,17 @@ struct StructuredMeshSurfaceData {
 
 impl TryFrom<StructuredMeshSurfaceData> for StructuredMeshSurface {
     type Error = GeoError;
-    fn try_from(d: StructuredMeshSurfaceData) -> Result<StructuredMeshSurface> {
+    fn try_from(mut d: StructuredMeshSurfaceData) -> Result<StructuredMeshSurface> {
+        if let Some(metadata) = &mut d.primary_metadata {
+            metadata.migrate_persisted_text();
+        }
+        for lane in d.attributes.values_mut() {
+            lane.metadata.migrate_persisted_text();
+        }
         let mut out = StructuredMeshSurface::from_shell(Arc::new(d.shell), d.values)?;
         if let Some(metadata) = &d.primary_metadata {
             metadata.validate()?;
+            validate_attribute_values(metadata, out.values.iter())?;
         }
         out.primary_metadata = d.primary_metadata;
         for (name, lane) in d.attributes {
@@ -254,6 +263,7 @@ impl StructuredMeshSurface {
     pub fn set_attr(&mut self, name: &str, values: Array2<f64>) -> Result<()> {
         check_lane(&self.shell, &values, "StructuredMeshSurface::set_attr")?;
         if let Some(existing) = self.attributes.get_mut(name) {
+            validate_attribute_values(&existing.metadata, values.iter())?;
             existing.values = values;
         } else {
             self.attributes.insert(
@@ -277,6 +287,7 @@ impl StructuredMeshSurface {
             "StructuredMeshSurface::set_attr_with_metadata",
         )?;
         check_metadata_name(name, &metadata)?;
+        validate_attribute_values(&metadata, values.iter())?;
         self.attributes
             .insert(name.to_string(), AttributeLane::new(metadata, values)?);
         self.record_history(format!(
@@ -291,6 +302,7 @@ impl StructuredMeshSurface {
             .attributes
             .get_mut(name)
             .ok_or_else(|| GeoError::NotFound(format!("no attribute lane '{name}'")))?;
+        validate_attribute_values(&metadata, lane.values.iter())?;
         lane.metadata = metadata;
         self.record_history(format!("structured_surface.set_attr_metadata(name={name})"));
         Ok(())
@@ -598,6 +610,25 @@ mod tests {
             history: OperationHistory::new(),
         };
         let bytes = crate::io::serial::to_bytes(&bad).unwrap();
+        assert!(crate::io::serial::from_bytes::<StructuredMeshSurface>(&bytes).is_err());
+
+        let fractional_categorical = StructuredMeshSurfaceData {
+            shell: (**current.shell()).clone(),
+            values: Array2::from_elem((2, 2), 1.5),
+            primary_metadata: Some(
+                AttributeMetadata::new(
+                    "facies",
+                    "Facies",
+                    crate::AttributeKind::Categorical,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            ),
+            attributes: IndexMap::new(),
+            history: OperationHistory::new(),
+        };
+        let bytes = crate::io::serial::to_bytes(&fractional_categorical).unwrap();
         assert!(crate::io::serial::from_bytes::<StructuredMeshSurface>(&bytes).is_err());
     }
 

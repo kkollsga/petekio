@@ -105,6 +105,34 @@ impl ProjectSurfaceRef<'_> {
             labels: tri.shell().labels().to_vec(),
         })
     }
+
+    fn same_geometry(&self, other: &ProjectSurfaceRef<'_>) -> Result<bool> {
+        match (self, other) {
+            (ProjectSurfaceRef::Regular(left), ProjectSurfaceRef::Regular(right)) => {
+                Ok(left.geom == right.geom)
+            }
+            (ProjectSurfaceRef::Structured(left), ProjectSurfaceRef::Structured(right)) => {
+                Ok(left.ncol() == right.ncol()
+                    && left.nrow() == right.nrow()
+                    && left.x() == right.x()
+                    && left.y() == right.y())
+            }
+            (ProjectSurfaceRef::Regular(regular), ProjectSurfaceRef::Structured(structured))
+            | (ProjectSurfaceRef::Structured(structured), ProjectSurfaceRef::Regular(regular)) => {
+                if (regular.geom.ncol, regular.geom.nrow) != (structured.ncol(), structured.nrow())
+                {
+                    return Ok(false);
+                }
+                Ok((0..regular.geom.nrow).all(|j| {
+                    (0..regular.geom.ncol).all(|i| {
+                        let (x, y) = regular.geom.node_xy(i, j);
+                        structured.x()[[i, j]] == x && structured.y()[[i, j]] == y
+                    })
+                }))
+            }
+            _ => Ok(self.geometry_signature()? == other.geometry_signature()?),
+        }
+    }
 }
 
 /// One persisted formation-pick row aggregated from a well bore.
@@ -266,7 +294,7 @@ impl GeoData {
         } else {
             return Err(GeoError::NotFound(format!("surface '{name}'")));
         };
-        if current.geometry_signature()? != replacement.geometry_signature()? {
+        if !current.same_geometry(&replacement)? {
             return Err(GeoError::GeometryMismatch(format!(
                 "replace_surface('{name}'): replacement geometry/topology differs from the stored surface"
             )));
@@ -649,6 +677,65 @@ mod tests {
             geo.replace_surface("top", wrong),
             Err(GeoError::GeometryMismatch(_))
         ));
+    }
+
+    #[test]
+    fn degenerate_regular_and_structured_surfaces_replace_and_persist_natively() {
+        for (tag, ncol, nrow) in [("one", 1, 1), ("column", 1, 4), ("row", 4, 1)] {
+            let geom = GridGeometry {
+                xori: 100.0,
+                yori: 200.0,
+                xinc: 10.0,
+                yinc: 20.0,
+                ncol,
+                nrow,
+                rotation_deg: 15.0,
+                yflip: false,
+            };
+            let source = Surface::constant(geom, -1800.0);
+            let irap = std::env::temp_dir().join(format!(
+                "petekio_degenerate_{tag}_{}.irap",
+                std::process::id()
+            ));
+            source.save_irap_classic(&irap).unwrap();
+
+            let mut geo = GeoData::new(Unit::Metres);
+            geo.load_surface("top", &irap).unwrap();
+            let mut wrong_geom = geo.surface("top").unwrap().geom.clone();
+            wrong_geom.xori += 1.0;
+            let wrong_regular = Surface::constant(wrong_geom, -1800.0);
+            let wrong_structured = wrong_regular.to_structured_mesh().unwrap();
+            assert!(matches!(
+                geo.replace_surface("top", wrong_regular),
+                Err(GeoError::GeometryMismatch(_))
+            ));
+            geo.replace_surface("top", geo.surface("top").unwrap().clone())
+                .unwrap();
+
+            let structured = geo.surface("top").unwrap().to_structured_mesh().unwrap();
+            geo.replace_structured_surface("top", structured).unwrap();
+            assert!(matches!(
+                geo.replace_structured_surface("top", wrong_structured),
+                Err(GeoError::GeometryMismatch(_))
+            ));
+            geo.replace_structured_surface("top", geo.structured_surface("top").unwrap().clone())
+                .unwrap();
+
+            let project = std::env::temp_dir().join(format!(
+                "petekio_degenerate_{tag}_{}.pproj",
+                std::process::id()
+            ));
+            geo.save(&project).unwrap();
+            let mut reopened = GeoData::open(&project).unwrap();
+            let persisted = reopened.structured_surface("top").unwrap();
+            assert_eq!((persisted.ncol(), persisted.nrow()), (ncol, nrow));
+            reopened
+                .replace_structured_surface("top", persisted.clone())
+                .unwrap();
+
+            std::fs::remove_file(irap).ok();
+            std::fs::remove_file(project).ok();
+        }
     }
 
     #[test]

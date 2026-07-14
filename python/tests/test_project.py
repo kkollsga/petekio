@@ -721,6 +721,37 @@ def test_project_replace_surface_is_explicit_cow_and_persists_all_levels(tmp_pat
     assert persisted.attr_metadata("facies") == metadata
 
 
+@pytest.mark.parametrize("ncol,nrow", [(1, 1), (1, 4), (4, 1)])
+def test_degenerate_surface_replacement_and_persistence(tmp_path, ncol, nrow):
+    source = petekio.Surface.constant(
+        petekio.GridGeometry(
+            100.0, 200.0, 10.0, 20.0, ncol, nrow, rotation_deg=15.0
+        ),
+        -1800.0,
+    )
+    irap = tmp_path / f"degenerate_{ncol}x{nrow}.irap"
+    source.save_irap_classic(str(irap))
+
+    geo = petekio.GeoData(unit="m")
+    geo.load_surface("top", str(irap))
+    imported = tmp_path / f"imported_{ncol}x{nrow}.pproj"
+    geo.save(str(imported))
+    project = petekio.Project.load(imported)
+    project.replace_surface("top", project.surface("top"))
+
+    structured = project.surface("top").to_structured_mesh()
+    project.replace_surface("top", structured)
+    project.replace_surface("top", project.surface("top"))
+
+    pproj = tmp_path / f"degenerate_{ncol}x{nrow}.pproj"
+    project.save(pproj)
+    reopened = petekio.Project.load(pproj)
+    persisted = reopened.surface("top")
+    assert persisted.kind == "structured_mesh"
+    assert (persisted.ncol, persisted.nrow) == (ncol, nrow)
+    reopened.replace_surface("top", persisted)
+
+
 def test_project_folder_navigation_and_object_management(tmp_path):
     root = tmp_path / "Data"
     _write(root / "Surfaces" / "Top reservoir.irap", _irap())

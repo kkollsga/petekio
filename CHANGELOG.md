@@ -30,6 +30,13 @@ All notable changes to petekIO are recorded here. The format loosely follows
   re-save for compatibility, while persisted semantic attribute IDs are never
   rewritten and remain a loud error when non-canonical.
 
+### Fixed
+- **Degenerate project surfaces replace without forced triangulation.** Exact
+  same-kind regular and structured geometry checks now use their native lattice
+  or shell, so valid `1×1`, `1×N`, and `N×1` surfaces can be replaced and
+  persisted. Regular↔structured replacement compares logical node coordinates;
+  transitions involving triangular surfaces retain topology signatures.
+
 ## [0.3.14] - 2026-07-14
 
 ### Fixed
